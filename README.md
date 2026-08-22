@@ -40,6 +40,49 @@ go build -o 2native-ssh-mcp.exe .
 
 详细配置与部署步骤见上方两份指南。
 
+## 自动发布 Release
+
+推送**带消息的 tag**（annotated tag）即触发 GitHub Actions（`.github/workflows/release.yml`）：
+
+```bash
+git tag -a v1.0.1 -m "修复了 xxx"
+git push origin v1.0.1
+```
+
+**重要说明**：
+
+- **Release 日志 = tag 的 message**。工作流通过 GitHub API 读取 annotated tag 对象的消息（不用本地 git——runner 检出时可能只有 lightweight tag 引用，`%(contents)` 会回退成 commit message，导致日志变成提交信息）
+- 构建 **6 个平台**的二进制：Windows / Linux / macOS × amd64 / arm64（`CGO_ENABLED=0`，版本号注入为 tag 名），产物命名 `2native-ssh-mcp-<os>-<arch>[.exe]`
+- 同时生成 `SHA256SUMS` 校验和，一并附到 Release
+- 用 `git tag -a -m` 打**带消息的 tag**；轻量 tag（`git tag v1.0.1`）没有消息，日志会退化为 tag 名
+
+## 项目结构
+
+```
+2native-ssh-mcp/
+├── main.go                        # 入口：子命令分发（start/stop/status/install…）+ stdio/HTTP 双 transport
+├── internal/
+│   ├── config/                    # SSH 配置类型、默认值、CLI 参数解析、${ENV_VAR} 引用
+│   ├── sshconfig/                 # ~/.ssh/config 解析（Include、通配符、first-match-wins）
+│   ├── logger/                    # stderr 日志（不污染 stdio 协议）
+│   ├── manager/                   # 连接管理核心
+│   │   ├── manager.go             #   懒连接、空闲保活、心跳、路径校验、命令日志
+│   │   ├── dial.go                #   认证（密码/私钥/agent/Pageant/2FA）、代理（SOCKS5/HTTP/HTTPS）
+│   │   ├── exec.go                #   exec 模式命令执行（超时/输出上限/退出码）
+│   │   ├── shell.go               #   shell 模式（marker 协议、ANSI 清理、串行队列）
+│   │   ├── sftp.go                #   文件传输（并发拷贝、进度、去重、断点续传）
+│   │   ├── status.go              #   远程系统状态采集（hostname/OS/内存/磁盘等）
+│   │   └── commandlog.go          #   命令日志文件（JSON 行、保留最近 N 条）
+│   ├── daemon/                    # HTTP daemon：PID 文件、refcount、admin 端点、Windows 自启动
+│   └── tools/                     # MCP 工具注册：execute-command / file-transfer / list-servers
+├── docs/
+│   ├── AGENT_GUIDE.md             # 🤖 Agent 版指南（省 token，按需读取）
+│   └── HUMAN_GUIDE.md             # 👤 人类版指南（易读）
+├── .github/workflows/release.yml  # tag 推送 → 6 平台构建 + Release（日志 = tag 消息）
+├── LICENSE                        # ISC（含上游版权声明）
+└── README.md
+```
+
 ## 构建与测试
 
 ```bash

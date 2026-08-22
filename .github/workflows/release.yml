@@ -17,12 +17,23 @@ jobs:
       matrix:
         include:
           - goos: windows
+            arch: amd64
+            ext: .exe
+          - goos: windows
+            arch: arm64
             ext: .exe
           - goos: linux
+            arch: amd64
+            ext: ''
+          - goos: linux
+            arch: arm64
             ext: ''
           - goos: darwin
+            arch: amd64
             ext: ''
-        arch: [amd64, arm64]
+          - goos: darwin
+            arch: arm64
+            ext: ''
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -53,23 +64,24 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      # Release notes come from the annotated tag message; fall back to the
-      # tag name for lightweight tags.
+      # Release notes come from the annotated tag message, read via the
+      # GitHub API. The local checkout may only hold a lightweight tag ref,
+      # whose %(contents) falls back to the commit message, so local git
+      # cannot be trusted here.
       - name: Read tag message
         id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          BODY="$(git tag -l --format='%(contents)' "${{ github.ref_name }}")"
-          if [ -z "$BODY" ]; then
-            BODY="${{ github.ref_name }}"
+          REF="$(gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/${{ github.ref_name }}")"
+          TYPE="$(echo "$REF" | jq -r '.object.type')"
+          if [ "$TYPE" = "tag" ]; then
+            SHA="$(echo "$REF" | jq -r '.object.sha')"
+            gh api "repos/$GITHUB_REPOSITORY/git/tags/$SHA" --jq '.message' > notes.md
+          else
+            echo "${{ github.ref_name }}" > notes.md
           fi
-          {
-            echo "body<<EOF"
-            echo "$BODY"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
 
       - name: Download binaries
         uses: actions/download-artifact@v4
@@ -90,4 +102,4 @@ jobs:
             dist/2native-ssh-mcp-* \
             dist/SHA256SUMS \
             --title "${{ github.ref_name }}" \
-            --notes "${{ steps.tag.outputs.body }}"
+            --notes-file notes.md
