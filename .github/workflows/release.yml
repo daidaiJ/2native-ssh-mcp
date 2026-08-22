@@ -1,3 +1,14 @@
+# Release workflow template for small Go open-source projects.
+#
+# Trigger: push an annotated tag (git tag -a v1.0.0 -m "...")
+#   - builds binaries for windows/linux/darwin x amd64/arm64 (CGO_ENABLED=0)
+#   - injects the tag name as the binary version (-X main.version=<tag>)
+#   - release notes = the annotated tag message (read via GitHub API)
+#   - attaches every binary with its own .sha256 checksum
+#
+# To reuse in another project: replace "2native-ssh-mcp" with your binary
+# name, and make sure main.go declares `var version = "..."` (not const).
+
 name: Release
 
 on:
@@ -41,13 +52,19 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version-file: go.mod
+
+      - name: Tidy modules
+        run: go mod tidy
 
       - name: Build
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.arch }}
         run: |
           mkdir -p dist
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.arch }} CGO_ENABLED=0 \
-            go build -trimpath -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
+          go build -trimpath -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
             -o dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}${{ matrix.ext }} .
 
       - name: Upload artifact
@@ -92,7 +109,10 @@ jobs:
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum 2native-ssh-mcp-* > SHA256SUMS
+          for f in 2native-ssh-mcp-*; do
+            [ -f "$f" ] || continue
+            sha256sum "$f" > "$f.sha256"
+          done
 
       - name: Create release
         env:
@@ -100,6 +120,5 @@ jobs:
         run: |
           gh release create "${{ github.ref_name }}" \
             dist/2native-ssh-mcp-* \
-            dist/SHA256SUMS \
             --title "${{ github.ref_name }}" \
             --notes-file notes.md
