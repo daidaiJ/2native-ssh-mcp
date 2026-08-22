@@ -1,0 +1,15 @@
+# Binaries
+*.exe
+*.exe~
+
+# Daemon artifacts
+.ssh-mcp-server.pid
+autostart.vbs
+config.json
+
+# Command logs
+logs/
+
+# Test artifacts
+*.test
+*.out
