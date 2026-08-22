@@ -243,5 +243,5 @@ git push origin v1.0.1
 
 工作流会：
 1. 交叉编译 6 个平台二进制：Windows / Linux / macOS × amd64 / arm64（`CGO_ENABLED=0`，版本号注入为 tag 名）
-2. 生成 `SHA256SUMS` 校验和
-3. 创建 GitHub Release，**日志内容 = tag 的 message**，附件为全部二进制 + 校验和
+2. 每个二进制生成独立的 `.sha256` 校验和文件
+3. 创建 GitHub Release，**日志内容 = tag 的 message**（通过 GitHub API 读取 annotated tag 对象，避免 runner 本地 lightweight tag 回退成 commit message 的问题），附件为全部二进制 + 校验和
