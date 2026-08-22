@@ -23,7 +23,8 @@ import (
 	"ssh-mcp-server-go/internal/tools"
 )
 
-const version = "1.0.0"
+// version is overridden at build time via -ldflags "-X main.version=<tag>".
+var version = "1.0.0"
 
 func main() {
 	args := os.Args[1:]

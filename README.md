@@ -4,6 +4,8 @@
 
 > 本项目参考了 [classfang/ssh-mcp-server](https://github.com/classfang/ssh-mcp-server)（TypeScript 版）的设计与实现，在其基础上用 Go 重写，并将文件操作整合为**单个工具**、支持**进度通知**。感谢原作者的开源贡献。
 
+> 📖 给 AI Agent 看的省 token 版配置/部署指南见 [docs/agent-guide.md](docs/agent-guide.md)（按需读取，不会自动注入开发上下文）。
+
 ## 特性
 
 - **双传输模式**：stdio（MCP 客户端子进程）与 streamable HTTP（常驻服务）
@@ -13,26 +15,87 @@
   - `list-servers` — 服务器列表与系统状态（主机名/OS/内存/磁盘等）
 - **连接生命周期**：懒连接（首次调用才建立），执行后按 `keepAlive`/`keepAliveDuration` 保活（默认 10 分钟），空闲自动断开
 - **命令日志**：按连接记录最近 N 条执行过的命令（不含输出），可只记成功命令，落盘为 JSON 行文件
-- **安全**：命令白/黑名单、本地/远端路径白名单、凭据不落盘
+- **安全**：命令白/黑名单、本地/远端路径白名单、凭据不进 MCP 配置参数（见下文「安全配置」）
 - **实用 SSH 特性**：TCP keepalive、心跳检测、算法协商配置（兼容老服务器）、SFTP 并发传输（高延迟链路提速）、代理（SOCKS5/HTTP/HTTPS）、Pageant/ssh-agent、键盘交互认证（2FA）
 - **HTTP daemon**：`start/stop/status/kill` 子命令 + 引用计数 + PID 文件 + 健康检查端点；`install` 一键注册 Windows 开机自启
+- **自动发布**：推送带消息的 tag 即触发 GitHub Actions 构建 6 平台二进制并创建 Release（日志用 tag 消息）
 
-## 快速开始
+## 安全配置（重要）
 
-### 方式一：stdio（推荐，MCP 客户端直接拉起）
+**不要把服务器地址和密码写进 MCP 客户端的配置参数里**——命令行参数在进程列表里可见，MCP 配置也容易被分享或提交到仓库。推荐以下三种方式（任选其一）：
+
+### 方式一：配置文件 + 环境变量引用（推荐）
+
+配置文件里用 `${环境变量名}` 引用凭据，密码不落盘：
+
+```json
+{
+  "dev": {
+    "host": "10.0.0.1",
+    "port": 22,
+    "username": "root",
+    "password": "${SSH_MCP_PASSWORD}"
+  }
+}
+```
+
+```bash
+# 设置环境变量（Windows: setx SSH_MCP_PASSWORD xxx）
+export SSH_MCP_PASSWORD='你的密码'
+```
+
+MCP 客户端配置里只出现配置文件路径：
 
 ```json
 {
   "mcpServers": {
     "ssh-mcp-server": {
       "command": "D:/CODE/ai/ssh-mcp/ssh-mcp-server-go/ssh-mcp-server-go.exe",
-      "args": ["--host", "192.168.1.1", "--port", "22", "--username", "root", "--password", "pwd123456"]
+      "args": ["--config-file", "D:/CODE/ai/ssh-mcp/ssh-mcp-server-go/config.json"]
     }
   }
 }
 ```
 
-### 方式二：HTTP 常驻服务
+### 方式二：配置文件 + 文件权限锁定
+
+密码明文写在 `config.json` 里，但收紧文件权限（Linux/macOS：`chmod 600 config.json`；Windows：右键属性 → 安全 → 仅当前用户），MCP 配置同样只写 `--config-file`。
+
+### 方式三：复用 ~/.ssh/config 别名
+
+凭据全部放在你已有的 SSH 配置/agent 里，MCP 配置零敏感信息：
+
+```json
+{
+  "mcpServers": {
+    "ssh-mcp-server": {
+      "command": "ssh-mcp-server-go",
+      "args": ["--host", "myserver"]
+    }
+  }
+}
+```
+
+> 如果仍通过 `--password`/`--privateKey` 传凭据，程序会在 stderr 打印安全警告。
+
+## 快速开始
+
+### stdio 模式（MCP 客户端直接拉起）
+
+按上面的安全配置方式准备好 `config.json` 后：
+
+```json
+{
+  "mcpServers": {
+    "ssh-mcp-server": {
+      "command": "D:/CODE/ai/ssh-mcp/ssh-mcp-server-go/ssh-mcp-server-go.exe",
+      "args": ["--config-file", "D:/CODE/ai/ssh-mcp/ssh-mcp-server-go/config.json"]
+    }
+  }
+}
+```
+
+### HTTP 常驻服务
 
 ```bash
 # 启动（引用计数 +1；已运行则直接 +1）
@@ -65,7 +128,7 @@ MCP 客户端配置：
 ```json
 {
   "dev": {
-    "host": "10.0.0.1", "port": 22, "username": "root", "password": "…",
+    "host": "10.0.0.1", "port": 22, "username": "root", "password": "${SSH_MCP_PASSWORD}",
     "commandWhitelist": ["^ls ", "^cat ", "^df "],
     "allowedRemotePaths": ["/tmp", "/home"],
     "commandLogSize": 50,
@@ -74,14 +137,10 @@ MCP 客户端配置：
   },
   "prod": {
     "host": "10.0.0.2", "username": "deploy",
-    "privateKey": "~/.ssh/id_rsa", "passphrase": "…",
+    "privateKey": "~/.ssh/id_rsa", "passphrase": "${SSH_MCP_PASSPHRASE}",
     "transportMode": "shell"
   }
 }
-```
-
-```bash
-ssh-mcp-server-go.exe start --config-file config.json
 ```
 
 ## 工具说明
@@ -172,6 +231,8 @@ Server options:
 | `pty` | true | exec 模式分配伪终端 |
 | `tryKeyboard` | false | 键盘交互认证（2FA 码用环境变量 `SSH_MCP_2FA_CODE`） |
 
+> 配置文件中的字符串支持 `${环境变量名}` 引用，凭据可放在环境变量里而不落盘。
+
 ## 认证方式
 
 - 密码：`password`
@@ -188,6 +249,20 @@ Server options:
 ```
 
 配合 `commandLogOnlySuccess: true` 可只记录成功命令，避免探测类命令产生噪声。
+
+## 自动发布 Release
+
+推送**带消息的 tag** 即触发 GitHub Actions（`.github/workflows/release.yml`）：
+
+```bash
+git tag -a v1.0.1 -m "修复了 xxx"
+git push origin v1.0.1
+```
+
+工作流会：
+1. 交叉编译 6 个平台二进制：Windows / Linux / macOS × amd64 / arm64（`CGO_ENABLED=0`，版本号注入为 tag 名）
+2. 生成 `SHA256SUMS` 校验和
+3. 创建 GitHub Release，**日志内容 = tag 的 message**，附件为全部二进制 + 校验和
 
 ## 构建与测试
 

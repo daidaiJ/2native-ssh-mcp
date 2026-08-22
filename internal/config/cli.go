@@ -219,6 +219,9 @@ func ParseArgs(args []string) (*Options, error) {
 			return nil, err
 		}
 		if conf != nil {
+			if conf.Password != "" || conf.PrivateKey != "" {
+				fmt.Fprintln(os.Stderr, "WARNING: SSH credentials were provided via command line arguments, which are visible in the process list and MCP client config. Prefer --config-file with restricted file permissions, or environment variable references in the config file, e.g. \"password\": \"${SSH_MCP_PASSWORD}\".")
+			}
 			opts.Configs["default"] = conf
 		}
 	}
@@ -331,22 +334,22 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 
 	conf := &SSHConfig{
 		Name:               str(m["name"]),
-		Host:               str(m["host"]),
+		Host:               expandEnvVars(str(m["host"])),
 		Port:               port,
-		Username:           firstStr(m["username"], m["user"]),
-		Password:           str(m["password"]),
-		PrivateKey:         str(m["privateKey"]),
-		Passphrase:         firstStr(m["passphrase"], os.Getenv("SSH_MCP_PASSPHRASE")),
-		Agent:              str(m["agent"]),
-		Proxy:              str(m["proxy"]),
-		SocksProxy:         str(m["socksProxy"]),
+		Username:           expandEnvVars(firstStr(m["username"], m["user"])),
+		Password:           expandEnvVars(str(m["password"])),
+		PrivateKey:         expandEnvVars(str(m["privateKey"])),
+		Passphrase:         expandEnvVars(firstStr(m["passphrase"], os.Getenv("SSH_MCP_PASSPHRASE"))),
+		Agent:              expandEnvVars(str(m["agent"])),
+		Proxy:              expandEnvVars(str(m["proxy"])),
+		SocksProxy:         expandEnvVars(str(m["socksProxy"])),
 		CommandWhitelist:   StringSlice(firstAny(m["commandWhitelist"], m["whitelist"])),
 		CommandBlacklist:   StringSlice(firstAny(m["commandBlacklist"], m["blacklist"])),
 		AllowedLocalPaths:  StringSlice(m["allowedLocalPaths"]),
 		AllowedRemotePaths: StringSlice(m["allowedRemotePaths"]),
 		TransportMode:      str(m["transportMode"]),
 		CommandTemplate:    str(m["commandTemplate"]),
-		CommandLogDir:      str(m["commandLogDir"]),
+		CommandLogDir:      expandEnvVars(str(m["commandLogDir"])),
 	}
 
 	if v, ok := m["pty"]; ok {
@@ -523,6 +526,14 @@ func str(v any) string {
 		return s
 	}
 	return ""
+}
+
+// expandEnvVars resolves ${VAR} references in a config value from the
+// environment, so credentials can stay out of the config file:
+//
+//	"password": "${SSH_MCP_PASSWORD}"
+func expandEnvVars(s string) string {
+	return os.Expand(s, os.Getenv)
 }
 
 func firstStr(vals ...any) string {

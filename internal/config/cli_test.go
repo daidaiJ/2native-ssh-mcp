@@ -129,6 +129,29 @@ func TestParseArgsMissingAuth(t *testing.T) {
 	}
 }
 
+func TestParseArgsEnvVarReferences(t *testing.T) {
+	t.Setenv("SSH_MCP_TEST_PASSWORD", "s3cret")
+	t.Setenv("SSH_MCP_TEST_HOST", "10.9.9.9")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	content := `{
+		"dev": {"host": "${SSH_MCP_TEST_HOST}", "port": 22, "username": "root",
+		        "password": "${SSH_MCP_TEST_PASSWORD}"}
+	}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	opts, err := ParseArgs([]string{"--config-file", path})
+	if err != nil {
+		t.Fatalf("ParseArgs failed: %v", err)
+	}
+	conf := opts.Configs["dev"]
+	if conf.Host != "10.9.9.9" || conf.Password != "s3cret" {
+		t.Fatalf("env vars not expanded: %+v", conf)
+	}
+}
+
 func TestParseArgsNoConfig(t *testing.T) {
 	_, err := ParseArgs(nil)
 	if err != nil {
