@@ -2,6 +2,8 @@
 
 SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools. stdio or streamable HTTP. **Credentials never belong in MCP client config args** — see Secure setup.
 
+> Human-readable version: [HUMAN_GUIDE.md](HUMAN_GUIDE.md)
+
 ## Tools
 
 ### execute-command

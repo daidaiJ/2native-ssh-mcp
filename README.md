@@ -4,7 +4,12 @@
 
 > 本项目参考了 [classfang/ssh-mcp-server](https://github.com/classfang/ssh-mcp-server)（TypeScript 版）的设计与实现，在其基础上用 Go 重写，并将文件操作整合为**单个工具**、支持**进度通知**。感谢原作者的开源贡献。
 
-> 📖 给 AI Agent 看的省 token 版配置/部署指南见 [docs/agent-guide.md](docs/agent-guide.md)（按需读取，不会自动注入开发上下文）。
+## 📖 指南
+
+| 读者 | 文档 | 说明 |
+|---|---|---|
+| 🤖 AI Agent | [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) | 省 token 版：工具参数、配置、安全模式、部署命令速查 |
+| 👤 人类用户 | [docs/HUMAN_GUIDE.md](docs/HUMAN_GUIDE.md) | 易读版：安全配置、快速开始、工具说明、参数速查、发布流程 |
 
 ## 特性
 
@@ -15,259 +20,30 @@
   - `list-servers` — 服务器列表与系统状态（主机名/OS/内存/磁盘等）
 - **连接生命周期**：懒连接（首次调用才建立），执行后按 `keepAlive`/`keepAliveDuration` 保活（默认 10 分钟），空闲自动断开
 - **命令日志**：按连接记录最近 N 条执行过的命令（不含输出），可只记成功命令，落盘为 JSON 行文件
-- **安全**：命令白/黑名单、本地/远端路径白名单、凭据不进 MCP 配置参数（见下文「安全配置」）
+- **安全**：命令白/黑名单、本地/远端路径白名单、凭据不进 MCP 配置参数（支持 `${ENV_VAR}` 环境变量引用）
 - **实用 SSH 特性**：TCP keepalive、心跳检测、算法协商配置（兼容老服务器）、SFTP 并发传输（高延迟链路提速）、代理（SOCKS5/HTTP/HTTPS）、Pageant/ssh-agent、键盘交互认证（2FA）
 - **HTTP daemon**：`start/stop/status/kill` 子命令 + 引用计数 + PID 文件 + 健康检查端点；`install` 一键注册 Windows 开机自启
 - **自动发布**：推送带消息的 tag 即触发 GitHub Actions 构建 6 平台二进制并创建 Release（日志用 tag 消息）
 
-## 安全配置（重要）
-
-**不要把服务器地址和密码写进 MCP 客户端的配置参数里**——命令行参数在进程列表里可见，MCP 配置也容易被分享或提交到仓库。推荐以下三种方式（任选其一）：
-
-### 方式一：配置文件 + 环境变量引用（推荐）
-
-配置文件里用 `${环境变量名}` 引用凭据，密码不落盘：
-
-```json
-{
-  "dev": {
-    "host": "10.0.0.1",
-    "port": 22,
-    "username": "root",
-    "password": "${SSH_MCP_PASSWORD}"
-  }
-}
-```
+## 快速上手
 
 ```bash
-# 设置环境变量（Windows: setx SSH_MCP_PASSWORD xxx）
-export SSH_MCP_PASSWORD='你的密码'
-```
+# 构建
+go build -o ssh-mcp-server-go.exe .
 
-MCP 客户端配置里只出现配置文件路径：
+# stdio 模式（MCP 客户端拉起，凭据放 config.json 或环境变量）
+ssh-mcp-server-go.exe --config-file config.json
 
-```json
-{
-  "mcpServers": {
-    "ssh-mcp-server": {
-      "command": "D:/CODE/ai/ssh-mcp/ssh-mcp-server-go/ssh-mcp-server-go.exe",
-      "args": ["--config-file", "D:/CODE/ai/ssh-mcp/ssh-mcp-server-go/config.json"]
-    }
-  }
-}
-```
-
-### 方式二：配置文件 + 文件权限锁定
-
-密码明文写在 `config.json` 里，但收紧文件权限（Linux/macOS：`chmod 600 config.json`；Windows：右键属性 → 安全 → 仅当前用户），MCP 配置同样只写 `--config-file`。
-
-### 方式三：复用 ~/.ssh/config 别名
-
-凭据全部放在你已有的 SSH 配置/agent 里，MCP 配置零敏感信息：
-
-```json
-{
-  "mcpServers": {
-    "ssh-mcp-server": {
-      "command": "ssh-mcp-server-go",
-      "args": ["--host", "myserver"]
-    }
-  }
-}
-```
-
-> 如果仍通过 `--password`/`--privateKey` 传凭据，程序会在 stderr 打印安全警告。
-
-## 快速开始
-
-### stdio 模式（MCP 客户端直接拉起）
-
-按上面的安全配置方式准备好 `config.json` 后：
-
-```json
-{
-  "mcpServers": {
-    "ssh-mcp-server": {
-      "command": "D:/CODE/ai/ssh-mcp/ssh-mcp-server-go/ssh-mcp-server-go.exe",
-      "args": ["--config-file", "D:/CODE/ai/ssh-mcp/ssh-mcp-server-go/config.json"]
-    }
-  }
-}
-```
-
-### HTTP 常驻服务
-
-```bash
-# 启动（引用计数 +1；已运行则直接 +1）
+# HTTP 常驻服务
 ssh-mcp-server-go.exe start --config-file config.json --http-addr 127.0.0.1:8338
-
-# 查看状态 / 停止（引用计数归零才退出）/ 强制停止
-ssh-mcp-server-go.exe status
-ssh-mcp-server-go.exe stop
-ssh-mcp-server-go.exe kill
-
-# Windows 开机自启（生成 config.json 模板 + 启动文件夹快捷方式）
-ssh-mcp-server-go.exe install
-ssh-mcp-server-go.exe uninstall
 ```
 
-MCP 客户端配置：
-
-```json
-{
-  "mcpServers": {
-    "ssh-mcp-server": {
-      "url": "http://127.0.0.1:8338/mcp"
-    }
-  }
-}
-```
-
-### 多服务器配置（config.json）
-
-```json
-{
-  "dev": {
-    "host": "10.0.0.1", "port": 22, "username": "root", "password": "${SSH_MCP_PASSWORD}",
-    "commandWhitelist": ["^ls ", "^cat ", "^df "],
-    "allowedRemotePaths": ["/tmp", "/home"],
-    "commandLogSize": 50,
-    "commandLogDir": "logs",
-    "commandLogOnlySuccess": true
-  },
-  "prod": {
-    "host": "10.0.0.2", "username": "deploy",
-    "privateKey": "~/.ssh/id_rsa", "passphrase": "${SSH_MCP_PASSPHRASE}",
-    "transportMode": "shell"
-  }
-}
-```
-
-## 工具说明
-
-### execute-command
-
-| 参数 | 必填 | 说明 |
-|---|---|---|
-| `cmdString` | ✅ | 要执行的命令 |
-| `directory` | | 工作目录 |
-| `connectionName` | | 连接名，默认 `default` |
-| `timeout` | | 超时（毫秒），默认 30000 |
-| `keepAlive` | | 执行后是否保活连接，默认 `true` |
-| `keepAliveDuration` | | 保活时长（毫秒），默认 600000（10 分钟） |
-
-### file-transfer
-
-| 参数 | 必填 | 说明 |
-|---|---|---|
-| `action` | ✅ | `upload` 或 `download` |
-| `localPath` | ✅ | 本地路径（须在 cwd 或 `allowedLocalPaths` 内） |
-| `remotePath` | ✅ | 远端绝对路径（配置了 `allowedRemotePaths` 时须在其内） |
-| `connectionName` | | 连接名，默认 `default` |
-| `force` | | 跳过去重/续传，强制全量传输 |
-
-- 客户端在请求中携带 `_meta.progressToken` 时，服务端通过 `notifications/progress` 上报进度（约 100ms 节流，结束必报 100%）
-- 目标文件与源文件大小、mtime 一致 → 直接跳过（去重）
-- 目标已有部分数据 → 从断点续传；下载走临时文件 + 原子改名
-- 传输中源文件继续增长 → 自动补传尾部
-
-### list-servers
-
-列出所有连接：名称、地址、连接状态、系统状态摘要。
-
-## 命令行参数
-
-```
-ssh-mcp-server-go [command] [options] [host port username password]
-
-Commands:
-  (none)      stdio 模式（默认，供 MCP 客户端拉起）
-  start       启动 HTTP daemon（引用计数管理）
-  stop        停止（引用计数 -1，归零退出）
-  kill        强制停止
-  status      查看状态
-  install     安装 Windows 开机自启
-  uninstall   卸载开机自启
-  version     版本号
-  help        帮助
-
-Connection options:
-  --config-file <path>             从 JSON 文件加载服务器配置
-  --ssh-config-file <path>         读取 SSH config 别名（默认 ~/.ssh/config）
-  --ssh <config>                   追加一个配置（JSON 或 key=value，可重复）
-  -h, --host / -p, --port / -u, --username / -w, --password
-  -k, --privateKey / -P, --passphrase / -a, --agent
-  -W, --whitelist / -B, --blacklist
-  --proxy <url> / -s, --socksProxy <url>
-  --allowed-local-paths / --allowed-remote-paths
-  --transport-mode <exec|shell>
-  --command-template <template>
-  --pty / --try-keyboard
-  --command-log-size <n> / --command-log-dir <dir> / --command-log-only-success
-  --pre-connect
-
-Server options:
-  --transport <stdio|http>         默认 stdio；start 隐含 http
-  --http-addr <host:port>          默认 127.0.0.1:8338
-  --version, -v / --help
-```
-
-## 配置项速查
-
-| 配置 | 默认 | 说明 |
-|---|---|---|
-| `transportMode` | `exec` | `shell` 用于堡垒机/跳板机场景 |
-| `commandWhitelist` / `commandBlacklist` | 空 | 命令正则白/黑名单 |
-| `allowedLocalPaths` / `allowedRemotePaths` | 空 | 文件传输路径白名单 |
-| `commandLogSize` | 0（关闭） | 命令日志保留条数 |
-| `commandLogDir` | 空 | 命令日志目录（`<dir>/<连接名>.log`） |
-| `commandLogOnlySuccess` | false | 只记录成功命令 |
-| `sftpConcurrency` / `sftpChunkSize` | 16 / 32768 | SFTP 并发数与分块大小 |
-| `algorithms` | 空 | kex/cipher/serverHostKey/hmac 协商 |
-| `keepaliveIntervalMs` / `keepaliveCountMax` | 10000 / 3 | SSH 心跳 |
-| `commandTimeoutMs` / `connectionTimeoutMs` / `sftpTimeoutMs` | 30000 / 30000 / 300000 | 各类超时 |
-| `maxOutputBytes` | 10485760 | 单命令输出上限，0 为不限 |
-| `commandTemplate` | 空 | 命令包装模板（`<command>` / `<quotedCommand>`） |
-| `pty` | true | exec 模式分配伪终端 |
-| `tryKeyboard` | false | 键盘交互认证（2FA 码用环境变量 `SSH_MCP_2FA_CODE`） |
-
-> 配置文件中的字符串支持 `${环境变量名}` 引用，凭据可放在环境变量里而不落盘。
-
-## 认证方式
-
-- 密码：`password`
-- 私钥：`privateKey`（可带 `passphrase`，或环境变量 `SSH_MCP_PASSPHRASE`）
-- ssh-agent：`agent`（Unix socket 路径；Windows 填 `pageant` 使用 Pageant）
-- 键盘交互：`tryKeyboard: true`，密码提示用配置的密码，OTP 提示用 `SSH_MCP_2FA_CODE`
-
-## 命令日志
-
-配置 `commandLogSize`（>0）后，每个连接执行过的命令会追加写入 `<commandLogDir>/<连接名>.log`，JSON 行格式，只保留最近 N 条，重启不丢失：
-
-```json
-{"timestamp":"2026-08-22T10:00:00+08:00","command":"ls -la /tmp","exitCode":0,"success":true}
-```
-
-配合 `commandLogOnlySuccess: true` 可只记录成功命令，避免探测类命令产生噪声。
-
-## 自动发布 Release
-
-推送**带消息的 tag** 即触发 GitHub Actions（`.github/workflows/release.yml`）：
-
-```bash
-git tag -a v1.0.1 -m "修复了 xxx"
-git push origin v1.0.1
-```
-
-工作流会：
-1. 交叉编译 6 个平台二进制：Windows / Linux / macOS × amd64 / arm64（`CGO_ENABLED=0`，版本号注入为 tag 名）
-2. 生成 `SHA256SUMS` 校验和
-3. 创建 GitHub Release，**日志内容 = tag 的 message**，附件为全部二进制 + 校验和
+详细配置与部署步骤见上方两份指南。
 
 ## 构建与测试
 
 ```bash
-go build -o ssh-mcp-server-go.exe .
+go build ./...
 go test -race ./...
 ```
 
