@@ -1,4 +1,4 @@
-# ssh-mcp-server-go
+# 2native-ssh-mcp
 
 基于 SSH 的 MCP (Model Context Protocol) 服务器，Go 实现。让 AI 助手通过 MCP 协议远程执行命令、传输文件，SSH 凭据完全留在本地，不暴露给模型。
 
@@ -29,13 +29,13 @@
 
 ```bash
 # 构建
-go build -o ssh-mcp-server-go.exe .
+go build -o 2native-ssh-mcp.exe .
 
 # stdio 模式（MCP 客户端拉起，凭据放 config.json 或环境变量）
-ssh-mcp-server-go.exe --config-file config.json
+2native-ssh-mcp.exe --config-file config.json
 
 # HTTP 常驻服务
-ssh-mcp-server-go.exe start --config-file config.json --http-addr 127.0.0.1:8338
+2native-ssh-mcp.exe start --config-file config.json --http-addr 127.0.0.1:8338
 ```
 
 详细配置与部署步骤见上方两份指南。
@@ -59,4 +59,4 @@ go test -race ./...
 
 ## License
 
-ISC
+ISC License（与上游一致，保留上游版权声明，见 [LICENSE](LICENSE)）

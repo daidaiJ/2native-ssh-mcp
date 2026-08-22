@@ -37,13 +37,13 @@ jobs:
           mkdir -p dist
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.arch }} CGO_ENABLED=0 \
             go build -trimpath -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
-            -o dist/ssh-mcp-server-${{ matrix.goos }}-${{ matrix.arch }}${{ matrix.ext }} .
+            -o dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}${{ matrix.ext }} .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ssh-mcp-server-${{ matrix.goos }}-${{ matrix.arch }}
-          path: dist/ssh-mcp-server-${{ matrix.goos }}-${{ matrix.arch }}${{ matrix.ext }}
+          name: 2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}
+          path: dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}${{ matrix.ext }}
           if-no-files-found: error
 
   release:
@@ -80,14 +80,14 @@ jobs:
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum ssh-mcp-server-* > SHA256SUMS
+          sha256sum 2native-ssh-mcp-* > SHA256SUMS
 
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ github.ref_name }}" \
-            dist/ssh-mcp-server-* \
+            dist/2native-ssh-mcp-* \
             dist/SHA256SUMS \
             --title "${{ github.ref_name }}" \
             --notes "${{ steps.tag.outputs.body }}"

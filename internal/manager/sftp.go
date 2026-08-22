@@ -11,7 +11,7 @@ import (
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 
-	"ssh-mcp-server-go/internal/config"
+	"2native-ssh-mcp/internal/config"
 )
 
 // TransferResult summarizes a completed file transfer.

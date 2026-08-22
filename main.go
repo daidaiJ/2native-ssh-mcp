@@ -1,4 +1,4 @@
-// ssh-mcp-server-go is an SSH-based MCP server: it exposes SSH command
+// 2native-ssh-mcp is an SSH-based MCP server: it exposes SSH command
 // execution and file transfer as MCP tools over stdio or streamable HTTP.
 package main
 
@@ -16,11 +16,11 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"ssh-mcp-server-go/internal/config"
-	"ssh-mcp-server-go/internal/daemon"
-	"ssh-mcp-server-go/internal/logger"
-	"ssh-mcp-server-go/internal/manager"
-	"ssh-mcp-server-go/internal/tools"
+	"2native-ssh-mcp/internal/config"
+	"2native-ssh-mcp/internal/daemon"
+	"2native-ssh-mcp/internal/logger"
+	"2native-ssh-mcp/internal/manager"
+	"2native-ssh-mcp/internal/tools"
 )
 
 // version is overridden at build time via -ldflags "-X main.version=<tag>".
@@ -200,7 +200,7 @@ func runHTTPServer(ctx context.Context, s *server.MCPServer, m *manager.Manager,
 
 // newMCPServer builds the MCP server with all tools registered.
 func newMCPServer(m *manager.Manager) *server.MCPServer {
-	s := server.NewMCPServer("ssh-mcp-server", version)
+	s := server.NewMCPServer("2native-ssh-mcp", version)
 	tools.RegisterAll(s, m)
 	return s
 }

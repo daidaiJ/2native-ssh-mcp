@@ -7,7 +7,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"ssh-mcp-server-go/internal/manager"
+	"2native-ssh-mcp/internal/manager"
 )
 
 // registerExecuteCommand registers the execute-command tool.

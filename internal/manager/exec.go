@@ -9,7 +9,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"ssh-mcp-server-go/internal/config"
+	"2native-ssh-mcp/internal/config"
 )
 
 // RunOptions controls a single command execution.

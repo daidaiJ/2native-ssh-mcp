@@ -1,6 +1,6 @@
 # HUMAN_GUIDE — 配置与部署指南（人类阅读版）
 
-本指南面向**人类用户**，详细讲解 ssh-mcp-server-go 的配置、部署与使用。给 AI Agent 看的省 token 版见 [AGENT_GUIDE.md](AGENT_GUIDE.md)。
+本指南面向**人类用户**，详细讲解 2native-ssh-mcp 的配置、部署与使用。给 AI Agent 看的省 token 版见 [AGENT_GUIDE.md](AGENT_GUIDE.md)。
 
 ## 安全配置（重要）
 
@@ -31,9 +31,9 @@ MCP 客户端配置里只出现配置文件路径：
 ```json
 {
   "mcpServers": {
-    "ssh-mcp-server": {
-      "command": "D:/CODE/ai/ssh-mcp/ssh-mcp-server-go/ssh-mcp-server-go.exe",
-      "args": ["--config-file", "D:/CODE/ai/ssh-mcp/ssh-mcp-server-go/config.json"]
+    "2native-ssh-mcp": {
+      "command": "D:/CODE/ai/ssh-mcp/2native-ssh-mcp/2native-ssh-mcp.exe",
+      "args": ["--config-file", "D:/CODE/ai/ssh-mcp/2native-ssh-mcp/config.json"]
     }
   }
 }
@@ -50,8 +50,8 @@ MCP 客户端配置里只出现配置文件路径：
 ```json
 {
   "mcpServers": {
-    "ssh-mcp-server": {
-      "command": "ssh-mcp-server-go",
+    "2native-ssh-mcp": {
+      "command": "2native-ssh-mcp",
       "args": ["--host", "myserver"]
     }
   }
@@ -69,9 +69,9 @@ MCP 客户端配置里只出现配置文件路径：
 ```json
 {
   "mcpServers": {
-    "ssh-mcp-server": {
-      "command": "D:/CODE/ai/ssh-mcp/ssh-mcp-server-go/ssh-mcp-server-go.exe",
-      "args": ["--config-file", "D:/CODE/ai/ssh-mcp/ssh-mcp-server-go/config.json"]
+    "2native-ssh-mcp": {
+      "command": "D:/CODE/ai/ssh-mcp/2native-ssh-mcp/2native-ssh-mcp.exe",
+      "args": ["--config-file", "D:/CODE/ai/ssh-mcp/2native-ssh-mcp/config.json"]
     }
   }
 }
@@ -81,16 +81,16 @@ MCP 客户端配置里只出现配置文件路径：
 
 ```bash
 # 启动（引用计数 +1；已运行则直接 +1）
-ssh-mcp-server-go.exe start --config-file config.json --http-addr 127.0.0.1:8338
+2native-ssh-mcp.exe start --config-file config.json --http-addr 127.0.0.1:8338
 
 # 查看状态 / 停止（引用计数归零才退出）/ 强制停止
-ssh-mcp-server-go.exe status
-ssh-mcp-server-go.exe stop
-ssh-mcp-server-go.exe kill
+2native-ssh-mcp.exe status
+2native-ssh-mcp.exe stop
+2native-ssh-mcp.exe kill
 
 # Windows 开机自启（生成 config.json 模板 + 启动文件夹快捷方式）
-ssh-mcp-server-go.exe install
-ssh-mcp-server-go.exe uninstall
+2native-ssh-mcp.exe install
+2native-ssh-mcp.exe uninstall
 ```
 
 MCP 客户端配置：
@@ -98,7 +98,7 @@ MCP 客户端配置：
 ```json
 {
   "mcpServers": {
-    "ssh-mcp-server": {
+    "2native-ssh-mcp": {
       "url": "http://127.0.0.1:8338/mcp"
     }
   }
@@ -160,7 +160,7 @@ MCP 客户端配置：
 ## 命令行参数
 
 ```
-ssh-mcp-server-go [command] [options] [host port username password]
+2native-ssh-mcp [command] [options] [host port username password]
 
 Commands:
   (none)      stdio 模式（默认，供 MCP 客户端拉起）

@@ -21,12 +21,12 @@ type PIDInfo struct {
 // PIDFileName returns the PID file path, preferring the executable directory.
 func PIDFileName() string {
 	if exe, err := os.Executable(); err == nil {
-		return filepath.Join(filepath.Dir(exe), ".ssh-mcp-server.pid")
+		return filepath.Join(filepath.Dir(exe), ".2native-ssh-mcp.pid")
 	}
 	if cwd, err := os.Getwd(); err == nil {
-		return filepath.Join(cwd, ".ssh-mcp-server.pid")
+		return filepath.Join(cwd, ".2native-ssh-mcp.pid")
 	}
-	return filepath.Join(os.TempDir(), "ssh-mcp-server.pid")
+	return filepath.Join(os.TempDir(), ".2native-ssh-mcp.pid")
 }
 
 // ReadPID reads the PID file.
@@ -70,7 +70,7 @@ type RefCountResponse struct {
 
 // ServerName identifies this daemon in admin responses so clients can tell
 // it apart from other services on the same host.
-const ServerName = "ssh-mcp-server"
+const ServerName = "2native-ssh-mcp"
 
 // GetHealth probes whether the daemon is running.
 func GetHealth(port int) (*RefCountResponse, error) {
@@ -96,7 +96,7 @@ func PostRefCount(port, delta int) (*RefCountResponse, error) {
 		return nil, err
 	}
 	if result.Name != ServerName {
-		return nil, fmt.Errorf("port %d is not an ssh-mcp-server daemon", port)
+		return nil, fmt.Errorf("port %d is not a 2native-ssh-mcp daemon", port)
 	}
 	return &result, nil
 }
@@ -118,7 +118,7 @@ func adminGet(port int, path string) (*RefCountResponse, error) {
 		return nil, err
 	}
 	if result.Name != ServerName {
-		return nil, fmt.Errorf("port %d is not an ssh-mcp-server daemon", port)
+		return nil, fmt.Errorf("port %d is not a 2native-ssh-mcp daemon", port)
 	}
 	return &result, nil
 }

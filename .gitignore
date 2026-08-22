@@ -3,7 +3,7 @@
 *.exe~
 
 # Daemon artifacts
-.ssh-mcp-server.pid
+.2native-ssh-mcp.pid
 autostart.vbs
 config.json
 

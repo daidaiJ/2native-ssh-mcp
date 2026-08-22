@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"ssh-mcp-server-go/internal/sshconfig"
+	"2native-ssh-mcp/internal/sshconfig"
 )
 
 // Options holds the parsed command line options.
@@ -40,7 +40,7 @@ func (s *stringList) Set(v string) error {
 }
 
 // Usage is the help text for the connection options.
-const Usage = `Usage: ssh-mcp-server-go [command] [options] [host port username password]
+const Usage = `Usage: 2native-ssh-mcp [command] [options] [host port username password]
 
 Commands:
   (none)      Run in stdio mode (default; spawned by MCP clients)
@@ -88,7 +88,7 @@ Server options:
 
 // ParseArgs parses command line arguments for stdio or start mode.
 func ParseArgs(args []string) (*Options, error) {
-	fs := flag.NewFlagSet("ssh-mcp-server-go", flag.ContinueOnError)
+	fs := flag.NewFlagSet("2native-ssh-mcp", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
 	var (

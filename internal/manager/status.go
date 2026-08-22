@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"ssh-mcp-server-go/internal/logger"
+	"2native-ssh-mcp/internal/logger"
 )
 
 // ServerStatus is the system status collected from a remote server.

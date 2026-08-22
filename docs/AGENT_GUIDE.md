@@ -1,4 +1,4 @@
-# ssh-mcp-server-go — Agent Guide
+# 2native-ssh-mcp — Agent Guide
 
 SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools. stdio or streamable HTTP. **Credentials never belong in MCP client config args** — see Secure setup.
 
@@ -80,8 +80,8 @@ CLI-arg credentials (`--password` etc.) print a stderr warning — they're visib
 ```json
 {
   "mcpServers": {
-    "ssh-mcp-server": {
-      "command": "/path/to/ssh-mcp-server-go",
+    "2native-ssh-mcp": {
+      "command": "/path/to/2native-ssh-mcp",
       "args": ["--config-file", "/path/to/config.json"]
     }
   }
@@ -90,13 +90,13 @@ CLI-arg credentials (`--password` etc.) print a stderr warning — they're visib
 
 ### HTTP daemon
 ```bash
-ssh-mcp-server-go start --config-file config.json --http-addr 127.0.0.1:8338
-ssh-mcp-server-go status | stop | kill
-ssh-mcp-server-go install   # Windows autostart (startup folder)
+2native-ssh-mcp start --config-file config.json --http-addr 127.0.0.1:8338
+2native-ssh-mcp status | stop | kill
+2native-ssh-mcp install   # Windows autostart (startup folder)
 ```
-MCP client: `{"mcpServers": {"ssh-mcp-server": {"url": "http://127.0.0.1:8338/mcp"}}}`
+MCP client: `{"mcpServers": {"2native-ssh-mcp": {"url": "http://127.0.0.1:8338/mcp"}}}`
 
-Daemon semantics: refcount (start +1, stop −1, exits at 0), PID file, admin API `/__admin/{health,status,refcount,shutdown}` (loopback-only, `"name":"ssh-mcp-server"` verified).
+Daemon semantics: refcount (start +1, stop −1, exits at 0), PID file, admin API `/__admin/{health,status,refcount,shutdown}` (loopback-only, `"name":"2native-ssh-mcp"` verified).
 
 ## Release workflow
 

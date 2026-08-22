@@ -1,4 +1,4 @@
-module ssh-mcp-server-go
+module 2native-ssh-mcp
 
 go 1.25.5
 

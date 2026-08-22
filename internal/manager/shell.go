@@ -10,8 +10,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"ssh-mcp-server-go/internal/config"
-	"ssh-mcp-server-go/internal/logger"
+	"2native-ssh-mcp/internal/config"
+	"2native-ssh-mcp/internal/logger"
 )
 
 var (
