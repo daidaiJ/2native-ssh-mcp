@@ -28,7 +28,17 @@ const (
 
 // SSHConfig is a single SSH connection configuration.
 type SSHConfig struct {
-	Name                  string   `json:"name,omitempty"`
+	Name string `json:"name,omitempty"`
+	// Description is a short human/agent-facing summary of what this
+	// server is (OS, role, environment).
+	Description string `json:"description,omitempty"`
+	// Business is the business or workload this server is responsible for.
+	Business string `json:"business,omitempty"`
+	// Aliases are extra names that resolve to this connection
+	// (list-servers / connectionName).
+	Aliases []string `json:"aliases,omitempty"`
+	// Notes are operational caveats the agent should read before acting.
+	Notes                 string   `json:"notes,omitempty"`
 	Host                  string   `json:"host"`
 	Port                  int      `json:"port"`
 	Username              string   `json:"username"`
@@ -51,6 +61,12 @@ type SSHConfig struct {
 	ConnectionTimeoutMs   int      `json:"connectionTimeoutMs,omitempty"`
 	SftpTimeoutMs         int      `json:"sftpTimeoutMs,omitempty"`
 	MaxOutputBytes        int      `json:"maxOutputBytes,omitempty"`
+	// OutputCompressLight enables lossy head/tail line compression when output
+	// exceeds outputCompressThreshold bytes (default: true when unset).
+	OutputCompressLight *bool `json:"outputCompressLight,omitempty"`
+	// OutputCompressThreshold is the byte size before light compression runs
+	// (default 4096; 0 uses default).
+	OutputCompressThreshold int `json:"outputCompressThreshold,omitempty"`
 	KeepaliveIntervalMs   int      `json:"keepaliveIntervalMs,omitempty"`
 	KeepaliveCountMax     int      `json:"keepaliveCountMax,omitempty"`
 	CommandTemplate       string   `json:"commandTemplate,omitempty"`
@@ -160,6 +176,22 @@ func (c *SSHConfig) Normalize() error {
 	}
 	for i, p := range c.AllowedLocalPaths {
 		c.AllowedLocalPaths[i] = ExpandHome(p)
+	}
+	if len(c.Aliases) > 0 {
+		seen := map[string]struct{}{}
+		out := make([]string, 0, len(c.Aliases))
+		for _, a := range c.Aliases {
+			a = strings.TrimSpace(a)
+			if a == "" {
+				continue
+			}
+			if _, ok := seen[a]; ok {
+				continue
+			}
+			seen[a] = struct{}{}
+			out = append(out, a)
+		}
+		c.Aliases = out
 	}
 	return nil
 }

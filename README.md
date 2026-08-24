@@ -14,13 +14,15 @@
 ## 特性
 
 - **双传输模式**：stdio（MCP 客户端子进程）与 streamable HTTP（常驻服务）
-- **三个工具**：
-  - `execute-command` — 远程执行命令，支持白/黑名单、超时、输出上限、工作目录
-  - `file-transfer` — 上传/下载整合为一个工具，带 **MCP 进度通知**、**去重**（大小+mtime 一致自动跳过）、**断点续传**、`force` 强制全量
-  - `list-servers` — 服务器列表与系统状态（主机名/OS/内存/磁盘等）
+- **四个工具**（最小必要集，与上游 classfang 对齐 + 会话合并）：
+  - `list-servers` — 服务器 + 活动会话一览
+  - `execute-command` — 远程执行；可选 `sessionName` 在有状态会话中执行
+  - `session` — 会话生命周期 `action=open|read|close`（含后台长任务）
+  - `file-transfer` — 上传/下载，带进度通知、去重、断点续传
+- **Agent Skill**：[`skills/2native-ssh-mcp-helper`](skills/2native-ssh-mcp-helper/SKILL.md)（安装配置）、[`skills/2native-ssh-mcp-agent`](skills/2native-ssh-mcp-agent/SKILL.md)（远程执行防御与输出/token 策略）
 - **连接生命周期**：懒连接（首次调用才建立），执行后按 `keepAlive`/`keepAliveDuration` 保活（默认 10 分钟），空闲自动断开
 - **命令日志**：按连接记录最近 N 条执行过的命令（不含输出），可只记成功命令，落盘为 JSON 行文件
-- **安全**：命令白/黑名单、本地/远端路径白名单、凭据不进 MCP 配置参数（支持 `${ENV_VAR}` 环境变量引用）
+- **安全**：命令白/黑名单、路径白名单、凭据隔离、输出脱敏、**轻量输出压缩**（≥4KB 头尾摘要不丢语义）、配置权限检查（见 [SECURITY.md](SECURITY.md)）
 - **实用 SSH 特性**：TCP keepalive、心跳检测、算法协商配置（兼容老服务器）、SFTP 并发传输（高延迟链路提速）、代理（SOCKS5/HTTP/HTTPS）、Pageant/ssh-agent、键盘交互认证（2FA）
 - **HTTP daemon**：`start/stop/status/kill` 子命令 + 引用计数 + PID 文件 + 健康检查端点；`install` 一键注册 Windows 开机自启
 - **自动发布**：推送带消息的 tag 即触发 GitHub Actions 构建 6 平台二进制并创建 Release（日志用 tag 消息）
@@ -74,7 +76,8 @@ git push origin v1.0.1
 │   │   ├── status.go              #   远程系统状态采集（hostname/OS/内存/磁盘等）
 │   │   └── commandlog.go          #   命令日志文件（JSON 行、保留最近 N 条）
 │   ├── daemon/                    # HTTP daemon：PID 文件、refcount、admin 端点、Windows 自启动
-│   └── tools/                     # MCP 工具注册：execute-command / file-transfer / list-servers
+│   └── tools/                     # MCP 工具：list-servers / execute-command / session / file-transfer
+├── SECURITY.md                    # 威胁模型与安全建议
 ├── docs/
 │   ├── AGENT_GUIDE.md             # 🤖 Agent 版指南（省 token，按需读取）
 │   └── HUMAN_GUIDE.md             # 👤 人类版指南（易读）

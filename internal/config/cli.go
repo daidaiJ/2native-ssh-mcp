@@ -16,6 +16,8 @@ import (
 // Options holds the parsed command line options.
 type Options struct {
 	Configs    map[string]*SSHConfig
+	ConfigFile string
+	AllowInsecureConfigPerms bool
 	PreConnect bool
 	Transport  string // "stdio" or "http"
 	HTTPAddr   string
@@ -80,6 +82,8 @@ Connection options:
   --command-log-only-success       Only record successful commands in the command log
   --pre-connect                    Pre-connect to all SSH servers on startup
 
+  --allow-insecure-config-perms    Skip config file permission checks (not recommended)
+
 Server options:
   --transport <stdio|http>         MCP transport (default: stdio; start implies http)
   --http-addr <host:port>          HTTP listen address (default: 127.0.0.1:8338)
@@ -120,6 +124,7 @@ func ParseArgs(args []string) (*Options, error) {
 		commandLogOnly   bool
 		transport        string
 		httpAddr         string
+		allowInsecure    bool
 	)
 
 	fs.StringVar(&configFile, "config-file", "", "")
@@ -159,6 +164,7 @@ func ParseArgs(args []string) (*Options, error) {
 	fs.BoolVar(&commandLogOnly, "command-log-only-success", false, "")
 	fs.StringVar(&transport, "transport", "stdio", "")
 	fs.StringVar(&httpAddr, "http-addr", DefaultHTTPAddr, "")
+	fs.BoolVar(&allowInsecure, "allow-insecure-config-perms", false, "")
 
 	// Track whether --pty was explicitly set (flag package cannot tell us).
 	fs.Visit(func(f *flag.Flag) {
@@ -177,8 +183,9 @@ func ParseArgs(args []string) (*Options, error) {
 
 	positionals := fs.Args()
 	opts := &Options{
-		Configs:        map[string]*SSHConfig{},
-		PreConnect:     preConnect,
+		Configs:                  map[string]*SSHConfig{},
+		AllowInsecureConfigPerms: allowInsecure,
+		PreConnect:               preConnect,
 		Transport:      transport,
 		HTTPAddr:       httpAddr,
 		CommandLogSize: commandLogSize,
@@ -188,11 +195,17 @@ func ParseArgs(args []string) (*Options, error) {
 
 	// Priority 1: config file.
 	if configFile != "" {
+		if !allowInsecure {
+			if err := CheckConfigFilePermissions(configFile); err != nil {
+				return nil, err
+			}
+		}
 		configs, err := loadConfigFile(configFile)
 		if err != nil {
 			return nil, err
 		}
 		opts.Configs = configs
+		opts.ConfigFile = configFile
 	}
 
 	// Priority 2: --ssh parameters.
@@ -334,6 +347,10 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 
 	conf := &SSHConfig{
 		Name:               str(m["name"]),
+		Description:        str(firstAny(m["description"], m["desc"])),
+		Business:           str(firstAny(m["business"], m["role"])),
+		Aliases:            StringSlice(firstAny(m["aliases"], m["alias"])),
+		Notes:              str(firstAny(m["notes"], m["note"], m["caveats"])),
 		Host:               expandEnvVars(str(m["host"])),
 		Port:               port,
 		Username:           expandEnvVars(firstStr(m["username"], m["user"])),
@@ -373,6 +390,13 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 		}
 		conf.CommandLogOnlySuccess = b
 	}
+	if v, ok := m["outputCompressLight"]; ok {
+		b, err := ParseBool(v)
+		if err != nil {
+			return nil, err
+		}
+		conf.OutputCompressLight = &b
+	}
 
 	intFields := map[string]*int{
 		"shellReadyTimeoutMs":   &conf.ShellReadyTimeoutMs,
@@ -380,7 +404,8 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 		"commandTimeoutMs":      &conf.CommandTimeoutMs,
 		"connectionTimeoutMs":   &conf.ConnectionTimeoutMs,
 		"sftpTimeoutMs":         &conf.SftpTimeoutMs,
-		"maxOutputBytes":        &conf.MaxOutputBytes,
+		"maxOutputBytes":          &conf.MaxOutputBytes,
+		"outputCompressThreshold": &conf.OutputCompressThreshold,
 		"keepaliveIntervalMs":   &conf.KeepaliveIntervalMs,
 		"keepaliveCountMax":     &conf.KeepaliveCountMax,
 		"commandLogSize":        &conf.CommandLogSize,

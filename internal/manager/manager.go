@@ -3,11 +3,13 @@
 package manager
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +40,7 @@ const (
 	CodeOperationTimeout        = "OPERATION_TIMEOUT"
 	CodeSFTPError               = "SFTP_ERROR"
 	CodeUnsupportedInShellMode  = "UNSUPPORTED_IN_SHELL_MODE"
+	CodeCancelled               = "OPERATION_CANCELLED"
 	CodeUnknownError            = "UNKNOWN_ERROR"
 )
 
@@ -54,6 +57,13 @@ func newToolError(code, message string, retriable bool) *ToolError {
 	return &ToolError{Code: code, Message: message, Retriable: retriable}
 }
 
+func ctxToolError(ctx context.Context, timeoutCode, timeoutMsg string) error {
+	if ctx.Err() == context.Canceled {
+		return newToolError(CodeCancelled, "Operation cancelled", true)
+	}
+	return newToolError(timeoutCode, timeoutMsg, true)
+}
+
 // AsToolError converts any error into a ToolError.
 func AsToolError(err error) *ToolError {
 	var te *ToolError
@@ -65,12 +75,16 @@ func AsToolError(err error) *ToolError {
 
 // ServerInfo is the per-connection summary shown by list-servers.
 type ServerInfo struct {
-	Name      string        `json:"name"`
-	Host      string        `json:"host"`
-	Port      int           `json:"port"`
-	Username  string        `json:"username"`
-	Connected bool          `json:"connected"`
-	Status    *ServerStatus `json:"status,omitempty"`
+	Name        string        `json:"name"`
+	Aliases     []string      `json:"aliases,omitempty"`
+	Description string        `json:"description,omitempty"`
+	Business    string        `json:"business,omitempty"`
+	Notes       string        `json:"notes,omitempty"`
+	Host        string        `json:"host"`
+	Port        int           `json:"port"`
+	Username    string        `json:"username"`
+	Connected   bool          `json:"connected"`
+	Status      *ServerStatus `json:"status,omitempty"`
 }
 
 type connectState struct {
@@ -91,6 +105,8 @@ type Manager struct {
 	shells      map[string]*shellSession
 	commandLogs map[string]*CommandLog
 	idleTimers  map[string]*time.Timer
+	aliases     map[string]string // alias -> canonical connection name
+	sessions    map[string]*namedSession
 	defaultName string
 }
 
@@ -109,9 +125,13 @@ func New(configs map[string]*config.SSHConfig, defaultLogDir string) (*Manager, 
 		shells:      map[string]*shellSession{},
 		commandLogs: map[string]*CommandLog{},
 		idleTimers:  map[string]*time.Timer{},
+		aliases:     map[string]string{},
+		sessions:    map[string]*namedSession{},
 	}
 
+	names := make([]string, 0, len(configs))
 	for name, cfg := range configs {
+		names = append(names, name)
 		whitelist, err := compilePatterns(cfg.CommandWhitelist, name, "whitelist")
 		if err != nil {
 			return nil, err
@@ -135,8 +155,25 @@ func New(configs map[string]*config.SSHConfig, defaultLogDir string) (*Manager, 
 				m.commandLogs[name] = log
 			}
 		}
-		if m.defaultName == "" {
-			m.defaultName = name
+	}
+	sort.Strings(names)
+	if _, ok := configs["default"]; ok {
+		m.defaultName = "default"
+	} else if len(names) > 0 {
+		m.defaultName = names[0]
+	}
+	for _, name := range names {
+		for _, alias := range configs[name].Aliases {
+			if alias == name {
+				continue
+			}
+			if _, exists := configs[alias]; exists {
+				return nil, fmt.Errorf("alias %q of connection %q conflicts with an existing connection name", alias, name)
+			}
+			if other, ok := m.aliases[alias]; ok {
+				return nil, fmt.Errorf("alias %q is used by both %q and %q", alias, other, name)
+			}
+			m.aliases[alias] = name
 		}
 	}
 	return m, nil
@@ -155,10 +192,16 @@ func compilePatterns(patterns []string, name, kind string) ([]*regexp.Regexp, er
 }
 
 func (m *Manager) resolveName(name string) string {
-	if name != "" {
+	if name == "" {
+		return m.defaultName
+	}
+	if _, ok := m.configs[name]; ok {
 		return name
 	}
-	return m.defaultName
+	if canonical, ok := m.aliases[name]; ok {
+		return canonical
+	}
+	return name
 }
 
 func (m *Manager) getConfig(name string) (*config.SSHConfig, error) {
@@ -323,6 +366,7 @@ func (m *Manager) Disconnect(name string) {
 		delete(m.shells, key)
 	}
 	m.mu.Unlock()
+	m.closeSessionsForConnection(key)
 	if client != nil {
 		client.Close()
 		logger.Info("SSH connection [%s] closed", key)
@@ -342,15 +386,21 @@ func (m *Manager) GetAllServerInfos() []ServerInfo {
 	defer m.mu.Unlock()
 	infos := make([]ServerInfo, 0, len(m.configs))
 	for name, cfg := range m.configs {
+		aliases := append([]string(nil), cfg.Aliases...)
 		infos = append(infos, ServerInfo{
-			Name:      name,
-			Host:      cfg.Host,
-			Port:      cfg.Port,
-			Username:  cfg.Username,
-			Connected: m.connected[name],
-			Status:    m.statuses[name],
+			Name:        name,
+			Aliases:     aliases,
+			Description: cfg.Description,
+			Business:    cfg.Business,
+			Notes:       cfg.Notes,
+			Host:        cfg.Host,
+			Port:        cfg.Port,
+			Username:    cfg.Username,
+			Connected:   m.connected[name],
+			Status:      m.statuses[name],
 		})
 	}
+	sort.Slice(infos, func(i, j int) bool { return infos[i].Name < infos[j].Name })
 	return infos
 }
 
@@ -502,12 +552,12 @@ func (m *Manager) validateRemotePath(remotePath, name string) (string, error) {
 	if strings.ContainsRune(remotePath, 0) {
 		return "", newToolError(CodeRemotePathNotAllowed, "Remote path must not contain null bytes.", false)
 	}
-	if !filepath.IsAbs(remotePath) {
+	if !posixIsAbs(remotePath) {
 		return "", newToolError(CodeRemotePathNotAllowed,
 			fmt.Sprintf("Remote path must be an absolute POSIX path, got: %s", remotePath), false)
 	}
 
-	resolved := filepath.Clean(remotePath)
+	resolved := posixClean(remotePath)
 	cfg, err := m.getConfig(name)
 	if err != nil {
 		return "", err
@@ -517,8 +567,7 @@ func (m *Manager) validateRemotePath(remotePath, name string) (string, error) {
 		return resolved, nil
 	}
 	for _, root := range allowedRoots {
-		root = filepath.Clean(root)
-		if resolved == root || strings.HasPrefix(resolved, root+"/") {
+		if posixWithinRoot(resolved, root) {
 			return resolved, nil
 		}
 	}

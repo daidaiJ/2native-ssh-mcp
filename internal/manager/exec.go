@@ -2,6 +2,7 @@ package manager
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -23,7 +24,13 @@ type RunOptions struct {
 // ExecuteCommand runs a command on the named connection and returns its
 // combined output. After execution the connection is kept alive according to
 // the keepAlive options (default: keep alive for 10 minutes).
-func (m *Manager) ExecuteCommand(cmdString, directory, name string, opts RunOptions) (string, error) {
+func (m *Manager) ExecuteCommand(ctx context.Context, cmdString, directory, name string, opts RunOptions) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if strings.TrimSpace(cmdString) == "" {
+		return "", newToolError(CodeCommandValidationFailed, "cmdString must be a non-empty command", false)
+	}
 	if !opts.Prevalidated {
 		if err := m.validateCommand(cmdString, name); err != nil {
 			return "", err
@@ -44,6 +51,11 @@ func (m *Manager) ExecuteCommand(cmdString, directory, name string, opts RunOpti
 			timeout = time.Duration(cfg.CommandTimeoutMs) * time.Millisecond
 		}
 	}
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 
 	client, err := m.EnsureConnected(name)
 	if err != nil {
@@ -53,9 +65,9 @@ func (m *Manager) ExecuteCommand(cmdString, directory, name string, opts RunOpti
 	var output string
 	var exitCode int
 	if cfg.TransportMode == "shell" {
-		output, exitCode, err = m.runShellCommand(key, cmdString, directory, timeout)
+		output, exitCode, err = m.runShellCommand(ctx, key, cmdString, directory, timeout)
 	} else {
-		output, exitCode, err = m.runExecCommand(client, cfg, cmdString, directory, timeout, key)
+		output, exitCode, err = m.runExecCommand(ctx, client, cfg, cmdString, directory, timeout, key)
 	}
 
 	success := err == nil
@@ -85,16 +97,25 @@ type limitedBuffer struct {
 	buf      bytes.Buffer
 	max      int
 	exceeded bool
+	onExceed func()
 }
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.max <= 0 {
+		return b.buf.Write(p)
+	}
 	if b.exceeded {
 		return len(p), nil
 	}
 	remaining := b.max - b.buf.Len()
 	if len(p) > remaining {
-		b.buf.Write(p[:remaining])
+		if remaining > 0 {
+			b.buf.Write(p[:remaining])
+		}
 		b.exceeded = true
+		if b.onExceed != nil {
+			b.onExceed()
+		}
 		return len(p), nil
 	}
 	return b.buf.Write(p)
@@ -103,7 +124,7 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 func (b *limitedBuffer) String() string { return b.buf.String() }
 
 // runExecCommand executes a command over a fresh exec channel.
-func (m *Manager) runExecCommand(client *ssh.Client, cfg *config.SSHConfig,
+func (m *Manager) runExecCommand(ctx context.Context, client *ssh.Client, cfg *config.SSHConfig,
 	cmdString, directory string, timeout time.Duration, key string) (string, int, error) {
 
 	commandToRun := cmdString
@@ -129,8 +150,15 @@ func (m *Manager) runExecCommand(client *ssh.Client, cfg *config.SSHConfig,
 	}
 
 	maxOutput := cfg.MaxOutputBytes
-	stdout := &limitedBuffer{max: maxOutput}
-	stderr := &limitedBuffer{max: maxOutput}
+	exceededCh := make(chan struct{}, 1)
+	notifyExceed := func() {
+		select {
+		case exceededCh <- struct{}{}:
+		default:
+		}
+	}
+	stdout := &limitedBuffer{max: maxOutput, onExceed: notifyExceed}
+	stderr := &limitedBuffer{max: maxOutput, onExceed: notifyExceed}
 	session.Stdout = stdout
 	session.Stderr = stderr
 
@@ -153,20 +181,38 @@ func (m *Manager) runExecCommand(client *ssh.Client, cfg *config.SSHConfig,
 			if errors.As(waitErr, &exitErr) {
 				code := exitErr.ExitStatus()
 				return "", code, newToolError(CodeCommandExecutionError,
-					formatCommandFailure(stdout.String(), stderr.String(), code, ""), false)
+					formatCommandFailure(stdout.String(), stderr.String(), code, "", cfg), false)
 			}
 			return "", -1, newToolError(CodeCommandExecutionError,
 				fmt.Sprintf("Command execution error: %v", waitErr), true)
 		}
-		return formatCommandSuccess(stdout.String(), stderr.String()), 0, nil
-	case <-time.After(timeout):
+		return formatCommandSuccess(stdout.String(), stderr.String(), cfg), 0, nil
+	case <-exceededCh:
+		signalRemoteProcess(session, done)
 		session.Close()
-		return "", -1, newToolError(CodeCommandTimeout,
-			fmt.Sprintf("[timeout] Command timed out after %dms", timeout.Milliseconds()), true)
+		return "", -1, newToolError(CodeOutputLimitExceeded,
+			fmt.Sprintf("[truncated] Output exceeded maxOutputBytes=%d; the command was aborted.", maxOutput), false)
+	case <-ctx.Done():
+		signalRemoteProcess(session, done)
+		session.Close()
+		return "", -1, ctxToolError(ctx, CodeCommandTimeout,
+			fmt.Sprintf("[timeout] Command timed out after %dms", timeout.Milliseconds()))
 	}
 }
 
-func formatCommandFailure(stdout, stderr string, exitCode int, exitSignal string) string {
+func formatCommandSuccess(stdout, stderr string, cfg *config.SSHConfig) string {
+	stdout, stderr = redactCommandOutput(stdout, stderr)
+	var result string
+	if stderr == "" {
+		result = stdout
+	} else {
+		result = strings.TrimSuffix(stdout, "\n") + "\n[stderr]\n" + stderr
+	}
+	return FinalizeCommandOutput(result, compressOpts(cfg))
+}
+
+func formatCommandFailure(stdout, stderr string, exitCode int, exitSignal string, cfg *config.SSHConfig) string {
+	stdout, stderr = redactCommandOutput(stdout, stderr)
 	var sections []string
 	if stdout != "" {
 		sections = append(sections, stdout)
@@ -186,12 +232,12 @@ func formatCommandFailure(stdout, stderr string, exitCode int, exitSignal string
 		}
 		return fmt.Sprintf("Command failed with exit code %d", exitCode)
 	}
-	return strings.Join(sections, "\n")
+	return FinalizeCommandOutput(strings.Join(sections, "\n"), compressOpts(cfg))
 }
 
-func formatCommandSuccess(stdout, stderr string) string {
-	if stderr == "" {
-		return stdout
+func compressOpts(cfg *config.SSHConfig) CompressOptions {
+	if cfg == nil {
+		return DefaultCompressOptions()
 	}
-	return strings.TrimSuffix(stdout, "\n") + "\n[stderr]\n" + stderr
+	return CompressOptionsFromConfig(cfg.OutputCompressLight, cfg.OutputCompressThreshold)
 }

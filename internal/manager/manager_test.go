@@ -2,13 +2,17 @@ package manager
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"2native-ssh-mcp/internal/config"
 )
 
 func TestCommandLogBoundedAndPersistent(t *testing.T) {
@@ -95,7 +99,7 @@ func (w *writerAtBuffer) WriteAt(p []byte, off int64) (int, error) {
 func TestCopySequential(t *testing.T) {
 	src := bytes.NewReader([]byte("hello world"))
 	var dst writerAtBuffer
-	done, err := copySequential(src, &dst, 0, 11, 4, nil)
+	done, err := copySequential(context.Background(), src, &dst, 0, 11, 4, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +111,7 @@ func TestCopySequential(t *testing.T) {
 func TestCopySequentialFromOffset(t *testing.T) {
 	src := bytes.NewReader([]byte("hello world"))
 	var dst writerAtBuffer
-	done, err := copySequential(src, &dst, 6, -1, 4, nil)
+	done, err := copySequential(context.Background(), src, &dst, 6, -1, 4, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +124,7 @@ func TestCopyConcurrent(t *testing.T) {
 	payload := bytes.Repeat([]byte("0123456789abcdef"), 4096) // 64KB
 	src := bytes.NewReader(payload)
 	var dst writerAtBuffer
-	done, err := copyConcurrent(src, &dst, 0, int64(len(payload)), 8, 4096, nil)
+	done, err := copyConcurrent(context.Background(), src, &dst, 0, int64(len(payload)), 8, 4096, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +141,7 @@ func TestCopyConcurrentFromOffset(t *testing.T) {
 	src := bytes.NewReader(payload)
 	var dst writerAtBuffer
 	start := int64(4096)
-	done, err := copyConcurrent(src, &dst, start, int64(len(payload)), 4, 1024, nil)
+	done, err := copyConcurrent(context.Background(), src, &dst, start, int64(len(payload)), 4, 1024, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +169,7 @@ func TestCopyConcurrentProgress(t *testing.T) {
 			}
 		}
 	}
-	done, err := copyConcurrent(src, &dst, 0, 10000, 4, 1000, progress)
+	done, err := copyConcurrent(context.Background(), src, &dst, 0, 10000, 4, 1000, progress)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,5 +226,117 @@ func TestParseStatusOutput(t *testing.T) {
 	values := parseStatusOutput(output, marker)
 	if values["hostname"] != "myhost" || values["osName"] != "Linux" {
 		t.Fatalf("unexpected values: %+v", values)
+	}
+}
+
+type shortReaderAt struct{ r io.ReaderAt }
+
+func (s shortReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if len(p) > 1 {
+		p = p[:1]
+	}
+	return s.r.ReadAt(p, off)
+}
+
+func TestCopyConcurrentShortReads(t *testing.T) {
+	payload := bytes.Repeat([]byte("abcdef"), 2000)
+	src := shortReaderAt{r: bytes.NewReader(payload)}
+	var dst writerAtBuffer
+	done, err := copyConcurrent(context.Background(), src, &dst, 0, int64(len(payload)), 4, 64, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done != int64(len(payload)) || !bytes.Equal(dst.buf.Bytes(), payload) {
+		t.Fatalf("short-read concurrent copy failed: done=%d", done)
+	}
+}
+
+func TestOverlapMatches(t *testing.T) {
+	src := bytes.NewReader([]byte("hello world and more"))
+	same := bytes.NewReader([]byte("hello world"))
+	diff := bytes.NewReader([]byte("HELLO world"))
+	if !overlapMatches(src, same, 11) {
+		t.Fatal("expected matching prefix")
+	}
+	if overlapMatches(src, diff, 11) {
+		t.Fatal("expected mismatch")
+	}
+}
+
+func TestPosixRemotePath(t *testing.T) {
+	if !posixIsAbs("/tmp/foo") {
+		t.Fatal("/tmp/foo must be treated as an absolute POSIX path")
+	}
+	if posixClean("/tmp/foo/../bar") != "/tmp/bar" {
+		t.Fatalf("posixClean = %q", posixClean("/tmp/foo/../bar"))
+	}
+	if !posixWithinRoot("/tmp/foo", "/tmp") {
+		t.Fatal("expected /tmp/foo within /tmp")
+	}
+	if posixWithinRoot("/etc/passwd", "/tmp") {
+		t.Fatal("did not expect /etc/passwd within /tmp")
+	}
+}
+
+func TestValidateRemotePathPOSIX(t *testing.T) {
+	m, err := New(map[string]*config.SSHConfig{
+		"dev": {Host: "h", Username: "u", Port: 22, AllowedRemotePaths: []string{"/tmp", "/home/data"}},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.validateRemotePath("/tmp/foo", "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/tmp/foo" {
+		t.Fatalf("got %q", got)
+	}
+	if _, err := m.validateRemotePath("/etc/passwd", "dev"); err == nil {
+		t.Fatal("expected /etc/passwd to be rejected")
+	}
+}
+
+func TestResolveAliasAndDefaultName(t *testing.T) {
+	for i := 0; i < 8; i++ {
+		m, err := New(map[string]*config.SSHConfig{
+			"ubuntu": {Host: "h", Username: "u", Port: 22, Aliases: []string{"Ubuntu", "105"}},
+			"centos": {Host: "h", Username: "u", Port: 22, Aliases: []string{"CentOS", "dev1"}},
+		}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m.defaultName != "centos" {
+			t.Fatalf("defaultName = %q, want centos", m.defaultName)
+		}
+		if m.resolveName("CentOS") != "centos" || m.resolveName("Ubuntu") != "ubuntu" {
+			t.Fatalf("alias resolve failed: CentOS=%s Ubuntu=%s", m.resolveName("CentOS"), m.resolveName("Ubuntu"))
+		}
+	}
+}
+
+func TestAliasConflict(t *testing.T) {
+	_, err := New(map[string]*config.SSHConfig{
+		"a": {Host: "h", Username: "u", Port: 22, Aliases: []string{"b"}},
+		"b": {Host: "h", Username: "u", Port: 22},
+	}, "")
+	if err == nil {
+		t.Fatal("expected alias conflict")
+	}
+}
+
+func TestGetAllServerInfosMetadata(t *testing.T) {
+	m, err := New(map[string]*config.SSHConfig{
+		"centos": {
+			Host: "192.0.2.1", Username: "testuser", Port: 22,
+			Description: "CentOS 测试机", Business: "联调", Aliases: []string{"CentOS"}, Notes: "勿做破坏性操作",
+		},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	infos := m.GetAllServerInfos()
+	if len(infos) != 1 || infos[0].Description != "CentOS 测试机" || infos[0].Aliases[0] != "CentOS" {
+		t.Fatalf("unexpected infos: %+v", infos)
 	}
 }

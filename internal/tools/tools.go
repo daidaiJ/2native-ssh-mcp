@@ -18,6 +18,7 @@ func RegisterAll(s *server.MCPServer, m *manager.Manager) {
 	registerExecuteCommand(s, m)
 	registerFileTransfer(s, m)
 	registerListServers(s, m)
+	registerSession(s, m)
 }
 
 // errorResult formats a ToolError the same way the reference implementation

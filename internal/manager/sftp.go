@@ -1,6 +1,8 @@
 package manager
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +15,8 @@ import (
 
 	"2native-ssh-mcp/internal/config"
 )
+
+const resumeSampleBytes = 32 * 1024
 
 // TransferResult summarizes a completed file transfer.
 type TransferResult struct {
@@ -40,7 +44,10 @@ type ProgressFunc func(done, total int64)
 // (skipped when the destination already matches) and resumed from existing
 // partial data unless force is set. Progress is reported through the
 // callback; the connection is kept alive for the default duration afterwards.
-func (m *Manager) TransferFile(action, localPath, remotePath, name string, force bool, progress ProgressFunc) (*TransferResult, error) {
+func (m *Manager) TransferFile(ctx context.Context, action, localPath, remotePath, name string, force bool, progress ProgressFunc) (*TransferResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	cfg, err := m.getConfig(name)
 	if err != nil {
 		return nil, err
@@ -71,19 +78,28 @@ func (m *Manager) TransferFile(action, localPath, remotePath, name string, force
 	}
 
 	sftpTimeout := time.Duration(cfg.SftpTimeoutMs) * time.Millisecond
-	sftpClient, err := m.openSftpWithTimeout(client, sftpTimeout, key)
+	tctx, cancel := context.WithTimeout(ctx, sftpTimeout)
+	defer cancel()
+
+	sftpClient, err := m.openSftp(tctx, client, key)
 	if err != nil {
 		return nil, err
 	}
 	defer sftpClient.Close()
+	stop := context.AfterFunc(tctx, func() { _ = sftpClient.Close() })
+	defer stop()
 
 	var result *TransferResult
 	if action == "upload" {
-		result, err = m.upload(sftpClient, validatedLocal, validatedRemote, cfg, force, sftpTimeout, key, progress)
+		result, err = m.upload(tctx, sftpClient, validatedLocal, validatedRemote, cfg, force, progress)
 	} else {
-		result, err = m.download(sftpClient, validatedRemote, validatedLocal, cfg, force, sftpTimeout, key, progress)
+		result, err = m.download(tctx, sftpClient, validatedRemote, validatedLocal, cfg, force, progress)
 	}
 	if err != nil {
+		if tctx.Err() != nil {
+			return nil, ctxToolError(tctx, CodeOperationTimeout,
+				fmt.Sprintf("File transfer timed out after %dms", sftpTimeout.Milliseconds()))
+		}
 		return nil, err
 	}
 
@@ -91,9 +107,8 @@ func (m *Manager) TransferFile(action, localPath, remotePath, name string, force
 	return result, nil
 }
 
-// openSftpWithTimeout opens the SFTP subsystem, bounding the handshake.
-func (m *Manager) openSftpWithTimeout(client *ssh.Client, timeout time.Duration, key string) (*sftp.Client, error) {
-	// pkg/sftp has no context-aware constructor; bound it with a goroutine.
+// openSftp opens the SFTP subsystem, bounded by ctx.
+func (m *Manager) openSftp(ctx context.Context, client *ssh.Client, key string) (*sftp.Client, error) {
 	type result struct {
 		client *sftp.Client
 		err    error
@@ -110,18 +125,14 @@ func (m *Manager) openSftpWithTimeout(client *ssh.Client, timeout time.Duration,
 				fmt.Sprintf("SFTP connection failed: %v", r.err), true)
 		}
 		return r.client, nil
-	case <-time.After(timeout):
+	case <-ctx.Done():
 		m.Disconnect(key)
-		return nil, newToolError(CodeOperationTimeout,
-			fmt.Sprintf("SFTP open timed out after %dms", timeout.Milliseconds()), true)
+		return nil, ctxToolError(ctx, CodeOperationTimeout, "SFTP open timed out")
 	}
 }
 
-// upload copies a local file to the remote server with progress reporting.
-// It skips the transfer when the remote file already matches (size + mtime)
-// and resumes from the existing remote size when it is a partial copy.
-func (m *Manager) upload(sftpClient *sftp.Client, localPath, remotePath string,
-	cfg *config.SSHConfig, force bool, timeout time.Duration, key string, progress ProgressFunc) (*TransferResult, error) {
+func (m *Manager) upload(ctx context.Context, sftpClient *sftp.Client, localPath, remotePath string,
+	cfg *config.SSHConfig, force bool, progress ProgressFunc) (*TransferResult, error) {
 
 	localFile, err := os.Open(localPath)
 	if err != nil {
@@ -136,7 +147,7 @@ func (m *Manager) upload(sftpClient *sftp.Client, localPath, remotePath string,
 			fmt.Sprintf("Failed to read local file: %v", err), false)
 	}
 	total := localStat.Size()
-	localMtime := localStat.ModTime().Unix()
+	localMtime := localStat.ModTime()
 
 	start := time.Now()
 	var done int64
@@ -146,8 +157,7 @@ func (m *Manager) upload(sftpClient *sftp.Client, localPath, remotePath string,
 	remoteStat, statErr := sftpClient.Stat(remotePath)
 	if statErr == nil && !force {
 		remoteSize := remoteStat.Size()
-		if remoteSize == total && remoteStat.ModTime().Unix() == localMtime {
-			// Dedup: the remote file already matches the local file.
+		if remoteSize == total && remoteStat.ModTime().Unix() == localMtime.Unix() {
 			return &TransferResult{
 				Action:     "upload",
 				LocalPath:  localPath,
@@ -159,18 +169,23 @@ func (m *Manager) upload(sftpClient *sftp.Client, localPath, remotePath string,
 			}, nil
 		}
 		if remoteSize > 0 && remoteSize < total {
-			// Resume: continue from the existing partial remote file.
-			remoteFile, err := sftpClient.OpenFile(remotePath, os.O_WRONLY)
-			if err == nil {
-				done, err = copyFile(localFile, remoteFile, remoteSize, total,
-					cfg.SftpConcurrency, cfg.SftpChunkSize, offsetProgress(progress, remoteSize, total))
-				remoteFile.Close()
-				if err != nil {
-					return nil, newToolError(CodeSFTPError,
-						fmt.Sprintf("File upload failed: %v", err), true)
+			if remoteRO, err := sftpClient.Open(remotePath); err == nil {
+				match := overlapMatches(localFile, remoteRO, remoteSize)
+				remoteRO.Close()
+				if match {
+					remoteFile, err := sftpClient.OpenFile(remotePath, os.O_WRONLY)
+					if err == nil {
+						done, err = copyFile(ctx, localFile, remoteFile, remoteSize, total,
+							cfg.SftpConcurrency, cfg.SftpChunkSize, offsetProgress(progress, remoteSize, total))
+						remoteFile.Close()
+						if err != nil {
+							return nil, newToolError(CodeSFTPError,
+								fmt.Sprintf("File upload failed: %v", err), true)
+						}
+						resumed = true
+						resumedFrom = remoteSize
+					}
 				}
-				resumed = true
-				resumedFrom = remoteSize
 			}
 		}
 	}
@@ -181,7 +196,7 @@ func (m *Manager) upload(sftpClient *sftp.Client, localPath, remotePath string,
 			return nil, newToolError(CodeSFTPError,
 				fmt.Sprintf("File upload failed: %v", err), true)
 		}
-		done, err = copyFile(localFile, remoteFile, 0, total,
+		done, err = copyFile(ctx, localFile, remoteFile, 0, total,
 			cfg.SftpConcurrency, cfg.SftpChunkSize, progress)
 		remoteFile.Close()
 		if err != nil {
@@ -190,10 +205,14 @@ func (m *Manager) upload(sftpClient *sftp.Client, localPath, remotePath string,
 		}
 	}
 
-	// The local file may have grown while transferring; append the tail so
-	// both paths stay equivalent for files still being written.
-	if err := m.appendUploadTail(sftpClient, localFile, remotePath, total, timeout, key); err != nil {
+	tail, err := m.appendUploadTail(ctx, sftpClient, localFile, remotePath, total)
+	if err != nil {
 		return nil, err
+	}
+	done += tail
+
+	if st, err := localFile.Stat(); err == nil {
+		_ = sftpClient.Chtimes(remotePath, st.ModTime(), st.ModTime())
 	}
 
 	elapsed := time.Since(start)
@@ -210,11 +229,8 @@ func (m *Manager) upload(sftpClient *sftp.Client, localPath, remotePath string,
 	}, nil
 }
 
-// download copies a remote file to a temp local file, then renames it into
-// place. It skips the transfer when the local file already matches (size +
-// mtime) and resumes into the existing local file when it is a partial copy.
-func (m *Manager) download(sftpClient *sftp.Client, remotePath, localPath string,
-	cfg *config.SSHConfig, force bool, timeout time.Duration, key string, progress ProgressFunc) (*TransferResult, error) {
+func (m *Manager) download(ctx context.Context, sftpClient *sftp.Client, remotePath, localPath string,
+	cfg *config.SSHConfig, force bool, progress ProgressFunc) (*TransferResult, error) {
 
 	remoteStat, err := sftpClient.Stat(remotePath)
 	if err != nil {
@@ -226,7 +242,6 @@ func (m *Manager) download(sftpClient *sftp.Client, remotePath, localPath string
 
 	start := time.Now()
 
-	// Dedup: the local file already matches the remote file.
 	if !force {
 		if localStat, err := os.Stat(localPath); err == nil &&
 			localStat.Size() == total && localStat.ModTime().Unix() == remoteMtime.Unix() {
@@ -242,36 +257,46 @@ func (m *Manager) download(sftpClient *sftp.Client, remotePath, localPath string
 		}
 	}
 
-	// Resume: the local file is a partial copy; continue into it.
 	if !force {
 		if localStat, err := os.Stat(localPath); err == nil && localStat.Size() > 0 && localStat.Size() < total {
-			localFile, err := os.OpenFile(localPath, os.O_WRONLY, 0)
-			if err == nil {
-				remoteFile, err := sftpClient.Open(remotePath)
-				if err == nil {
-					done, copyErr := copyFile(remoteFile, localFile, localStat.Size(), total,
-						cfg.SftpConcurrency, cfg.SftpChunkSize, offsetProgress(progress, localStat.Size(), total))
-					remoteFile.Close()
-					localFile.Close()
-					if copyErr != nil {
-						return nil, newToolError(CodeSFTPError,
-							fmt.Sprintf("File download failed: %v", copyErr), true)
-					}
-					_ = os.Chtimes(localPath, time.Now(), remoteMtime)
-					elapsed := time.Since(start)
-					return &TransferResult{
-						Action:      "download",
-						LocalPath:   localPath,
-						RemotePath:  remotePath,
-						Bytes:       done,
-						Elapsed:     elapsed,
-						SpeedBps:    speed(done, elapsed),
-						Percent:     percent(done+localStat.Size(), total),
-						Resumed:     true,
-						ResumedFrom: localStat.Size(),
-					}, nil
+			if localRO, err := os.Open(localPath); err == nil {
+				remoteRO, rerr := sftpClient.Open(remotePath)
+				match := false
+				if rerr == nil {
+					match = overlapMatches(remoteRO, localRO, localStat.Size())
+					remoteRO.Close()
 				}
-				localFile.Close()
+				localRO.Close()
+				if match {
+					localFile, err := os.OpenFile(localPath, os.O_WRONLY, 0)
+					if err == nil {
+						remoteFile, err := sftpClient.Open(remotePath)
+						if err == nil {
+							done, copyErr := copyFile(ctx, remoteFile, localFile, localStat.Size(), total,
+								cfg.SftpConcurrency, cfg.SftpChunkSize, offsetProgress(progress, localStat.Size(), total))
+							remoteFile.Close()
+							localFile.Close()
+							if copyErr != nil {
+								return nil, newToolError(CodeSFTPError,
+									fmt.Sprintf("File download failed: %v", copyErr), true)
+							}
+							_ = os.Chtimes(localPath, time.Now(), remoteMtime)
+							elapsed := time.Since(start)
+							return &TransferResult{
+								Action:      "download",
+								LocalPath:   localPath,
+								RemotePath:  remotePath,
+								Bytes:       done,
+								Elapsed:     elapsed,
+								SpeedBps:    speed(done, elapsed),
+								Percent:     percent(done+localStat.Size(), total),
+								Resumed:     true,
+								ResumedFrom: localStat.Size(),
+							}, nil
+						}
+						localFile.Close()
+					}
+				}
 			}
 		}
 	}
@@ -296,18 +321,19 @@ func (m *Manager) download(sftpClient *sftp.Client, remotePath, localPath string
 	}
 	defer remoteFile.Close()
 
-	done, err := copyFile(remoteFile, tempFile, 0, total, cfg.SftpConcurrency, cfg.SftpChunkSize, progress)
+	done, err := copyFile(ctx, remoteFile, tempFile, 0, total, cfg.SftpConcurrency, cfg.SftpChunkSize, progress)
 	if err != nil {
 		cleanup()
 		return nil, newToolError(CodeSFTPError,
 			fmt.Sprintf("File download failed: %v", err), true)
 	}
 
-	// The remote file may have grown while transferring; append the tail.
-	if err := m.appendDownloadTail(sftpClient, remoteFile, tempFile, done, timeout, key); err != nil {
+	tail, err := m.appendDownloadTail(ctx, sftpClient, remoteFile, tempFile, done)
+	if err != nil {
 		cleanup()
 		return nil, err
 	}
+	done += tail
 
 	if err := tempFile.Close(); err != nil {
 		os.Remove(tempPath)
@@ -319,7 +345,6 @@ func (m *Manager) download(sftpClient *sftp.Client, remotePath, localPath string
 		return nil, newToolError(CodeLocalFileWriteFailed,
 			fmt.Sprintf("Failed to save file: %v", err), false)
 	}
-	// Stamp the remote mtime so a later transfer deduplicates.
 	_ = os.Chtimes(localPath, time.Now(), remoteMtime)
 
 	elapsed := time.Since(start)
@@ -334,7 +359,6 @@ func (m *Manager) download(sftpClient *sftp.Client, remotePath, localPath string
 	}, nil
 }
 
-// offsetProgress shifts progress reports by the bytes already present.
 func offsetProgress(progress ProgressFunc, offset, total int64) ProgressFunc {
 	if progress == nil {
 		return nil
@@ -344,23 +368,24 @@ func offsetProgress(progress ProgressFunc, offset, total int64) ProgressFunc {
 	}
 }
 
-// copyFile streams src to dst starting at start, using parallel positional
-// reads/writes when the size is known and concurrency is enabled. On
-// high-latency links the parallelism keeps multiple SFTP requests in flight,
-// which is what makes large transfers usable.
-func copyFile(src io.ReaderAt, dst io.WriterAt, start, total int64, workers, chunkSize int, progress ProgressFunc) (int64, error) {
-	if total <= 0 || workers <= 1 {
-		return copySequential(src, dst, start, total, chunkSize, progress)
+func copyFile(ctx context.Context, src io.ReaderAt, dst io.WriterAt, start, total int64, workers, chunkSize int, progress ProgressFunc) (int64, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	return copyConcurrent(src, dst, start, total, workers, chunkSize, progress)
+	if total <= 0 || workers <= 1 {
+		return copySequential(ctx, src, dst, start, total, chunkSize, progress)
+	}
+	return copyConcurrent(ctx, src, dst, start, total, workers, chunkSize, progress)
 }
 
-// copySequential copies with positional reads/writes starting at start.
-func copySequential(src io.ReaderAt, dst io.WriterAt, start, total int64, chunkSize int, progress ProgressFunc) (int64, error) {
+func copySequential(ctx context.Context, src io.ReaderAt, dst io.WriterAt, start, total int64, chunkSize int, progress ProgressFunc) (int64, error) {
 	buf := make([]byte, chunkSize)
 	offset := start
 	var done int64
 	for {
+		if err := ctx.Err(); err != nil {
+			return done, err
+		}
 		n, err := src.ReadAt(buf, offset)
 		if n > 0 {
 			if _, werr := dst.WriteAt(buf[:n], offset); werr != nil {
@@ -381,13 +406,19 @@ func copySequential(src io.ReaderAt, dst io.WriterAt, start, total int64, chunkS
 	}
 }
 
-// copyConcurrent copies with a fixed worker pool over disjoint offsets.
-func copyConcurrent(src io.ReaderAt, dst io.WriterAt, start, total int64, workers, chunkSize int, progress ProgressFunc) (int64, error) {
+func copyConcurrent(ctx context.Context, src io.ReaderAt, dst io.WriterAt, start, total int64, workers, chunkSize int, progress ProgressFunc) (int64, error) {
 	var done atomic.Int64
 	var firstErr atomic.Value
 	var next atomic.Int64
 	var wg sync.WaitGroup
 	next.Store(start)
+
+	stop := context.AfterFunc(ctx, func() {
+		if err := ctx.Err(); err != nil {
+			firstErr.CompareAndSwap(nil, err)
+		}
+	})
+	defer stop()
 
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
@@ -402,26 +433,42 @@ func copyConcurrent(src io.ReaderAt, dst io.WriterAt, start, total int64, worker
 				if offset >= total {
 					return
 				}
-				n := int64(chunkSize)
-				if offset+n > total {
-					n = total - offset
+				want := int64(chunkSize)
+				if offset+want > total {
+					want = total - offset
 				}
-				rn, err := src.ReadAt(buf[:n], offset)
-				if rn > 0 {
-					if _, werr := dst.WriteAt(buf[:rn], offset); werr != nil {
+				var got int
+				for got < int(want) {
+					if firstErr.Load() != nil {
+						return
+					}
+					n, err := src.ReadAt(buf[got:want], offset+int64(got))
+					if n > 0 {
+						got += n
+					}
+					if err != nil {
+						if err == io.EOF {
+							break
+						}
+						firstErr.CompareAndSwap(nil, err)
+						return
+					}
+					if n == 0 {
+						firstErr.CompareAndSwap(nil, io.ErrUnexpectedEOF)
+						return
+					}
+				}
+				if got > 0 {
+					if _, werr := dst.WriteAt(buf[:got], offset); werr != nil {
 						firstErr.CompareAndSwap(nil, werr)
 						return
 					}
-					done.Add(int64(rn))
+					done.Add(int64(got))
 					if progress != nil {
 						progress(done.Load(), total)
 					}
 				}
-				if err != nil && err != io.EOF {
-					firstErr.CompareAndSwap(nil, err)
-					return
-				}
-				if err == io.EOF {
+				if got < int(want) {
 					return
 				}
 			}
@@ -434,41 +481,96 @@ func copyConcurrent(src io.ReaderAt, dst io.WriterAt, start, total int64, worker
 	return done.Load(), nil
 }
 
-// appendUploadTail appends data the local file gained during the transfer.
-func (m *Manager) appendUploadTail(sftpClient *sftp.Client, localFile *os.File,
-	remotePath string, sizeBefore int64, timeout time.Duration, key string) error {
+func (m *Manager) appendUploadTail(ctx context.Context, sftpClient *sftp.Client, localFile *os.File,
+	remotePath string, sizeBefore int64) (int64, error) {
 
 	currentSize, err := localFile.Stat()
 	if err != nil || currentSize.Size() <= sizeBefore {
-		return nil
+		return 0, nil
 	}
 	remoteStat, err := sftpClient.Stat(remotePath)
 	if err != nil || remoteStat.Size() >= currentSize.Size() {
-		return nil
+		return 0, nil
 	}
 
 	remoteFile, err := sftpClient.OpenFile(remotePath, os.O_WRONLY|os.O_APPEND)
 	if err != nil {
-		return newToolError(CodeSFTPError, fmt.Sprintf("File upload failed: %v", err), true)
+		return 0, newToolError(CodeSFTPError, fmt.Sprintf("File upload failed: %v", err), true)
 	}
 	defer remoteFile.Close()
 
-	if _, err := copySequential(localFile, remoteFile, remoteStat.Size(), -1, 64*1024, nil); err != nil {
-		return newToolError(CodeSFTPError, fmt.Sprintf("File upload failed: %v", err), true)
+	n, err := copySequential(ctx, localFile, remoteFile, remoteStat.Size(), -1, 64*1024, nil)
+	if err != nil {
+		return n, newToolError(CodeSFTPError, fmt.Sprintf("File upload failed: %v", err), true)
 	}
-	return nil
+	return n, nil
 }
 
-// appendDownloadTail appends data the remote file gained during the transfer.
-func (m *Manager) appendDownloadTail(sftpClient *sftp.Client, remoteFile *sftp.File,
-	tempFile *os.File, downloadedBytes int64, timeout time.Duration, key string) error {
+func (m *Manager) appendDownloadTail(ctx context.Context, sftpClient *sftp.Client, remoteFile *sftp.File,
+	tempFile *os.File, downloadedBytes int64) (int64, error) {
 
 	remoteStat, err := sftpClient.Stat(remoteFile.Name())
 	if err != nil || remoteStat.Size() <= downloadedBytes {
-		return nil
+		return 0, nil
 	}
-	if _, err := copySequential(remoteFile, tempFile, downloadedBytes, -1, 64*1024, nil); err != nil {
-		return newToolError(CodeSFTPError, fmt.Sprintf("File download failed: %v", err), true)
+	n, err := copySequential(ctx, remoteFile, tempFile, downloadedBytes, -1, 64*1024, nil)
+	if err != nil {
+		return n, newToolError(CodeSFTPError, fmt.Sprintf("File download failed: %v", err), true)
+	}
+	return n, nil
+}
+
+// overlapMatches checks that dst[0:size] looks like a prefix of src by
+// comparing the first and last sample of the overlap. A mismatch means the
+// destination is a different file and must not be resumed into.
+func overlapMatches(src, dst io.ReaderAt, size int64) bool {
+	if size <= 0 {
+		return true
+	}
+	n := size
+	if n > resumeSampleBytes {
+		n = resumeSampleBytes
+	}
+	if !bytesEqualAt(src, dst, 0, int(n)) {
+		return false
+	}
+	if size > n {
+		if !bytesEqualAt(src, dst, size-n, int(n)) {
+			return false
+		}
+	}
+	return true
+}
+
+func bytesEqualAt(src, dst io.ReaderAt, off int64, n int) bool {
+	a := make([]byte, n)
+	b := make([]byte, n)
+	if err := readFullAt(src, a, off); err != nil {
+		return false
+	}
+	if err := readFullAt(dst, b, off); err != nil {
+		return false
+	}
+	return bytes.Equal(a, b)
+}
+
+func readFullAt(r io.ReaderAt, buf []byte, off int64) error {
+	got := 0
+	for got < len(buf) {
+		n, err := r.ReadAt(buf[got:], off+int64(got))
+		got += n
+		if err != nil {
+			if err == io.EOF {
+				if got == len(buf) {
+					return nil
+				}
+				return io.ErrUnexpectedEOF
+			}
+			return err
+		}
+		if n == 0 {
+			return io.ErrUnexpectedEOF
+		}
 	}
 	return nil
 }

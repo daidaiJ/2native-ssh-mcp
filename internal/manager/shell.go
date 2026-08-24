@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"regexp"
@@ -36,29 +37,51 @@ type shellSession struct {
 
 func (sh *shellSession) close() {
 	sh.mu.Lock()
+	if sh.closed {
+		sh.mu.Unlock()
+		return
+	}
 	sh.closed = true
+	if sh.cond != nil {
+		sh.cond.Broadcast()
+	}
+	session := sh.session
 	sh.mu.Unlock()
-	sh.session.Close()
+	session.Close()
 }
 
 // initShell opens a persistent shell and probes it until it responds.
 func (m *Manager) initShell(key string, client *ssh.Client, cfg *config.SSHConfig) error {
+	sh, err := newShellSession(client, cfg)
+	if err != nil {
+		return err
+	}
+	sh.ready = true
+	m.mu.Lock()
+	m.shells[key] = sh
+	m.mu.Unlock()
+	logger.Info("Shell transport initialized for [%s]", key)
+	return nil
+}
+
+// newShellSession opens and probes a persistent interactive shell.
+func newShellSession(client *ssh.Client, cfg *config.SSHConfig) (*shellSession, error) {
 	session, err := client.NewSession()
 	if err != nil {
-		return newToolError(CodeSSHConnectionFailed,
-			fmt.Sprintf("Failed to initialize shell transport for [%s]: %v", key, err), true)
+		return nil, newToolError(CodeSSHConnectionFailed,
+			fmt.Sprintf("Failed to initialize shell transport: %v", err), true)
 	}
 	if err := session.RequestPty("xterm", 80, 24, ssh.TerminalModes{}); err != nil {
 		session.Close()
-		return newToolError(CodeSSHConnectionFailed,
-			fmt.Sprintf("Failed to initialize shell transport for [%s]: %v", key, err), true)
+		return nil, newToolError(CodeSSHConnectionFailed,
+			fmt.Sprintf("Failed to initialize shell transport: %v", err), true)
 	}
 
 	stdin, err := session.StdinPipe()
 	if err != nil {
 		session.Close()
-		return newToolError(CodeSSHConnectionFailed,
-			fmt.Sprintf("Failed to initialize shell transport for [%s]: %v", key, err), true)
+		return nil, newToolError(CodeSSHConnectionFailed,
+			fmt.Sprintf("Failed to initialize shell transport: %v", err), true)
 	}
 
 	// Merge stdout and stderr into a single stream, matching the raw channel
@@ -69,8 +92,8 @@ func (m *Manager) initShell(key string, client *ssh.Client, cfg *config.SSHConfi
 
 	if err := session.Shell(); err != nil {
 		session.Close()
-		return newToolError(CodeSSHConnectionFailed,
-			fmt.Sprintf("Failed to initialize shell transport for [%s]: %v", key, err), true)
+		return nil, newToolError(CodeSSHConnectionFailed,
+			fmt.Sprintf("Failed to initialize shell transport: %v", err), true)
 	}
 
 	sh := &shellSession{session: session, stdin: stdin}
@@ -84,16 +107,12 @@ func (m *Manager) initShell(key string, client *ssh.Client, cfg *config.SSHConfi
 
 	if err := sh.waitForReady(readyMarker, payload, readyTimeout); err != nil {
 		sh.close()
-		return newToolError(CodeSSHConnectionFailed,
-			fmt.Sprintf("Shell transport initialization failed for [%s]: %v", key, err), true)
+		return nil, newToolError(CodeSSHConnectionFailed,
+			fmt.Sprintf("Shell transport initialization failed: %v", err), true)
 	}
 
 	sh.configure()
-	m.mu.Lock()
-	m.shells[key] = sh
-	m.mu.Unlock()
-	logger.Info("Shell transport initialized for [%s]", key)
-	return nil
+	return sh, nil
 }
 
 // readLoop drains the merged shell output into the buffer.
@@ -118,15 +137,54 @@ func (sh *shellSession) readLoop(r io.Reader) {
 }
 
 // waitForReady probes the shell until the ready marker appears.
+func (sh *shellSession) waitUntil(deadline time.Time) {
+	d := time.Until(deadline)
+	if d <= 0 {
+		return
+	}
+	timer := time.AfterFunc(d, func() {
+		sh.mu.Lock()
+		sh.cond.Broadcast()
+		sh.mu.Unlock()
+	})
+	defer timer.Stop()
+	sh.cond.Wait()
+}
+
+// waitForReady probes the shell until the ready marker appears.
 func (sh *shellSession) waitForReady(marker, payload string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	probe := time.NewTicker(time.Second)
-	defer probe.Stop()
+	stopProbe := make(chan struct{})
+	defer close(stopProbe)
+
+	if _, err := sh.stdin.Write([]byte(payload)); err != nil {
+		return err
+	}
+
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopProbe:
+				return
+			case <-ticker.C:
+				sh.mu.Lock()
+				closed := sh.closed
+				sh.mu.Unlock()
+				if closed {
+					return
+				}
+				_, _ = sh.stdin.Write([]byte(payload))
+				sh.mu.Lock()
+				sh.cond.Broadcast()
+				sh.mu.Unlock()
+			}
+		}
+	}()
 
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
-	sh.stdin.Write([]byte(payload))
-
 	for {
 		if idx := strings.Index(sh.buffer, marker); idx != -1 {
 			if lineEnd := strings.Index(sh.buffer[idx:], "\n"); lineEnd != -1 {
@@ -137,15 +195,10 @@ func (sh *shellSession) waitForReady(marker, payload string, timeout time.Durati
 		if sh.closed {
 			return fmt.Errorf("shell channel closed before ready probe completed")
 		}
-		if time.Now().After(deadline) {
+		if !time.Now().Before(deadline) {
 			return fmt.Errorf("timed out waiting for shell ready marker after %s", timeout)
 		}
-		select {
-		case <-probe.C:
-			sh.stdin.Write([]byte(payload))
-		default:
-		}
-		sh.cond.Wait()
+		sh.waitUntil(deadline)
 	}
 }
 
@@ -157,7 +210,10 @@ func (sh *shellSession) configure() {
 
 // runShellCommand executes a command on the persistent shell, serialized per
 // connection, and returns its output and exit code.
-func (m *Manager) runShellCommand(key, cmdString, directory string, timeout time.Duration) (string, int, error) {
+func (m *Manager) runShellCommand(ctx context.Context, key, cmdString, directory string, timeout time.Duration) (string, int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.mu.Lock()
 	sh := m.shells[key]
 	m.mu.Unlock()
@@ -177,20 +233,37 @@ func (m *Manager) runShellCommand(key, cmdString, directory string, timeout time
 	script := buildShellScript(commandID, cmdString, directory, cfg.CommandTemplate)
 
 	maxOutput := cfg.MaxOutputBytes
+	deadline := time.Now().Add(timeout)
+	stop := context.AfterFunc(ctx, func() {
+		sh.mu.Lock()
+		sh.cond.Broadcast()
+		sh.mu.Unlock()
+	})
+	defer stop()
 
 	sh.mu.Lock()
-	defer sh.mu.Unlock()
+	held := true
+	defer func() {
+		if held {
+			sh.mu.Unlock()
+		}
+	}()
 
 	scanPos := len(sh.buffer)
 	outputStart := -1
 	countedEnd := scanPos
 	capturedBytes := 0
-	deadline := time.Now().Add(timeout)
 
 	sh.stdin.Write([]byte(script))
 
+	abort := func(err error) (string, int, error) {
+		held = false
+		sh.mu.Unlock()
+		m.Disconnect(key)
+		return "", -1, err
+	}
+
 	for {
-		// Locate the begin marker.
 		if outputStart == -1 {
 			beginIdx := strings.Index(sh.buffer[scanPos:], beginMarker)
 			if beginIdx == -1 {
@@ -213,7 +286,6 @@ func (m *Manager) runShellCommand(key, cmdString, directory string, timeout time
 			}
 		}
 
-		// Locate the end marker and parse the exit code.
 		if outputStart != -1 {
 			endIdx := strings.Index(sh.buffer[scanPos:], endPrefix)
 			if endIdx != -1 {
@@ -237,47 +309,49 @@ func (m *Manager) runShellCommand(key, cmdString, directory string, timeout time
 				if matched != nil {
 					consumedEnd := codeStart + len(matched[0])
 					output := cleanShellOutput(sh.buffer[outputStart:outputEnd])
-					remainder := sh.buffer[consumedEnd:]
-					sh.buffer = remainder
+					sh.buffer = sh.buffer[consumedEnd:]
 
 					exitCode := 0
 					fmt.Sscanf(matched[1], "%d", &exitCode)
 					output = strings.TrimSpace(strings.TrimPrefix(output, beginMarker+"\n"))
+					output = FinalizeCommandOutput(output, CompressOptionsFromConfig(cfg.OutputCompressLight, cfg.OutputCompressThreshold))
 					if exitCode != 0 {
 						return output, exitCode, newToolError(CodeCommandExecutionError,
-							formatCommandFailure(output, "", exitCode, ""), false)
+							formatCommandFailure(output, "", exitCode, "", cfg), false)
 					}
 					return output, 0, nil
 				}
 				scanPos = absEnd
 				continue
 			}
-			// Count output bytes up to the scan position.
 			capturedBytes += len(sh.buffer[countedEnd:scanPos])
 			countedEnd = scanPos
 		}
 
 		if maxOutput > 0 && capturedBytes > maxOutput {
-			m.Disconnect(key)
-			return "", -1, newToolError(CodeOutputLimitExceeded,
-				fmt.Sprintf("[truncated] Output exceeded maxOutputBytes=%d; the command was aborted.", maxOutput), false)
+			interruptShell(sh)
+			return abort(newToolError(CodeOutputLimitExceeded,
+				fmt.Sprintf("[truncated] Output exceeded maxOutputBytes=%d; the command was aborted.", maxOutput), false))
 		}
 
 		if sh.closed {
 			return "", -1, newToolError(CodeCommandExecutionError,
 				"Shell channel closed during command execution", true)
 		}
-		if time.Now().After(deadline) {
-			m.Disconnect(key)
-			return "", -1, newToolError(CodeCommandTimeout,
-				fmt.Sprintf("[timeout] Command timed out after %dms", timeout.Milliseconds()), true)
+		if err := ctx.Err(); err != nil {
+			interruptShell(sh)
+			return abort(ctxToolError(ctx, CodeCommandTimeout,
+				fmt.Sprintf("[timeout] Command timed out after %dms", timeout.Milliseconds())))
 		}
-		sh.cond.Wait()
+		if time.Now().After(deadline) {
+			interruptShell(sh)
+			return abort(newToolError(CodeCommandTimeout,
+				fmt.Sprintf("[timeout] Command timed out after %dms", timeout.Milliseconds()), true))
+		}
+		sh.waitUntil(deadline)
 	}
 }
 
-// buildShellScript frames a command with begin/end markers and captures its
-// exit code.
 func buildShellScript(commandID, cmdString, directory, commandTemplate string) string {
 	beginMarker := "__MCP_BEGIN__" + commandID + "__"
 	endMarker := "__MCP_END__" + commandID + "__RC__"

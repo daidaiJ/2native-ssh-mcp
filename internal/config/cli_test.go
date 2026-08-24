@@ -175,3 +175,31 @@ func TestNormalizeSftpDefaults(t *testing.T) {
 		t.Fatalf("unexpected sftp defaults: %+v", conf)
 	}
 }
+
+func TestParseArgsMetadata(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	content := `{
+		"centos": {
+			"host": "192.0.2.1", "port": 22, "username": "testuser", "password": "x",
+			"description": "CentOS 测试机",
+			"business": "MCP 联调",
+			"aliases": ["CentOS", "dev1"],
+			"notes": "测试环境，勿做破坏性操作"
+		}
+	}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts, err := ParseArgs([]string{"--config-file", path})
+	if err != nil {
+		t.Fatalf("ParseArgs failed: %v", err)
+	}
+	conf := opts.Configs["centos"]
+	if conf.Description != "CentOS 测试机" || conf.Business != "MCP 联调" || conf.Notes == "" {
+		t.Fatalf("metadata not parsed: %+v", conf)
+	}
+	if len(conf.Aliases) != 2 || conf.Aliases[0] != "CentOS" {
+		t.Fatalf("aliases not parsed: %+v", conf.Aliases)
+	}
+}

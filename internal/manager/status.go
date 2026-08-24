@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strings"
@@ -189,7 +190,7 @@ func (m *Manager) runCommandInternal(key, command string, opts RunOptions) (stri
 	}
 	timeout := time.Duration(cfg.CommandTimeoutMs) * time.Millisecond
 	if cfg.TransportMode == "shell" {
-		return m.runShellCommand(key, command, "", timeout)
+		return m.runShellCommand(context.Background(), key, command, "", timeout)
 	}
-	return m.runExecCommand(client, cfg, command, "", timeout, key)
+	return m.runExecCommand(context.Background(), client, cfg, command, "", timeout, key)
 }

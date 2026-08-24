@@ -13,10 +13,12 @@ import (
 // registerExecuteCommand registers the execute-command tool.
 func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 	tool := mcp.NewTool("execute-command",
-		mcp.WithDescription("Execute command on connected server and get output result"),
+		mcp.WithDescription("Execute a command on a configured SSH server and return its output. Use list-servers first to pick connectionName. Set sessionName to run inside a named session (CWD persists); open the session first with session action=open."),
+		mutatingAnnotation("Execute remote command", true),
 		mcp.WithString("cmdString", mcp.Required(), mcp.Description("Command to execute")),
 		mcp.WithString("directory", mcp.Description("Working directory for command execution")),
-		mcp.WithString("connectionName", mcp.Description("SSH connection name (optional, default is 'default')")),
+		mcp.WithString("sessionName", mcp.Description("Optional named session (from session action=open); when set, connectionName is ignored")),
+		mcp.WithString("connectionName", mcp.Description("SSH connection name or alias from list-servers (optional; defaults to the default connection)")),
 		mcp.WithNumber("timeout", mcp.Description("Command execution timeout in milliseconds (optional; overrides the connection's commandTimeoutMs, which defaults to 30000ms)")),
 		mcp.WithBoolean("keepAlive", mcp.Description("Keep the SSH connection alive after the command finishes (default: true)")),
 		mcp.WithNumber("keepAliveDuration", mcp.Description("How long to keep the connection alive after the command finishes, in milliseconds (default: 600000, i.e. 10 minutes)")),
@@ -27,6 +29,7 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 
 		cmdString, _ := args["cmdString"].(string)
 		directory, _ := args["directory"].(string)
+		sessionName, _ := args["sessionName"].(string)
 		connectionName, _ := args["connectionName"].(string)
 
 		opts := manager.RunOptions{}
@@ -40,7 +43,13 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 			opts.KeepAliveDuration = time.Duration(v) * time.Millisecond
 		}
 
-		result, err := m.ExecuteCommand(cmdString, directory, connectionName, opts)
+		var result string
+		var err error
+		if sessionName != "" {
+			result, err = m.RunInSession(ctx, sessionName, cmdString, directory, opts)
+		} else {
+			result, err = m.ExecuteCommand(ctx, cmdString, directory, connectionName, opts)
+		}
 		if err != nil {
 			return errorResult(err), nil
 		}

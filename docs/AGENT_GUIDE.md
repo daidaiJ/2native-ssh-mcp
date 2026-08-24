@@ -11,7 +11,7 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 |---|---|---|---|
 | `cmdString` | string | ✅ | Command |
 | `directory` | string | | Working dir (`cd -- '<dir>' && ...`) |
-| `connectionName` | string | | Default `default` |
+| `connectionName` | string | | Name or alias from list-servers |
 | `timeout` | number | | ms; overrides `commandTimeoutMs` (default 30000) |
 | `keepAlive` | boolean | | Keep connection after command (default **true**) |
 | `keepAliveDuration` | number | | ms; idle TTL after command (default **600000** = 10 min) |
@@ -19,6 +19,7 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 - Whitelist/blacklist regexes per connection; rejected → `COMMAND_VALIDATION_FAILED`.
 - Non-zero exit → error `{code, message, retriable}` with output + exit code.
 - Output cap `maxOutputBytes` (default 10 MB) → `OUTPUT_LIMIT_EXCEEDED`; timeout → `COMMAND_TIMEOUT`.
+- **Light compress** (default): outputs ≥ `outputCompressThreshold` (4096 B) get head/tail lines + dedup; disable with `"outputCompressLight": false`. See `skills/2native-ssh-mcp-agent` for agent-side habits.
 - Connections **lazy**; after command kept alive per keepAlive policy, idle expiry closes. `keepAlive: false` closes immediately.
 - Executed commands appended to connection's command log file (if configured) — **without output**.
 
@@ -30,7 +31,7 @@ One tool, `action` param. Progress via `notifications/progress` when client send
 | `action` | string | ✅ | `upload` \| `download` |
 | `localPath` | string | ✅ | Under cwd or `allowedLocalPaths` |
 | `remotePath` | string | ✅ | Absolute POSIX; under `allowedRemotePaths` if set |
-| `connectionName` | string | | Default `default` |
+| `connectionName` | string | | Name or alias from list-servers |
 | `force` | boolean | | Skip dedup/resume, full transfer |
 
 - **Dedup**: destination matches (size+mtime) → skipped. **Resume**: partial destination → continue. Download = temp + atomic rename, stamps remote mtime.
@@ -38,7 +39,37 @@ One tool, `action` param. Progress via `notifications/progress` when client send
 - Concurrent SFTP (16×32 KB default; `sftpConcurrency`/`sftpChunkSize` per connection).
 
 ### list-servers
-No args. Per connection: name, host, port, username, connected, status (hostname/os/uptime/mem/disk).
+No args. Returns **servers** (metadata, status) and **active sessions**. Call first to pick `connectionName` or `sessionName`. **readOnly**.
+
+### session
+One tool, `action` param. Exec-mode connections only.
+
+| action | Required | Notes |
+|---|---|---|
+| `open` | `sessionName`, `connectionName` (new) | Idempotent; `background=true` + `cmdString` starts long-running job |
+| `read` | `sessionName` | Poll background log; optional `maxBytes`, `offset` |
+| `close` | `sessionName` | Stop background job, release shell |
+
+### execute-command (with optional session)
+| Param | Notes |
+|---|---|
+| `sessionName` | When set, runs in named session (CWD persists); use `session action=open` first |
+| … | Same as before: `cmdString`, `directory`, `connectionName`, `timeout`, `keepAlive` |
+
+**Background workflow:**
+```
+session(action=open, sessionName=logs, connectionName=dev, background=true, cmdString="tail -f /var/log/syslog")
+session(action=read, sessionName=logs)          # repeat until running=false
+session(action=close, sessionName=logs)
+```
+
+**Stateful workflow:**
+```
+session(action=open, sessionName=deploy, connectionName=dev)
+execute-command(sessionName=deploy, cmdString="cd /app && git pull")
+execute-command(sessionName=deploy, cmdString="npm ci")
+session(action=close, sessionName=deploy)
+```
 
 ## Config (per connection, JSON)
 
@@ -46,7 +77,11 @@ No args. Per connection: name, host, port, username, connected, status (hostname
 {
   "dev": {
     "host": "10.0.0.1", "port": 22, "username": "root",
-    "password": "${SSH_MCP_PASSWORD}",        // env ref — see Secure setup
+    "password": "${SSH_MCP_PASSWORD}",
+    "description": "开发环境跳板机",
+    "business": "订单/支付联调",
+    "aliases": ["dev-box", "开发"],
+    "notes": "只读为主；高峰期勿跑重查询",
     "commandWhitelist": ["^ls ", "^cat "],
     "commandBlacklist": ["rm -rf"],
     "allowedLocalPaths": ["C:/data"],
@@ -57,7 +92,9 @@ No args. Per connection: name, host, port, username, connected, status (hostname
     "algorithms": {"kex": ["curve25519-sha256"], "cipher": ["aes128-ctr"]},
     "keepaliveIntervalMs": 10000, "keepaliveCountMax": 3,
     "commandTimeoutMs": 30000, "connectionTimeoutMs": 30000, "sftpTimeoutMs": 300000,
-    "maxOutputBytes": 10485760,                // 0 = unlimited
+    "maxOutputBytes": 10485760,
+    "outputCompressLight": true,
+    "outputCompressThreshold": 4096,
     "commandTemplate": "sudo -n <quotedCommand>",
     "pty": true, "tryKeyboard": false
   }
@@ -73,6 +110,10 @@ Auth: password | privateKey (+passphrase, `SSH_MCP_PASSPHRASE` env) | agent (`SS
 3. **~/.ssh/config alias + agent**: `--host <alias>` only; credentials live in the user's SSH config/agent. No secrets anywhere in MCP config.
 
 CLI-arg credentials (`--password` etc.) print a stderr warning — they're visible in process lists.
+
+Config file permission check on startup (Unix `0600`/`0700`; Windows ACL). Override dev-only: `--allow-insecure-config-perms`.
+
+Command output is redacted (Bearer tokens, PEM blocks, password=/token= lines) before returning to the client. See [SECURITY.md](../SECURITY.md).
 
 ## Deployment
 

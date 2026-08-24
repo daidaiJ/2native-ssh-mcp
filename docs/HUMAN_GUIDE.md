@@ -111,6 +111,10 @@ MCP 客户端配置：
 {
   "dev": {
     "host": "10.0.0.1", "port": 22, "username": "root", "password": "${SSH_MCP_PASSWORD}",
+    "description": "开发环境跳板机",
+    "business": "订单/支付联调",
+    "aliases": ["dev-box", "开发"],
+    "notes": "只读为主；高峰期勿跑重查询",
     "commandWhitelist": ["^ls ", "^cat ", "^df "],
     "allowedRemotePaths": ["/tmp", "/home"],
     "commandLogSize": 50,
@@ -133,7 +137,7 @@ MCP 客户端配置：
 |---|---|---|
 | `cmdString` | ✅ | 要执行的命令 |
 | `directory` | | 工作目录 |
-| `connectionName` | | 连接名，默认 `default` |
+| `connectionName` | | 连接名或 list-servers 中的别名 |
 | `timeout` | | 超时（毫秒），默认 30000 |
 | `keepAlive` | | 执行后是否保活连接，默认 `true` |
 | `keepAliveDuration` | | 保活时长（毫秒），默认 600000（10 分钟） |
@@ -145,7 +149,7 @@ MCP 客户端配置：
 | `action` | ✅ | `upload` 或 `download` |
 | `localPath` | ✅ | 本地路径（须在 cwd 或 `allowedLocalPaths` 内） |
 | `remotePath` | ✅ | 远端绝对路径（配置了 `allowedRemotePaths` 时须在其内） |
-| `connectionName` | | 连接名，默认 `default` |
+| `connectionName` | | 连接名或 list-servers 中的别名 |
 | `force` | | 跳过去重/续传，强制全量传输 |
 
 - 客户端在请求中携带 `_meta.progressToken` 时，服务端通过 `notifications/progress` 上报进度（约 100ms 节流，结束必报 100%）
@@ -155,7 +159,27 @@ MCP 客户端配置：
 
 ### list-servers
 
-列出所有连接：名称、地址、连接状态、系统状态摘要。
+列出所有连接及活动会话：服务器元数据、连接状态、系统摘要 + 当前 session 列表。
+
+### session
+
+`action` 参数：`open` | `read` | `close`（仅 exec 模式）。
+
+| action | 说明 |
+|---|---|
+| `open` | 打开会话；`background=true` + `cmdString` 启动后台任务 |
+| `read` | 轮询后台会话输出 |
+| `close` | 关闭会话并停止后台进程 |
+
+### execute-command
+
+增加可选 `sessionName`：在已打开的命名会话中执行（CWD 保持），此时忽略 `connectionName`。
+
+**后台任务：** `session open` → 多次 `session read` → `session close`
+
+**有状态操作：** `session open` → 多次 `execute-command`（带 sessionName）→ `session close`
+
+**Agent 安装 Skill**：仓库内 [`skills/2native-ssh-mcp-helper/SKILL.md`](../skills/2native-ssh-mcp-helper/SKILL.md) 可复制到 `.cursor/skills/` 后说「帮我配置 2native-ssh-mcp」。
 
 ## 命令行参数
 
@@ -188,6 +212,8 @@ Connection options:
   --command-log-size <n> / --command-log-dir <dir> / --command-log-only-success
   --pre-connect
 
+  --allow-insecure-config-perms    跳过配置文件权限检查（不推荐，仅开发用）
+
 Server options:
   --transport <stdio|http>         默认 stdio；start 隐含 http
   --http-addr <host:port>          默认 127.0.0.1:8338
@@ -198,6 +224,7 @@ Server options:
 
 | 配置 | 默认 | 说明 |
 |---|---|---|
+| `description` / `business` / `aliases` / `notes` | 空 | 给 list-servers 展示的元数据：用途、业务、别名、注意事项 |
 | `transportMode` | `exec` | `shell` 用于堡垒机/跳板机场景 |
 | `commandWhitelist` / `commandBlacklist` | 空 | 命令正则白/黑名单 |
 | `allowedLocalPaths` / `allowedRemotePaths` | 空 | 文件传输路径白名单 |
@@ -231,6 +258,15 @@ Server options:
 ```
 
 配合 `commandLogOnlySuccess: true` 可只记录成功命令，避免探测类命令产生噪声。
+
+## 安全
+
+- 启动时检查 `--config-file` 权限（Unix：`chmod 600` 文件 / `chmod 700` 目录；Windows：限制 ACL 修改权限）
+- 命令输出自动脱敏（Bearer token、PEM 私钥块、`password=`/`token=` 等）
+- 超时或输出超限时向远端进程发送 SIGTERM/SIGKILL（exec）或 Ctrl-C（shell/会话）
+- MCP 工具标注 `readOnlyHint` / `destructiveHint`，客户端可据此限制危险操作
+
+详见 [SECURITY.md](../SECURITY.md)。
 
 ## 自动发布 Release
 

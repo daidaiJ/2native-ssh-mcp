@@ -16,10 +16,11 @@ import (
 func registerFileTransfer(s *server.MCPServer, m *manager.Manager) {
 	tool := mcp.NewTool("file-transfer",
 		mcp.WithDescription("Upload or download a file between the local machine and the connected server. Transfers are deduplicated (skipped when the destination already matches) and resumed from existing partial data unless force is set. Progress is reported via MCP progress notifications when the client requests them."),
+		mutatingAnnotation("Transfer file via SFTP", true),
 		mcp.WithString("action", mcp.Required(), mcp.Description("Operation to perform"), mcp.Enum("upload", "download")),
 		mcp.WithString("localPath", mcp.Required(), mcp.Description("Local path")),
 		mcp.WithString("remotePath", mcp.Required(), mcp.Description("Remote path (absolute POSIX path)")),
-		mcp.WithString("connectionName", mcp.Description("SSH connection name (optional, default is 'default')")),
+		mcp.WithString("connectionName", mcp.Description("SSH connection name or alias from list-servers (optional; defaults to the default connection)")),
 		mcp.WithBoolean("force", mcp.Description("Skip the dedup check and transfer the full file from scratch (default: false)")),
 	)
 
@@ -42,7 +43,7 @@ func registerFileTransfer(s *server.MCPServer, m *manager.Manager) {
 		}
 		sender := newProgressSender(s, token)
 
-		result, err := m.TransferFile(action, localPath, remotePath, connectionName, force, sender.send)
+		result, err := m.TransferFile(ctx, action, localPath, remotePath, connectionName, force, sender.send)
 		if err != nil {
 			return errorResult(err), nil
 		}
