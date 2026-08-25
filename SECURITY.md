@@ -61,7 +61,7 @@ On startup, when `--config-file` is set, the server verifies:
 - **Unix:** config file mode has no group/other bits; parent directory mode has no group/other bits
 - **Windows:** `icacls` is consulted; refuse when `Everyone` / `Authenticated Users` can modify the file
 
-Pass `--allow-insecure-config-perms` only for local development.
+Pass `--allow-insecure-config-perms` only for local development; the same override can be declared inside the config file itself (object format) via `"$global": {"allowInsecureConfigPerms": true}`. The check runs after the file is parsed, so a config that disables it is loaded as a deliberate user choice.
 
 ## Reporting vulnerabilities
 

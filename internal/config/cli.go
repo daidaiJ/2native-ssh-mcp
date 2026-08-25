@@ -32,6 +32,18 @@ type Options struct {
 	CommandLogOnlySuccess bool
 }
 
+// GlobalConfigKey is the reserved top-level key in a config file object that
+// holds settings applying to the whole file rather than a single connection.
+const GlobalConfigKey = "$global"
+
+// GlobalConfig holds top-level settings that apply to the whole config file.
+type GlobalConfig struct {
+	// AllowInsecureConfigPerms skips the config file permission check
+	// (Unix mode 0600/0700; Windows ACL) for this config file. Equivalent to
+	// the --allow-insecure-config-perms flag, but declared inside the file.
+	AllowInsecureConfigPerms bool `json:"allowInsecureConfigPerms,omitempty"`
+}
+
 // stringList is a repeatable flag value.
 type stringList []string
 
@@ -82,7 +94,8 @@ Connection options:
   --command-log-only-success       Only record successful commands in the command log
   --pre-connect                    Pre-connect to all SSH servers on startup
 
-  --allow-insecure-config-perms    Skip config file permission checks (not recommended)
+  --allow-insecure-config-perms    Skip config file permission checks (not recommended;
+                                   also settable per file via "$global": {"allowInsecureConfigPerms": true})
 
 Server options:
   --transport <stdio|http>         MCP transport (default: stdio; start implies http)
@@ -195,14 +208,14 @@ func ParseArgs(args []string) (*Options, error) {
 
 	// Priority 1: config file.
 	if configFile != "" {
-		if !allowInsecure {
+		configs, global, err := loadConfigFile(configFile)
+		if err != nil {
+			return nil, err
+		}
+		if !allowInsecure && !global.AllowInsecureConfigPerms {
 			if err := CheckConfigFilePermissions(configFile); err != nil {
 				return nil, err
 			}
-		}
-		configs, err := loadConfigFile(configFile)
-		if err != nil {
-			return nil, err
 		}
 		opts.Configs = configs
 		opts.ConfigFile = configFile
@@ -260,45 +273,69 @@ func ParseArgs(args []string) (*Options, error) {
 }
 
 // loadConfigFile loads SSH configs from a JSON file supporting both an array
-// format and an object format.
-func loadConfigFile(path string) (map[string]*SSHConfig, error) {
+// format and an object format. The object format may carry a reserved
+// "$global" key with settings that apply to the whole file.
+func loadConfigFile(path string) (map[string]*SSHConfig, *GlobalConfig, error) {
 	resolved := filepath.Clean(path)
 	data, err := os.ReadFile(resolved)
 	if err != nil {
-		return nil, fmt.Errorf("config file not found or unreadable: %s", resolved)
+		return nil, nil, fmt.Errorf("config file not found or unreadable: %s", resolved)
 	}
 
 	var raw any
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("invalid JSON in config file: %w", err)
+		return nil, nil, fmt.Errorf("invalid JSON in config file: %w", err)
 	}
 
 	configs := map[string]*SSHConfig{}
+	global := &GlobalConfig{}
 	switch t := raw.(type) {
 	case []any:
 		for _, item := range t {
 			conf, err := normalizeConfig(item)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if conf.Name == "" || conf.Host == "" || conf.Username == "" {
-				return nil, fmt.Errorf("each config in array must include name, host, username")
+				return nil, nil, fmt.Errorf("each config in array must include name, host, username")
 			}
 			configs[conf.Name] = conf
 		}
 	case map[string]any:
 		for name, item := range t {
+			if name == GlobalConfigKey {
+				if err := parseGlobalConfig(item, global); err != nil {
+					return nil, nil, err
+				}
+				continue
+			}
 			conf, err := normalizeConfig(item)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			conf.Name = name
 			configs[name] = conf
 		}
 	default:
-		return nil, fmt.Errorf("config file must contain an array or object of SSH configurations")
+		return nil, nil, fmt.Errorf("config file must contain an array or object of SSH configurations")
 	}
-	return configs, nil
+	return configs, global, nil
+}
+
+// parseGlobalConfig fills global settings from the "$global" object.
+func parseGlobalConfig(raw any, global *GlobalConfig) error {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s must be an object", GlobalConfigKey)
+	}
+	if v, ok := m["allowInsecureConfigPerms"]; ok {
+		b, err := ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("%s.allowInsecureConfigPerms: %w", GlobalConfigKey, err)
+		}
+		global.AllowInsecureConfigPerms = b
+	}
+	return nil
 }
 
 // parseSSHParam parses a single --ssh value: JSON or legacy key=value pairs.

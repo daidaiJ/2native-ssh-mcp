@@ -109,6 +109,9 @@ MCP 客户端配置：
 
 ```json
 {
+  "$global": {
+    "allowInsecureConfigPerms": true
+  },
   "dev": {
     "host": "10.0.0.1", "port": 22, "username": "root", "password": "${SSH_MCP_PASSWORD}",
     "description": "开发环境跳板机",
@@ -116,6 +119,7 @@ MCP 客户端配置：
     "aliases": ["dev-box", "开发"],
     "notes": "只读为主；高峰期勿跑重查询",
     "commandWhitelist": ["^ls ", "^cat ", "^df "],
+    "commandBlacklist": ["^rm -rf"],
     "allowedRemotePaths": ["/tmp", "/home"],
     "commandLogSize": 50,
     "commandLogDir": "logs",
@@ -128,6 +132,12 @@ MCP 客户端配置：
   }
 }
 ```
+
+`$global` 是保留的顶层键（对象格式专属，数组格式不支持），存放作用于整个配置文件的设置：
+
+| 配置 | 默认 | 说明 |
+|---|---|---|
+| `allowInsecureConfigPerms` | false | 跳过本配置文件的权限检查（等价于命令行 `--allow-insecure-config-perms`，但声明在文件内部；不推荐，仅开发用） |
 
 ## 工具说明
 
@@ -212,7 +222,7 @@ Connection options:
   --command-log-size <n> / --command-log-dir <dir> / --command-log-only-success
   --pre-connect
 
-  --allow-insecure-config-perms    跳过配置文件权限检查（不推荐，仅开发用）
+  --allow-insecure-config-perms    跳过配置文件权限检查（不推荐，仅开发用；也可在配置文件的 $global 里声明）
 
 Server options:
   --transport <stdio|http>         默认 stdio；start 隐含 http
@@ -224,6 +234,7 @@ Server options:
 
 | 配置 | 默认 | 说明 |
 |---|---|---|
+| `$global.allowInsecureConfigPerms` | false | 跳过本配置文件权限检查（等价 `--allow-insecure-config-perms`，仅开发用） |
 | `description` / `business` / `aliases` / `notes` | 空 | 给 list-servers 展示的元数据：用途、业务、别名、注意事项 |
 | `transportMode` | `exec` | `shell` 用于堡垒机/跳板机场景 |
 | `commandWhitelist` / `commandBlacklist` | 空 | 命令正则白/黑名单 |
@@ -249,19 +260,21 @@ Server options:
 - ssh-agent：`agent`（Unix socket 路径；Windows 填 `pageant` 使用 Pageant）
 - 键盘交互：`tryKeyboard: true`，密码提示用配置的密码，OTP 提示用 `SSH_MCP_2FA_CODE`
 
-## 命令日志
+## 命令日志（远程执行记录，保留最后 N 条）
 
-配置 `commandLogSize`（>0）后，每个连接执行过的命令会追加写入 `<commandLogDir>/<连接名>.log`，JSON 行格式，只保留最近 N 条，重启不丢失：
+远程执行命令的日志条数可配置：设置 `commandLogSize`（>0）后，每个连接执行过的命令会追加写入 `<commandLogDir>/<连接名>.log`，JSON 行格式，只保留最近 N 条，重启不丢失：
 
 ```json
 {"timestamp":"2026-08-22T10:00:00+08:00","command":"ls -la /tmp","exitCode":0,"success":true}
 ```
 
-配合 `commandLogOnlySuccess: true` 可只记录成功命令，避免探测类命令产生噪声。
+- 全局默认：`--command-log-size <n>` / `--command-log-dir <dir>`（对未单独配置的连接生效）
+- 单连接覆盖：`commandLogSize` / `commandLogDir` / `commandLogOnlySuccess`
+- 配合 `commandLogOnlySuccess: true` 可只记录成功命令，避免探测类命令产生噪声
 
 ## 安全
 
-- 启动时检查 `--config-file` 权限（Unix：`chmod 600` 文件 / `chmod 700` 目录；Windows：限制 ACL 修改权限）
+- 启动时检查 `--config-file` 权限（Unix：`chmod 600` 文件 / `chmod 700` 目录；Windows：限制 ACL 修改权限），可用 `--allow-insecure-config-perms` 或配置文件内 `$global.allowInsecureConfigPerms: true` 跳过（不推荐，仅开发用）
 - 命令输出自动脱敏（Bearer token、PEM 私钥块、`password=`/`token=` 等）
 - 超时或输出超限时向远端进程发送 SIGTERM/SIGKILL（exec）或 Ctrl-C（shell/会话）
 - MCP 工具标注 `readOnlyHint` / `destructiveHint`，客户端可据此限制危险操作

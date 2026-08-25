@@ -159,6 +159,89 @@ func TestParseArgsNoConfig(t *testing.T) {
 	}
 }
 
+func TestLoadConfigFileGlobal(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	content := `{
+		"$global": {"allowInsecureConfigPerms": true},
+		"dev": {"host": "10.0.0.1", "port": 22, "username": "root", "password": "x"}
+	}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	configs, global, err := loadConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadConfigFile failed: %v", err)
+	}
+	if !global.AllowInsecureConfigPerms {
+		t.Fatal("expected $global.allowInsecureConfigPerms to be true")
+	}
+	if len(configs) != 1 || configs["dev"] == nil {
+		t.Fatalf("expected only 'dev' connection, got %d configs", len(configs))
+	}
+}
+
+func TestLoadConfigFileGlobalDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	content := `{
+		"$global": {},
+		"dev": {"host": "10.0.0.1", "port": 22, "username": "root", "password": "x"}
+	}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, global, err := loadConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadConfigFile failed: %v", err)
+	}
+	if global.AllowInsecureConfigPerms {
+		t.Fatal("expected $global.allowInsecureConfigPerms to default to false")
+	}
+}
+
+func TestLoadConfigFileGlobalInvalidType(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	content := `{
+		"$global": ["not", "an", "object"],
+		"dev": {"host": "10.0.0.1", "port": 22, "username": "root", "password": "x"}
+	}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := loadConfigFile(path); err == nil {
+		t.Fatal("expected error for non-object $global")
+	}
+}
+
+func TestParseArgsGlobalConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	content := `{
+		"$global": {"allowInsecureConfigPerms": true},
+		"dev": {"host": "10.0.0.1", "port": 22, "username": "root", "password": "x"}
+	}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	opts, err := ParseArgs([]string{"--config-file", path})
+	if err != nil {
+		t.Fatalf("ParseArgs failed: %v", err)
+	}
+	if len(opts.Configs) != 1 {
+		t.Fatalf("expected 1 config, got %d", len(opts.Configs))
+	}
+	dev := opts.Configs["dev"]
+	if dev.Host != "10.0.0.1" || dev.Username != "root" {
+		t.Fatalf("unexpected config: %+v", dev)
+	}
+}
+
 func TestNormalizeRejectsBothProxies(t *testing.T) {
 	conf := &SSHConfig{Host: "h", Username: "u", Proxy: "socks5://1.2.3.4:1080", SocksProxy: "socks5://1.2.3.4:1080"}
 	if err := conf.Normalize(); err == nil {

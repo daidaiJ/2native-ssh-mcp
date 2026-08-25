@@ -75,6 +75,9 @@ session(action=close, sessionName=deploy)
 
 ```json
 {
+  "$global": {
+    "allowInsecureConfigPerms": true
+  },
   "dev": {
     "host": "10.0.0.1", "port": 22, "username": "root",
     "password": "${SSH_MCP_PASSWORD}",
@@ -111,7 +114,7 @@ Auth: password | privateKey (+passphrase, `SSH_MCP_PASSPHRASE` env) | agent (`SS
 
 CLI-arg credentials (`--password` etc.) print a stderr warning — they're visible in process lists.
 
-Config file permission check on startup (Unix `0600`/`0700`; Windows ACL). Override dev-only: `--allow-insecure-config-perms`.
+Config file permission check on startup (Unix `0600`/`0700`; Windows ACL). Override dev-only: `--allow-insecure-config-perms`, or `"$global": {"allowInsecureConfigPerms": true}` inside the config file (object format only).
 
 Command output is redacted (Bearer tokens, PEM blocks, password=/token= lines) before returning to the client. See [SECURITY.md](../SECURITY.md).
 
