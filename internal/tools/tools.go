@@ -36,6 +36,31 @@ func errorResult(err error) *mcp.CallToolResult {
 	}
 }
 
+// errorResultFor formats a ToolError together with the partial CommandResult
+// captured before the failure (timeout, output limit, connection loss). The
+// message stays short; the partial stdout/stderr travel in the same result.
+func errorResultFor(err error, res manager.CommandResult) *mcp.CallToolResult {
+	te := manager.AsToolError(err)
+	payload := map[string]any{
+		"code":      te.Code,
+		"message":   te.Message,
+		"retriable": te.Retriable,
+	}
+	if res.Status != "" {
+		payload["stdout"] = res.Stdout
+		payload["stderr"] = res.Stderr
+		payload["exitCode"] = res.ExitCode
+		payload["status"] = res.Status
+		payload["partial"] = res.Partial
+		payload["replaySafe"] = res.ReplaySafe
+	}
+	text, _ := json.MarshalIndent(payload, "", "  ")
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{mcp.NewTextContent(string(text))},
+		IsError: true,
+	}
+}
+
 // progressSender sends MCP progress notifications, throttled to at most one
 // per 100ms, with a final 100% notification.
 type progressSender struct {

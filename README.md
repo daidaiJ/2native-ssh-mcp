@@ -17,10 +17,11 @@
 - **四个工具**（最小必要集，与上游 classfang 对齐 + 会话合并）：
   - `list-servers` — 服务器 + 活动会话一览
   - `execute-command` — 远程执行；可选 `sessionName` 在有状态会话中执行
-  - `session` — 会话生命周期 `action=open|read|close`（含后台长任务）
+  - `session` — 会话生命周期 `action=open|read|close|list`（含后台长任务，断连后仍可重附着）
   - `file-transfer` — 上传/下载，带进度通知、去重、断点续传
 - **Agent Skill**：[`skills/2native-ssh-mcp-helper`](skills/2native-ssh-mcp-helper/SKILL.md)（安装配置）、[`skills/2native-ssh-mcp-agent`](skills/2native-ssh-mcp-agent/SKILL.md)（远程执行防御与输出/token 策略）
-- **连接生命周期**：懒连接（首次调用才建立），执行后按 `keepAlive`/`keepAliveDuration` 保活（默认 10 分钟），空闲自动断开
+- **连接生命周期**：懒连接（首次调用才建立），执行后按 `keepAlive`/`keepAliveDuration` 保活（默认 10 分钟），空闲自动断开；执行中的命令受 in-flight 保护，不会被空闲/心跳误拆
+- **可靠性**：后台任务以无 PTY 独立通道启动（setsid 脱离会话），**连接闪断后仍存活**，会话可自动重连重附着；非 0 退出码是正常结果（看 `exitCode`），连接中断报 `SSH_CONNECTION_LOST`（`retriable=false`，带部分输出，不可盲目重放）
 - **命令日志**：按连接记录最近 N 条执行过的命令（不含输出），可只记成功命令，落盘为 JSON 行文件（配置：`commandLogSize` / `commandLogDir` / `commandLogOnlySuccess`，或全局 `--command-log-size` 等 CLI 参数）
 - **安全**：命令白/黑名单、路径白名单、凭据隔离、输出脱敏、**轻量输出压缩**（≥4KB 头尾摘要不丢语义）、配置权限检查（Unix `0600`/`0700`，Windows ACL；可用 `--allow-insecure-config-perms` 或配置文件 `$global.allowInsecureConfigPerms` 跳过，见 [SECURITY.md](SECURITY.md)）
 - **实用 SSH 特性**：TCP keepalive、心跳检测、算法协商配置（兼容老服务器）、SFTP 并发传输（高延迟链路提速）、代理（SOCKS5/HTTP/HTTPS）、Pageant/ssh-agent、键盘交互认证（2FA）

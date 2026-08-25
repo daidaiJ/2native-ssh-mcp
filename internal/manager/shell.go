@@ -47,7 +47,9 @@ func (sh *shellSession) close() {
 	}
 	session := sh.session
 	sh.mu.Unlock()
-	session.Close()
+	if session != nil {
+		session.Close()
+	}
 }
 
 // initShell opens a persistent shell and probes it until it responds.
@@ -209,8 +211,8 @@ func (sh *shellSession) configure() {
 }
 
 // runShellCommand executes a command on the persistent shell, serialized per
-// connection, and returns its output and exit code.
-func (m *Manager) runShellCommand(ctx context.Context, key, cmdString, directory string, timeout time.Duration) (string, int, error) {
+// connection, and returns a structured result.
+func (m *Manager) runShellCommand(ctx context.Context, key, cmdString, directory string, timeout time.Duration) (CommandResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -218,18 +220,16 @@ func (m *Manager) runShellCommand(ctx context.Context, key, cmdString, directory
 	sh := m.shells[key]
 	m.mu.Unlock()
 	if sh == nil || !sh.ready {
-		return "", -1, newToolError(CodeSSHConnectionFailed,
+		return CommandResult{}, newToolError(CodeSSHConnectionFailed,
 			fmt.Sprintf("Shell transport for [%s] is not ready", key), true)
 	}
 
 	cfg, err := m.getConfig(key)
 	if err != nil {
-		return "", -1, err
+		return CommandResult{}, err
 	}
 
 	commandID := randomID("command")
-	beginMarker := "__MCP_BEGIN__" + commandID + "__"
-	endPrefix := "__MCP_END__" + commandID + "__RC__"
 	script := buildShellScript(commandID, cmdString, directory, cfg.CommandTemplate)
 
 	maxOutput := cfg.MaxOutputBytes
@@ -241,115 +241,7 @@ func (m *Manager) runShellCommand(ctx context.Context, key, cmdString, directory
 	})
 	defer stop()
 
-	sh.mu.Lock()
-	held := true
-	defer func() {
-		if held {
-			sh.mu.Unlock()
-		}
-	}()
-
-	scanPos := len(sh.buffer)
-	outputStart := -1
-	countedEnd := scanPos
-	capturedBytes := 0
-
-	sh.stdin.Write([]byte(script))
-
-	abort := func(err error) (string, int, error) {
-		held = false
-		sh.mu.Unlock()
-		m.Disconnect(key)
-		return "", -1, err
-	}
-
-	for {
-		if outputStart == -1 {
-			beginIdx := strings.Index(sh.buffer[scanPos:], beginMarker)
-			if beginIdx == -1 {
-				scanPos = len(sh.buffer) - (len(beginMarker) - 1)
-				if scanPos < 0 {
-					scanPos = 0
-				}
-			} else {
-				lineEnd := strings.Index(sh.buffer[scanPos+beginIdx:], "\n")
-				if lineEnd == -1 {
-					scanPos = len(sh.buffer) - (len(beginMarker) - 1)
-					if scanPos < 0 {
-						scanPos = 0
-					}
-				} else {
-					outputStart = scanPos + beginIdx + lineEnd + 1
-					scanPos = outputStart
-					countedEnd = outputStart
-				}
-			}
-		}
-
-		if outputStart != -1 {
-			endIdx := strings.Index(sh.buffer[scanPos:], endPrefix)
-			if endIdx != -1 {
-				absEnd := scanPos + endIdx
-				outputEnd := absEnd
-				if outputEnd > outputStart && sh.buffer[outputEnd-1] == '\n' {
-					outputEnd--
-					if outputEnd > outputStart && sh.buffer[outputEnd-1] == '\r' {
-						outputEnd--
-					}
-				}
-				capturedBytes += len(sh.buffer[countedEnd:outputEnd])
-				countedEnd = outputEnd
-
-				codeStart := absEnd + len(endPrefix)
-				codeSlice := sh.buffer[codeStart:]
-				if len(codeSlice) > 32 {
-					codeSlice = codeSlice[:32]
-				}
-				matched := shellExitCodePattern.FindStringSubmatch(codeSlice)
-				if matched != nil {
-					consumedEnd := codeStart + len(matched[0])
-					output := cleanShellOutput(sh.buffer[outputStart:outputEnd])
-					sh.buffer = sh.buffer[consumedEnd:]
-
-					exitCode := 0
-					fmt.Sscanf(matched[1], "%d", &exitCode)
-					output = strings.TrimSpace(strings.TrimPrefix(output, beginMarker+"\n"))
-					output = FinalizeCommandOutput(output, CompressOptionsFromConfig(cfg.OutputCompressLight, cfg.OutputCompressThreshold))
-					if exitCode != 0 {
-						return output, exitCode, newToolError(CodeCommandExecutionError,
-							formatCommandFailure(output, "", exitCode, "", cfg), false)
-					}
-					return output, 0, nil
-				}
-				scanPos = absEnd
-				continue
-			}
-			capturedBytes += len(sh.buffer[countedEnd:scanPos])
-			countedEnd = scanPos
-		}
-
-		if maxOutput > 0 && capturedBytes > maxOutput {
-			interruptShell(sh)
-			return abort(newToolError(CodeOutputLimitExceeded,
-				fmt.Sprintf("[truncated] Output exceeded maxOutputBytes=%d; the command was aborted.", maxOutput), false))
-		}
-
-		if sh.closed {
-			return "", -1, newToolError(CodeCommandExecutionError,
-				"Shell channel closed during command execution", true)
-		}
-		if err := ctx.Err(); err != nil {
-			interruptShell(sh)
-			return abort(ctxToolError(ctx, CodeCommandTimeout,
-				fmt.Sprintf("[timeout] Command timed out after %dms", timeout.Milliseconds())))
-		}
-		if time.Now().After(deadline) {
-			interruptShell(sh)
-			return abort(newToolError(CodeCommandTimeout,
-				fmt.Sprintf("[timeout] Command timed out after %dms", timeout.Milliseconds()), true))
-		}
-		sh.waitUntil(deadline)
-	}
+	return m.runShellScriptOnce(ctx, sh, script, timeout, deadline, maxOutput, cfg)
 }
 
 func buildShellScript(commandID, cmdString, directory, commandTemplate string) string {

@@ -17,8 +17,9 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 | `keepAliveDuration` | number | | ms; idle TTL after command (default **600000** = 10 min) |
 
 - Whitelist/blacklist regexes per connection; rejected → `COMMAND_VALIDATION_FAILED`.
-- Non-zero exit → error `{code, message, retriable}` with output + exit code.
-- Output cap `maxOutputBytes` (default 10 MB) → `OUTPUT_LIMIT_EXCEEDED`; timeout → `COMMAND_TIMEOUT`.
+- **Non-zero exit is a normal result, not an error** — read `exitCode` from the text (`[exit code] N`). Errors are reserved for validation/connect failures, `COMMAND_TIMEOUT`, `OUTPUT_LIMIT_EXCEEDED`, and `SSH_CONNECTION_LOST`.
+- `SSH_CONNECTION_LOST` (retriable=false): the connection dropped mid-command; the remote process may still be running. **Do not replay blindly** — the error JSON carries partial `stdout`/`stderr` and `replaySafe: false`.
+- Output cap `maxOutputBytes` (default 10 MB) → `OUTPUT_LIMIT_EXCEEDED`; timeout → `COMMAND_TIMEOUT`. For timeout/lost/limit the error message stays short; partial output is in the same result's `stdout`/`stderr` fields.
 - **Light compress** (default): outputs ≥ `outputCompressThreshold` (4096 B) get head/tail lines + dedup; disable with `"outputCompressLight": false`. See `skills/2native-ssh-mcp-agent` for agent-side habits.
 - Connections **lazy**; after command kept alive per keepAlive policy, idle expiry closes. `keepAlive: false` closes immediately.
 - Executed commands appended to connection's command log file (if configured) — **without output**.
@@ -49,6 +50,9 @@ One tool, `action` param. Exec-mode connections only.
 | `open` | `sessionName`, `connectionName` (new) | Idempotent; `background=true` + `cmdString` starts long-running job |
 | `read` | `sessionName` | Poll background log; optional `maxBytes`, `offset` |
 | `close` | `sessionName` | Stop background job, release shell |
+| `list` | — | All sessions; optional `connectionName` filter |
+
+**Long tasks / no-output tasks: use `session background=true` + `read` polling. Do NOT `nohup ... &` or `setsid` through `execute-command`** — those die with the exec channel. Background jobs are started detached (no PTY, new session) and **survive connection drops**; after a drop the session shows `disconnected=true` and `read`/`execute-command` reconnect automatically. Only `action=close` kills the remote job.
 
 ### execute-command (with optional session)
 | Param | Notes |
@@ -105,6 +109,13 @@ session(action=close, sessionName=deploy)
 ```
 
 Auth: password | privateKey (+passphrase, `SSH_MCP_PASSPHRASE` env) | agent (`SSH_AUTH_SOCK`, `"pageant"` on Windows) | keyboard-interactive (`tryKeyboard`, OTP via `SSH_MCP_2FA_CODE`). Proxy: `proxy` (socks5/http/https) or legacy `socksProxy`.
+
+## Usage rules
+
+- **Foreground `timeout` must exceed the real runtime** — the default `commandTimeoutMs=30000` still applies; a long build needs `timeout` ≥ its duration or it will be cut off with `COMMAND_TIMEOUT`.
+- **Build/CI hosts: set `"pty": false`** — a PTY makes tools like docker/npm behave as if interactive and can cause SIGHUP issues on long tasks. Background jobs never use a PTY regardless.
+- **Non-zero exit is a normal result** — check `exitCode`; do not treat `[exit code] 1` as a transport failure.
+- **`SSH_CONNECTION_LOST` is not replay-safe** — the command may have partially executed; inspect the partial `stdout` before deciding to retry.
 
 ## Secure setup (pick one — do NOT put credentials in MCP client args)
 

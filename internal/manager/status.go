@@ -91,13 +91,13 @@ func (m *Manager) collectStatus(key string) {
 	}
 	script := strings.Join(probes, "; ") + "; true"
 
-	output, _, err := m.runCommandInternal(key, script, RunOptions{Prevalidated: true})
+	result, err := m.runCommandInternal(key, script, RunOptions{Prevalidated: true})
 	if err != nil {
 		logger.Error("Failed to collect system status for [%s]: %v", key, err)
 		return
 	}
 
-	values := parseStatusOutput(output, marker)
+	values := parseStatusOutput(result.Stdout, marker)
 	readField := func(field string) string { return values[field] }
 
 	if v := readField("hostname"); v != "" {
@@ -179,14 +179,14 @@ func parseStatusOutput(output, marker string) map[string]string {
 }
 
 // runCommandInternal runs a command without whitelist validation.
-func (m *Manager) runCommandInternal(key, command string, opts RunOptions) (string, int, error) {
+func (m *Manager) runCommandInternal(key, command string, opts RunOptions) (CommandResult, error) {
 	cfg, err := m.getConfig(key)
 	if err != nil {
-		return "", -1, err
+		return CommandResult{}, err
 	}
 	client, err := m.EnsureConnected(key)
 	if err != nil {
-		return "", -1, err
+		return CommandResult{}, err
 	}
 	timeout := time.Duration(cfg.CommandTimeoutMs) * time.Millisecond
 	if cfg.TransportMode == "shell" {

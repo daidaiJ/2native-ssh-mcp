@@ -30,6 +30,7 @@ const (
 	CodeCommandExecutionError   = "COMMAND_EXECUTION_ERROR"
 	CodeOutputLimitExceeded     = "OUTPUT_LIMIT_EXCEEDED"
 	CodeCommandTimeout          = "COMMAND_TIMEOUT"
+	CodeSSHConnectionLost       = "SSH_CONNECTION_LOST"
 	CodeSSHConnectionFailed     = "SSH_CONNECTION_FAILED"
 	CodeSSHConnectionTimeout    = "SSH_CONNECTION_TIMEOUT"
 	CodeSSHAuthMissing          = "SSH_AUTHENTICATION_MISSING"
@@ -55,6 +56,12 @@ func (e *ToolError) Error() string { return e.Message }
 
 func newToolError(code, message string, retriable bool) *ToolError {
 	return &ToolError{Code: code, Message: message, Retriable: retriable}
+}
+
+// NewToolError creates a structured ToolError, for callers outside the
+// manager package (e.g. tool handlers validating arguments).
+func NewToolError(code, message string, retriable bool) *ToolError {
+	return newToolError(code, message, retriable)
 }
 
 func ctxToolError(ctx context.Context, timeoutCode, timeoutMsg string) error {
@@ -107,6 +114,12 @@ type Manager struct {
 	idleTimers  map[string]*time.Timer
 	aliases     map[string]string // alias -> canonical connection name
 	sessions    map[string]*namedSession
+	// inFlight counts active operations per connection key. While non-zero
+	// the connection must not be torn down (idle timer, keepalive failure).
+	inFlight map[string]int
+	// unhealthy marks a connection whose keepalives failed while an
+	// operation was in flight; it is disconnected once the operation ends.
+	unhealthy   map[string]bool
 	defaultName string
 }
 
@@ -127,6 +140,8 @@ func New(configs map[string]*config.SSHConfig, defaultLogDir string) (*Manager, 
 		idleTimers:  map[string]*time.Timer{},
 		aliases:     map[string]string{},
 		sessions:    map[string]*namedSession{},
+		inFlight:    map[string]int{},
+		unhealthy:   map[string]bool{},
 	}
 
 	names := make([]string, 0, len(configs))
@@ -325,7 +340,10 @@ func (m *Manager) hasUsableConnection(key string) bool {
 }
 
 // Touch resets the idle timer for the connection. When the timer fires the
-// connection is closed. A zero duration disables the timer.
+// connection is closed. A zero duration disables the timer. The effective
+// duration is never shorter than the TTL of any active named session on the
+// connection, and while an operation or background job is in flight the
+// timer is re-armed instead of disconnecting.
 func (m *Manager) Touch(name string, duration time.Duration) {
 	key := m.resolveName(name)
 	m.mu.Lock()
@@ -337,17 +355,55 @@ func (m *Manager) Touch(name string, duration time.Duration) {
 		delete(m.idleTimers, key)
 		return
 	}
+	// The connection idle timer must not be shorter than any active
+	// session's TTL, otherwise the connection would be torn down while a
+	// named session still needs its shell.
+	for _, ns := range m.sessions {
+		if ns.connectionKey != key {
+			continue
+		}
+		ttl := defaultSessionIdleTTL
+		if ns.background {
+			ttl = bgSessionIdleTTL
+		}
+		if ttl > duration {
+			duration = ttl
+		}
+	}
 	var t *time.Timer
 	t = time.AfterFunc(duration, func() {
 		m.mu.Lock()
 		current := m.idleTimers[key]
 		m.mu.Unlock()
-		if current == t {
-			logger.Info("Connection [%s] idle for %s, disconnecting", key, duration)
-			m.Disconnect(key)
+		if current != t {
+			return
 		}
+		if m.hasActiveWork(key) {
+			// An operation or background job is in flight; keep the
+			// connection alive instead of tearing it down.
+			m.Touch(key, duration)
+			return
+		}
+		logger.Info("Connection [%s] idle for %s, disconnecting", key, duration)
+		m.Disconnect(key)
 	})
 	m.idleTimers[key] = t
+}
+
+// hasActiveWork reports whether the connection has an operation in flight or
+// a running background job, in which case it must not be disconnected.
+func (m *Manager) hasActiveWork(key string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.inFlight[key] > 0 {
+		return true
+	}
+	for _, ns := range m.sessions {
+		if ns.connectionKey == key && ns.bgRunning {
+			return true
+		}
+	}
+	return false
 }
 
 // Disconnect closes the connection immediately.
@@ -404,34 +460,33 @@ func (m *Manager) GetAllServerInfos() []ServerInfo {
 	return infos
 }
 
-// startHeartbeat sends keepalive requests to detect dead connections.
-func (m *Manager) startHeartbeat(key string, client *ssh.Client, cfg *config.SSHConfig) {
-	interval := time.Duration(cfg.KeepaliveIntervalMs) * time.Millisecond
-	maxCount := cfg.KeepaliveCountMax
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		unanswered := 0
-		for range ticker.C {
-			m.mu.Lock()
-			current := m.clients[key]
-			m.mu.Unlock()
-			if current != client {
-				return
-			}
-			ok, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
-			if err != nil || !ok {
-				unanswered++
-				if unanswered >= maxCount {
-					logger.Info("Keepalive failed for [%s], invalidating connection", key)
-					m.Disconnect(key)
-					return
-				}
-			} else {
-				unanswered = 0
-			}
-		}
-	}()
+// beginOp marks an operation as in flight on a connection. While in flight
+// the connection must not be torn down by the idle timer or keepalive
+// failure. Callers must pair it with endOp via defer.
+func (m *Manager) beginOp(key string) {
+	m.mu.Lock()
+	m.inFlight[key]++
+	m.mu.Unlock()
+}
+
+// endOp marks an operation as finished. If the connection was marked
+// unhealthy while the operation was in flight and nothing else is in flight,
+// it is disconnected now.
+func (m *Manager) endOp(key string) {
+	m.mu.Lock()
+	m.inFlight[key]--
+	if m.inFlight[key] < 0 {
+		m.inFlight[key] = 0
+	}
+	unhealthy := m.unhealthy[key] && m.inFlight[key] == 0
+	if unhealthy {
+		delete(m.unhealthy, key)
+	}
+	m.mu.Unlock()
+	if unhealthy {
+		logger.Info("Connection [%s] was marked unhealthy during an operation; disconnecting now", key)
+		m.Disconnect(key)
+	}
 }
 
 // validateCommand checks the command against the whitelist and blacklist.

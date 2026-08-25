@@ -71,6 +71,15 @@ session(action=read, sessionName=logs)   # repeat until running=false
 session(action=close, sessionName=logs)
 ```
 
+**Long tasks / no-output tasks: use `session background=true` + `read` polling. Do NOT `nohup ... &` / `setsid` through `execute-command`** — those die when the exec channel closes. Background jobs survive connection drops; after a drop the session shows `disconnected=true` and `read`/`execute-command` reconnect automatically. Only `action=close` kills the remote job.
+
+## Reading results
+
+- **Non-zero exit is a normal result** — read `[exit code] N` from the text; do not treat it as a transport failure.
+- **`SSH_CONNECTION_LOST` (retriable=false)**: the connection dropped mid-command; the remote process may still be running. **Do not replay blindly** — inspect the partial `stdout` in the error JSON (`replaySafe: false`).
+- Foreground `timeout` must exceed the real runtime (default `commandTimeoutMs=30000`).
+- Build/CI hosts: suggest `"pty": false` in the connection config.
+
 ## Production checklist
 
 - [ ] Read server `notes` and `business` from list-servers

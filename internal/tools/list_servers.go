@@ -93,6 +93,9 @@ func formatSessionList(sessions []manager.SessionInfo) string {
 		if s.CWD != "" {
 			parts = append(parts, "cwd="+s.CWD)
 		}
+		if s.Disconnected {
+			parts = append(parts, "disconnected=true")
+		}
 		if s.Background {
 			parts = append(parts, "background=true", fmt.Sprintf("running=%v", s.Running))
 			if s.BGCommand != "" {

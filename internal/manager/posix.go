@@ -34,3 +34,12 @@ func posixWithinRoot(candidate, root string) bool {
 	}
 	return c == r || strings.HasPrefix(c, r+"/")
 }
+
+// posixDir returns the parent directory of a POSIX path.
+func posixDir(p string) string {
+	d := path.Dir(p)
+	if d == "." {
+		return "/"
+	}
+	return d
+}

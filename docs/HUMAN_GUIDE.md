@@ -173,13 +173,14 @@ MCP 客户端配置：
 
 ### session
 
-`action` 参数：`open` | `read` | `close`（仅 exec 模式）。
+`action` 参数：`open` | `read` | `close` | `list`（仅 exec 模式）。
 
 | action | 说明 |
 |---|---|
 | `open` | 打开会话；`background=true` + `cmdString` 启动后台任务 |
 | `read` | 轮询后台会话输出 |
 | `close` | 关闭会话并停止后台进程 |
+| `list` | 列出所有会话（可选 `connectionName` 过滤） |
 
 ### execute-command
 
@@ -188,6 +189,14 @@ MCP 客户端配置：
 **后台任务：** `session open` → 多次 `session read` → `session close`
 
 **有状态操作：** `session open` → 多次 `execute-command`（带 sessionName）→ `session close`
+
+**长任务 / 无输出任务请用 `session background=true` + `read` 轮询，不要用 `execute-command` 跑 `nohup ... &` 或 `setsid`**——后者会随 exec 通道关闭而消亡。后台任务以无 PTY 的独立通道启动（新会话、脱离 sshd 进程组），**连接闪断后仍然存活**：断连后 `list-servers` 里会话显示 `disconnected=true`，`read` 或带 `sessionName` 的 `execute-command` 会自动重连；只有 `action=close` 才会杀掉远端后台进程。
+
+**命令结果说明：**
+- 非 0 退出码是**正常结果**（不是错误），正文里看 `[exit code] N`；只有校验失败、连不上、超时、输出超限、连接中断才报错
+- 连接中断报 `SSH_CONNECTION_LOST`（`retriable=false`），远端进程可能还在跑，**不要盲目重放**；错误 JSON 里带部分 `stdout`/`stderr` 和 `replaySafe: false`
+- 前台命令的 `timeout` 必须大于真实耗时（默认 `commandTimeoutMs=30000` 仍然生效）
+- 跑 build/CI 的连接建议配置 `"pty": false`，避免 docker/npm 等误以为有交互终端
 
 **Agent 安装 Skill**：仓库内 [`skills/2native-ssh-mcp-helper/SKILL.md`](../skills/2native-ssh-mcp-helper/SKILL.md) 可复制到 `.cursor/skills/` 后说「帮我配置 2native-ssh-mcp」。
 

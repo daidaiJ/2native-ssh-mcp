@@ -13,3 +13,6 @@ logs/
 # Test artifacts
 *.test
 *.out
+
+# Local tooling
+.qwen/

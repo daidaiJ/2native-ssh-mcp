@@ -1,12 +1,16 @@
 package manager
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -14,7 +18,7 @@ const (
 	bgLogPrefix        = "/tmp/.2native-ssh-mcp-"
 )
 
-var bgStartedPattern = regexp.MustCompile(`(?m)^__MCP_BG_STARTED__\r?\n`)
+var bgStartedPattern = regexp.MustCompile(`(?m)^__MCP_BG_STARTED__ pid=(\d+)\r?\n`)
 
 // SessionOpenOptions controls optional background start when opening a session.
 type SessionOpenOptions struct {
@@ -76,6 +80,11 @@ func (m *Manager) openOrReuseSession(sessionName, connectionName string) (*Sessi
 
 	m.mu.Lock()
 	if existing, ok := m.sessions[sessionName]; ok {
+		m.mu.Unlock()
+		if _, err := m.ensureShell(existing); err != nil {
+			return nil, err
+		}
+		m.mu.Lock()
 		info := m.sessionInfoLocked(existing)
 		m.mu.Unlock()
 		return info, nil
@@ -110,6 +119,7 @@ func (m *Manager) openOrReuseSession(sessionName, connectionName string) (*Sessi
 		lastUsed:      time.Now(),
 		bgLogPath:     bgLogPrefix + sessionName + ".log",
 		bgPIDPath:     bgLogPrefix + sessionName + ".pid",
+		bgExitPath:    bgLogPrefix + sessionName + ".exit",
 	}
 	ns.resetIdleTimer(m)
 
@@ -122,6 +132,10 @@ func (m *Manager) openOrReuseSession(sessionName, connectionName string) (*Sessi
 	return info, nil
 }
 
+// startBackgroundCommand launches a command fully detached from the SSH
+// channel: a fresh no-PTY exec runs a starter that setsid's the job into a
+// new session with stdio redirected to a remote log, then exits. The job
+// survives connection drops; read/stop re-attach via fresh exec channels.
 func (m *Manager) startBackgroundCommand(sessionName, cmdString, directory string) (*SessionInfo, error) {
 	m.mu.Lock()
 	ns, ok := m.sessions[sessionName]
@@ -130,6 +144,9 @@ func (m *Manager) startBackgroundCommand(sessionName, cmdString, directory strin
 		return nil, newToolError(CodeCommandValidationFailed,
 			fmt.Sprintf("session %q not found", sessionName), false)
 	}
+	m.beginOp(ns.connectionKey)
+	defer m.endOp(ns.connectionKey)
+
 	if err := m.validateCommand(cmdString, ns.connectionKey); err != nil {
 		return nil, err
 	}
@@ -143,35 +160,22 @@ func (m *Manager) startBackgroundCommand(sessionName, cmdString, directory strin
 		body = applyCommandTemplate(cfg.CommandTemplate, body)
 	}
 
-	inner := fmt.Sprintf(
-		"LOG=%s\nPID=%s\nrm -f \"$LOG\" \"$PID\"\n"+
-			"nohup sh -c %s >> \"$LOG\" 2>&1 &\n"+
-			"echo $! > \"$PID\"\n"+
-			"printf '__MCP_BG_STARTED__\\n'\n",
-		shellQuote(ns.bgLogPath), shellQuote(ns.bgPIDPath), shellQuote(body),
-	)
-	script := buildNamedShellScript(inner, "", "")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	timeout := 15 * time.Second
-	maxOutput := 4096
-	if cfg != nil && cfg.MaxOutputBytes > 0 && cfg.MaxOutputBytes < maxOutput {
-		maxOutput = cfg.MaxOutputBytes
-	}
-
-	output, exitCode, err := m.runShellScriptOnce(ctx, ns.shell, script, timeout, time.Now().Add(timeout), maxOutput, cfg)
+	client, err := m.EnsureConnected(ns.connectionKey)
 	if err != nil {
 		return nil, err
 	}
-	if exitCode != 0 {
-		return nil, newToolError(CodeCommandExecutionError,
-			formatCommandFailure(output, "", exitCode, "", cfg), false)
+
+	script := buildBGStarterScript(ns.bgLogPath, ns.bgPIDPath, ns.bgExitPath, body)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	output, err := m.runDetachedExec(ctx, client, script, 15*time.Second)
+	if err != nil {
+		return nil, err
 	}
-	if !bgStartedPattern.MatchString(output) {
+
+	if pid := parseBGStartedPID(output); pid == 0 {
 		return nil, newToolError(CodeCommandExecutionError,
-			"background command failed to start", true)
+			"background command failed to start: the job is not alive on the remote host (check the command and that the log file is writable)", false)
 	}
 
 	ns.background = true
@@ -188,7 +192,50 @@ func (m *Manager) startBackgroundCommand(sessionName, cmdString, directory strin
 	return info, nil
 }
 
-// ReadSessionOutput returns new bytes from a background session log.
+// buildBGStarterScript builds a POSIX sh script that starts a command fully
+// detached from the SSH channel: setsid into a new session (no controlling
+// tty), stdin from /dev/null, stdout/stderr appended to the log, and the job
+// PID written to the pid file. The starter exits quickly after confirming the
+// job is alive. The body is passed as a single-quoted argument and eval'd by
+// the inner shell so embedded '&' and quoting survive.
+func buildBGStarterScript(logPath, pidPath, exitPath, body string) string {
+	return fmt.Sprintf(
+		"LOG=%s\nPIDF=%s\nEXITF=%s\n"+
+			"rm -f \"$PIDF\" \"$EXITF\"\n"+
+			": > \"$LOG\"\n"+
+			"setsid sh -c '\n"+
+			"  trap \"\" HUP\n"+
+			"  exec </dev/null\n"+
+			"  exec >>\"$1\" 2>&1\n"+
+			"  eval \"$2\"\n"+
+			"  echo $? > \"$3\"\n"+
+			"' _ \"$LOG\" %s \"$EXITF\" &\n"+
+			"echo $! > \"$PIDF\"\n"+
+			"sleep 1\n"+
+			"PID=$(cat \"$PIDF\" 2>/dev/null)\n"+
+			"if [ -n \"$PID\" ] && kill -0 \"$PID\" 2>/dev/null; then\n"+
+			"  printf '__MCP_BG_STARTED__ pid=%%s\\n' \"$PID\"\n"+
+			"  exit 0\n"+
+			"fi\n"+
+			"printf '__MCP_BG_FAILED__\\n'\n"+
+			"exit 1\n",
+		shellQuote(logPath), shellQuote(pidPath), shellQuote(exitPath), shellQuote(body),
+	)
+}
+
+// parseBGStartedPID extracts the job PID from a starter's output.
+func parseBGStartedPID(output string) int {
+	m := bgStartedPattern.FindStringSubmatch(output)
+	if len(m) < 2 {
+		return 0
+	}
+	pid, _ := strconv.Atoi(m[1])
+	return pid
+}
+
+// ReadSessionOutput returns new bytes from a background session log. It runs
+// on a fresh no-PTY exec channel so it works even when the named shell is
+// gone (e.g. after a connection drop).
 func (m *Manager) ReadSessionOutput(sessionName string, maxBytes int64, offset int64) (*SessionOutput, error) {
 	m.mu.Lock()
 	ns, ok := m.sessions[sessionName]
@@ -201,6 +248,9 @@ func (m *Manager) ReadSessionOutput(sessionName string, maxBytes int64, offset i
 		return nil, newToolError(CodeCommandValidationFailed,
 			fmt.Sprintf("session %q is not a background session; open with background=true first", sessionName), false)
 	}
+	m.beginOp(ns.connectionKey)
+	defer m.endOp(ns.connectionKey)
+
 	if maxBytes <= 0 {
 		maxBytes = defaultBGReadBytes
 	}
@@ -208,30 +258,15 @@ func (m *Manager) ReadSessionOutput(sessionName string, maxBytes int64, offset i
 		offset = ns.bgOffset
 	}
 
-	readInner := fmt.Sprintf(
-		"LOG=%s\nPIDF=%s\n"+
-			"RUN=0\n"+
-			"if [ -f \"$PIDF\" ]; then PID=$(cat \"$PIDF\" 2>/dev/null); "+
-			"if [ -n \"$PID\" ] && kill -0 \"$PID\" 2>/dev/null; then RUN=1; fi; fi\n"+
-			"SIZE=0\n"+
-			"if [ -f \"$LOG\" ]; then SIZE=$(wc -c < \"$LOG\" | tr -d ' '); fi\n"+
-			"printf '__MCP_BG_HDR__running=%%s size=%%s\\n' \"$RUN\" \"$SIZE\"\n"+
-			"if [ -f \"$LOG\" ] && [ \"$SIZE\" -gt %d ]; then tail -c +%d \"$LOG\" | head -c %d; fi\n",
-		shellQuote(ns.bgLogPath), shellQuote(ns.bgPIDPath),
-		offset, offset+1, maxBytes,
-	)
-	readScript := buildNamedShellScript(readInner, "", "")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	cfg := m.configs[ns.connectionKey]
-	maxOutput := int(maxBytes) + 512
-	if cfg != nil && cfg.MaxOutputBytes > 0 {
-		maxOutput = cfg.MaxOutputBytes
+	client, err := m.EnsureConnected(ns.connectionKey)
+	if err != nil {
+		return nil, err
 	}
 
-	output, _, err := m.runShellScriptOnce(ctx, ns.shell, readScript, 30*time.Second, time.Now().Add(30*time.Second), maxOutput, cfg)
+	readScript := buildBGReadScript(ns.bgLogPath, ns.bgPIDPath, offset, maxBytes)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	output, err := m.runDetachedExec(ctx, client, readScript, 30*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -249,6 +284,23 @@ func (m *Manager) ReadSessionOutput(sessionName string, maxBytes int64, offset i
 		TotalBytes:  total,
 		Running:     running,
 	}, nil
+}
+
+// buildBGReadScript builds a script that reports whether the job is running,
+// the log size, and the requested byte range of the log.
+func buildBGReadScript(logPath, pidPath string, offset, maxBytes int64) string {
+	return fmt.Sprintf(
+		"LOG=%s\nPIDF=%s\n"+
+			"RUN=0\n"+
+			"if [ -f \"$PIDF\" ]; then PID=$(cat \"$PIDF\" 2>/dev/null); "+
+			"if [ -n \"$PID\" ] && kill -0 \"$PID\" 2>/dev/null; then RUN=1; fi; fi\n"+
+			"SIZE=0\n"+
+			"if [ -f \"$LOG\" ]; then SIZE=$(wc -c < \"$LOG\" | tr -d ' '); fi\n"+
+			"printf '__MCP_BG_HDR__running=%%s size=%%s\\n' \"$RUN\" \"$SIZE\"\n"+
+			"if [ -f \"$LOG\" ] && [ \"$SIZE\" -gt %d ]; then tail -c +%d \"$LOG\" | head -c %d; fi\n",
+		shellQuote(logPath), shellQuote(pidPath),
+		offset, offset+1, maxBytes,
+	)
 }
 
 func parseBGReadOutput(output string) (running bool, totalBytes int64, chunk string) {
@@ -278,21 +330,99 @@ func parseBGReadOutput(output string) (running bool, totalBytes int64, chunk str
 	return running, totalBytes, chunk
 }
 
+// stopBackgroundProcess terminates a background job (TERM, then KILL after a
+// grace period) and removes its pid/log files. It runs on a fresh no-PTY exec
+// channel and is only called on explicit session close.
 func (m *Manager) stopBackgroundProcess(ns *namedSession) {
 	if !ns.background {
 		return
 	}
-	inner := fmt.Sprintf(
-		"PIDF=%s\nLOG=%s\n"+
-			"if [ -f \"$PIDF\" ]; then PID=$(cat \"$PIDF\" 2>/dev/null); "+
-			"if [ -n \"$PID\" ] && kill -0 \"$PID\" 2>/dev/null; then kill \"$PID\" 2>/dev/null; fi; fi\n"+
-			"rm -f \"$PIDF\" \"$LOG\"\n",
-		shellQuote(ns.bgPIDPath), shellQuote(ns.bgLogPath),
-	)
-	script := buildNamedShellScript(inner, "", "")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	m.beginOp(ns.connectionKey)
+	defer m.endOp(ns.connectionKey)
+
+	client, err := m.EnsureConnected(ns.connectionKey)
+	if err != nil {
+		ns.background = false
+		ns.bgRunning = false
+		return
+	}
+	script := buildBGStopScript(ns.bgPIDPath, ns.bgLogPath)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	_, _, _ = m.runShellScriptOnce(ctx, ns.shell, script, 10*time.Second, time.Now().Add(10*time.Second), 4096, nil)
+	_, _ = m.runDetachedExec(ctx, client, script, 15*time.Second)
 	ns.background = false
 	ns.bgRunning = false
+}
+
+// buildBGStopScript builds a script that TERMs the job's process group, waits
+// 2s, then KILLs it if still alive, and removes the pid/log files.
+func buildBGStopScript(pidPath, logPath string) string {
+	return fmt.Sprintf(
+		"PIDF=%s\nLOG=%s\n"+
+			"if [ -f \"$PIDF\" ]; then PID=$(cat \"$PIDF\" 2>/dev/null); "+
+			"if [ -n \"$PID\" ] && kill -0 \"$PID\" 2>/dev/null; then "+
+			"kill -TERM -\"$PID\" 2>/dev/null || kill -TERM \"$PID\" 2>/dev/null; fi; fi\n"+
+			"sleep 2\n"+
+			"if [ -f \"$PIDF\" ]; then PID=$(cat \"$PIDF\" 2>/dev/null); "+
+			"if [ -n \"$PID\" ] && kill -0 \"$PID\" 2>/dev/null; then "+
+			"kill -KILL -\"$PID\" 2>/dev/null || kill -KILL \"$PID\" 2>/dev/null; fi; fi\n"+
+			"rm -f \"$PIDF\" \"$LOG\"\n",
+		shellQuote(pidPath), shellQuote(logPath),
+	)
+}
+
+// runDetachedExec runs a short-lived script on a fresh exec channel without
+// a PTY, independent of any named shell. Used for background job
+// start/read/stop so those operations never depend on (or block on) a
+// persistent shell. A non-zero exit is not an error here; the caller inspects
+// the output (e.g. the starter's __MCP_BG_STARTED__ marker).
+//
+// Stdout and stderr are captured into separate buffers: pointing both at the
+// same buffer intermittently loses output (x/crypto/ssh dispatches both
+// streams through the channel read loop).
+func (m *Manager) runDetachedExec(ctx context.Context, client *ssh.Client, script string, timeout time.Duration) (string, error) {
+	session, err := client.NewSession()
+	if err != nil {
+		return "", newToolError(CodeCommandExecutionError,
+			fmt.Sprintf("Command execution error: %v", err), true)
+	}
+	defer session.Close()
+
+	var stdout, stderr bytes.Buffer
+	session.Stdout = &stdout
+	session.Stderr = &stderr
+
+	if err := session.Start(script); err != nil {
+		return "", newToolError(CodeCommandExecutionError,
+			fmt.Sprintf("Command execution error: %v", err), true)
+	}
+	done := make(chan error, 1)
+	go func() { done <- session.Wait() }()
+	select {
+	case waitErr := <-done:
+		if waitErr != nil {
+			var exitErr *ssh.ExitError
+			if errors.As(waitErr, &exitErr) {
+				return combineDetachedOutput(stdout.String(), stderr.String()), nil
+			}
+			return combineDetachedOutput(stdout.String(), stderr.String()), newToolError(CodeCommandExecutionError,
+				fmt.Sprintf("Command execution error: %v", waitErr), true)
+		}
+		return combineDetachedOutput(stdout.String(), stderr.String()), nil
+	case <-ctx.Done():
+		return combineDetachedOutput(stdout.String(), stderr.String()), ctxToolError(ctx, CodeCommandTimeout,
+			fmt.Sprintf("Command timed out after %dms", timeout.Milliseconds()))
+	}
+}
+
+// combineDetachedOutput joins stdout and stderr, keeping the stdout stream
+// first so marker/header lines stay at the top.
+func combineDetachedOutput(stdout, stderr string) string {
+	if stderr == "" {
+		return stdout
+	}
+	if stdout == "" {
+		return stderr
+	}
+	return strings.TrimSuffix(stdout, "\n") + "\n[stderr]\n" + stderr
 }

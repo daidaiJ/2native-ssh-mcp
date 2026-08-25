@@ -43,7 +43,7 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 			opts.KeepAliveDuration = time.Duration(v) * time.Millisecond
 		}
 
-		var result string
+		var result manager.CommandResult
 		var err error
 		if sessionName != "" {
 			result, err = m.RunInSession(ctx, sessionName, cmdString, directory, opts)
@@ -51,8 +51,8 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 			result, err = m.ExecuteCommand(ctx, cmdString, directory, connectionName, opts)
 		}
 		if err != nil {
-			return errorResult(err), nil
+			return errorResultFor(err, result), nil
 		}
-		return mcp.NewToolResultText(result), nil
+		return mcp.NewToolResultText(result.Text()), nil
 	})
 }

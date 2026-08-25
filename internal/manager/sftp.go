@@ -3,6 +3,7 @@ package manager
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -53,6 +54,8 @@ func (m *Manager) TransferFile(ctx context.Context, action, localPath, remotePat
 		return nil, err
 	}
 	key := m.resolveName(name)
+	m.beginOp(key)
+	defer m.endOp(key)
 	if cfg.TransportMode == "shell" {
 		return nil, newToolError(CodeUnsupportedInShellMode,
 			"Current bastion shell mode does not support SFTP upload/download.", false)
@@ -131,6 +134,40 @@ func (m *Manager) openSftp(ctx context.Context, client *ssh.Client, key string) 
 	}
 }
 
+// classifySftpError maps a remote SFTP operation failure to a precise
+// message: missing remote parent directory (upload), missing remote file
+// (download), permission denied, or a generic fallback that keeps both
+// paths. It never auto-creates directories; the message says so. pkg/sftp
+// normalises NO_SUCH_FILE/PERMISSION_DENIED to os.ErrNotExist/os.ErrPermission,
+// so both the stdlib forms and raw *sftp.StatusError are handled.
+func classifySftpError(op, local, remote string, err error) error {
+	var statusErr *sftp.StatusError
+	noSuchFile := errors.Is(err, os.ErrNotExist)
+	permission := errors.Is(err, os.ErrPermission)
+	if errors.As(err, &statusErr) {
+		switch statusErr.Code {
+		case uint32(sftp.ErrSSHFxNoSuchFile):
+			noSuchFile = true
+		case uint32(sftp.ErrSSHFxPermissionDenied):
+			permission = true
+		}
+	}
+	switch {
+	case noSuchFile:
+		if op == "upload" {
+			return newToolError(CodeSFTPError,
+				fmt.Sprintf("Remote parent directory does not exist: %s (local file exists: %s). Create the directory first.", posixDir(remote), local), false)
+		}
+		return newToolError(CodeSFTPError,
+			fmt.Sprintf("Remote file does not exist: %s", remote), false)
+	case permission:
+		return newToolError(CodeSFTPError,
+			fmt.Sprintf("Remote permission denied: %s", remote), false)
+	}
+	return newToolError(CodeSFTPError,
+		fmt.Sprintf("File %s failed: %v (local=%s remote=%s)", op, err, local, remote), true)
+}
+
 func (m *Manager) upload(ctx context.Context, sftpClient *sftp.Client, localPath, remotePath string,
 	cfg *config.SSHConfig, force bool, progress ProgressFunc) (*TransferResult, error) {
 
@@ -193,8 +230,7 @@ func (m *Manager) upload(ctx context.Context, sftpClient *sftp.Client, localPath
 	if !resumed {
 		remoteFile, err := sftpClient.Create(remotePath)
 		if err != nil {
-			return nil, newToolError(CodeSFTPError,
-				fmt.Sprintf("File upload failed: %v", err), true)
+			return nil, classifySftpError("upload", localPath, remotePath, err)
 		}
 		done, err = copyFile(ctx, localFile, remoteFile, 0, total,
 			cfg.SftpConcurrency, cfg.SftpChunkSize, progress)
@@ -234,8 +270,7 @@ func (m *Manager) download(ctx context.Context, sftpClient *sftp.Client, remoteP
 
 	remoteStat, err := sftpClient.Stat(remotePath)
 	if err != nil {
-		return nil, newToolError(CodeSFTPError,
-			fmt.Sprintf("File download failed: %v", err), true)
+		return nil, classifySftpError("download", localPath, remotePath, err)
 	}
 	total := remoteStat.Size()
 	remoteMtime := remoteStat.ModTime()
@@ -316,8 +351,7 @@ func (m *Manager) download(ctx context.Context, sftpClient *sftp.Client, remoteP
 	remoteFile, err := sftpClient.Open(remotePath)
 	if err != nil {
 		cleanup()
-		return nil, newToolError(CodeSFTPError,
-			fmt.Sprintf("File download failed: %v", err), true)
+		return nil, classifySftpError("download", localPath, remotePath, err)
 	}
 	defer remoteFile.Close()
 

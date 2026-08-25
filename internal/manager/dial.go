@@ -61,7 +61,13 @@ func (m *Manager) dial(key string, cfg *config.SSHConfig) (*ssh.Client, error) {
 		_ = tcpConn.SetKeepAlivePeriod(time.Duration(cfg.KeepaliveIntervalMs) * time.Millisecond)
 	}
 
+	// ssh.NewClientConn does not honor ClientConfig.Timeout during the
+	// handshake (golang/go#21941), so bound it with a deadline on the
+	// underlying conn and clear it afterwards, mirroring Fuchsia
+	// connectToSSH.
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, clientConfig)
+	_ = conn.SetDeadline(time.Time{})
 	if err != nil {
 		conn.Close()
 		return nil, newToolError(CodeSSHConnectionFailed,

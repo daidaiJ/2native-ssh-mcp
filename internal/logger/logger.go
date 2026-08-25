@@ -22,6 +22,9 @@ func Log(level, format string, args ...any) {
 // Info logs an informational message.
 func Info(format string, args ...any) { Log("INFO", format, args...) }
 
+// Warn logs a warning message.
+func Warn(format string, args ...any) { Log("WARN", format, args...) }
+
 // Error logs an error message.
 func Error(format string, args ...any) { Log("ERROR", format, args...) }
 

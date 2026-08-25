@@ -21,26 +21,32 @@ type RunOptions struct {
 	Prevalidated      bool          // skip whitelist/blacklist (internal commands)
 }
 
-// ExecuteCommand runs a command on the named connection and returns its
-// combined output. After execution the connection is kept alive according to
+// ExecuteCommand runs a command on the named connection and returns a
+// structured result. A non-zero exit is a normal result (Status=exited), not
+// an error; errors are reserved for validation/connect failures and the
+// statuses that must surface as MCP errors (timeout, output limit, cancelled,
+// connection lost). After execution the connection is kept alive according to
 // the keepAlive options (default: keep alive for 10 minutes).
-func (m *Manager) ExecuteCommand(ctx context.Context, cmdString, directory, name string, opts RunOptions) (string, error) {
+func (m *Manager) ExecuteCommand(ctx context.Context, cmdString, directory, name string, opts RunOptions) (CommandResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if strings.TrimSpace(cmdString) == "" {
-		return "", newToolError(CodeCommandValidationFailed, "cmdString must be a non-empty command", false)
+		return CommandResult{}, newToolError(CodeCommandValidationFailed, "cmdString must be a non-empty command", false)
 	}
 	if !opts.Prevalidated {
 		if err := m.validateCommand(cmdString, name); err != nil {
-			return "", err
+			return CommandResult{}, err
 		}
 	}
 
 	key := m.resolveName(name)
+	m.beginOp(key)
+	defer m.endOp(key)
+
 	cfg, err := m.getConfig(name)
 	if err != nil {
-		return "", err
+		return CommandResult{}, err
 	}
 
 	timeout := opts.Timeout
@@ -59,19 +65,17 @@ func (m *Manager) ExecuteCommand(ctx context.Context, cmdString, directory, name
 
 	client, err := m.EnsureConnected(name)
 	if err != nil {
-		return "", err
+		return CommandResult{}, err
 	}
 
-	var output string
-	var exitCode int
+	var result CommandResult
 	if cfg.TransportMode == "shell" {
-		output, exitCode, err = m.runShellCommand(ctx, key, cmdString, directory, timeout)
+		result, err = m.runShellCommand(ctx, key, cmdString, directory, timeout)
 	} else {
-		output, exitCode, err = m.runExecCommand(ctx, client, cfg, cmdString, directory, timeout, key)
+		result, err = m.runExecCommand(ctx, client, cfg, cmdString, directory, timeout, key)
 	}
 
-	success := err == nil
-	m.RecordCommand(key, cmdString, exitCode, success)
+	m.RecordCommand(key, cmdString, result.ExitCode, result.ExitCode == 0)
 
 	// Keepalive policy: keep the connection alive (default 10 minutes) or
 	// close it right away.
@@ -89,7 +93,7 @@ func (m *Manager) ExecuteCommand(ctx context.Context, cmdString, directory, name
 		m.Disconnect(key)
 	}
 
-	return output, err
+	return result, err
 }
 
 // limitedBuffer captures up to max bytes and records overflow.
@@ -125,7 +129,7 @@ func (b *limitedBuffer) String() string { return b.buf.String() }
 
 // runExecCommand executes a command over a fresh exec channel.
 func (m *Manager) runExecCommand(ctx context.Context, client *ssh.Client, cfg *config.SSHConfig,
-	cmdString, directory string, timeout time.Duration, key string) (string, int, error) {
+	cmdString, directory string, timeout time.Duration, key string) (CommandResult, error) {
 
 	commandToRun := cmdString
 	if directory != "" {
@@ -137,14 +141,14 @@ func (m *Manager) runExecCommand(ctx context.Context, client *ssh.Client, cfg *c
 
 	session, err := client.NewSession()
 	if err != nil {
-		return "", -1, newToolError(CodeCommandExecutionError,
+		return CommandResult{}, newToolError(CodeCommandExecutionError,
 			fmt.Sprintf("Command execution error: %v", err), true)
 	}
 	defer session.Close()
 
 	if cfg.GetPty() {
 		if err := session.RequestPty("xterm", 80, 24, ssh.TerminalModes{}); err != nil {
-			return "", -1, newToolError(CodeCommandExecutionError,
+			return CommandResult{}, newToolError(CodeCommandExecutionError,
 				fmt.Sprintf("PTY request failed: %v", err), true)
 		}
 	}
@@ -163,7 +167,7 @@ func (m *Manager) runExecCommand(ctx context.Context, client *ssh.Client, cfg *c
 	session.Stderr = stderr
 
 	if err := session.Start(commandToRun); err != nil {
-		return "", -1, newToolError(CodeCommandExecutionError,
+		return CommandResult{}, newToolError(CodeCommandExecutionError,
 			fmt.Sprintf("Command execution error: %v", err), true)
 	}
 
@@ -173,66 +177,38 @@ func (m *Manager) runExecCommand(ctx context.Context, client *ssh.Client, cfg *c
 	select {
 	case waitErr := <-done:
 		if stdout.exceeded || stderr.exceeded {
-			return "", -1, newToolError(CodeOutputLimitExceeded,
+			return buildCommandResult(stdout.String(), stderr.String(), -1, StatusOutputLimit, cfg), newToolError(CodeOutputLimitExceeded,
 				fmt.Sprintf("[truncated] Output exceeded maxOutputBytes=%d; the command was aborted.", maxOutput), false)
 		}
 		if waitErr != nil {
 			var exitErr *ssh.ExitError
-			if errors.As(waitErr, &exitErr) {
-				code := exitErr.ExitStatus()
-				return "", code, newToolError(CodeCommandExecutionError,
-					formatCommandFailure(stdout.String(), stderr.String(), code, "", cfg), false)
+			var missing *ssh.ExitMissingError
+			switch {
+			case errors.As(waitErr, &exitErr):
+				// Non-zero exit is a normal result, not a transport error.
+				return buildCommandResult(stdout.String(), stderr.String(), exitErr.ExitStatus(), StatusExited, cfg), nil
+			case errors.As(waitErr, &missing):
+				// Fuchsia sshutil treats ExitMissingError as a connection
+				// failure: the remote never reported an exit status.
+				return buildCommandResult(stdout.String(), stderr.String(), -1, StatusConnectionLost, cfg), newToolError(CodeSSHConnectionLost,
+					"SSH connection dropped during command; the remote process may still be running. Do not replay blindly.", false)
+			default:
+				return buildCommandResult(stdout.String(), stderr.String(), -1, StatusConnectionLost, cfg), newToolError(CodeSSHConnectionLost,
+					"SSH connection dropped during command; the remote process may still be running. Do not replay blindly.", false)
 			}
-			return "", -1, newToolError(CodeCommandExecutionError,
-				fmt.Sprintf("Command execution error: %v", waitErr), true)
 		}
-		return formatCommandSuccess(stdout.String(), stderr.String(), cfg), 0, nil
+		return buildCommandResult(stdout.String(), stderr.String(), 0, StatusOK, cfg), nil
 	case <-exceededCh:
 		signalRemoteProcess(session, done)
 		session.Close()
-		return "", -1, newToolError(CodeOutputLimitExceeded,
+		return buildCommandResult(stdout.String(), stderr.String(), -1, StatusOutputLimit, cfg), newToolError(CodeOutputLimitExceeded,
 			fmt.Sprintf("[truncated] Output exceeded maxOutputBytes=%d; the command was aborted.", maxOutput), false)
 	case <-ctx.Done():
 		signalRemoteProcess(session, done)
 		session.Close()
-		return "", -1, ctxToolError(ctx, CodeCommandTimeout,
+		return buildCommandResult(stdout.String(), stderr.String(), -1, StatusTimeout, cfg), ctxToolError(ctx, CodeCommandTimeout,
 			fmt.Sprintf("[timeout] Command timed out after %dms", timeout.Milliseconds()))
 	}
-}
-
-func formatCommandSuccess(stdout, stderr string, cfg *config.SSHConfig) string {
-	stdout, stderr = redactCommandOutput(stdout, stderr)
-	var result string
-	if stderr == "" {
-		result = stdout
-	} else {
-		result = strings.TrimSuffix(stdout, "\n") + "\n[stderr]\n" + stderr
-	}
-	return FinalizeCommandOutput(result, compressOpts(cfg))
-}
-
-func formatCommandFailure(stdout, stderr string, exitCode int, exitSignal string, cfg *config.SSHConfig) string {
-	stdout, stderr = redactCommandOutput(stdout, stderr)
-	var sections []string
-	if stdout != "" {
-		sections = append(sections, stdout)
-	}
-	if stderr != "" {
-		sections = append(sections, "[stderr]\n"+stderr)
-	}
-	if exitCode >= 0 {
-		sections = append(sections, fmt.Sprintf("[exit code] %d", exitCode))
-	}
-	if exitSignal != "" {
-		sections = append(sections, "[signal] "+exitSignal)
-	}
-	if len(sections) == 0 {
-		if exitSignal != "" {
-			return fmt.Sprintf("Command terminated by signal %s", exitSignal)
-		}
-		return fmt.Sprintf("Command failed with exit code %d", exitCode)
-	}
-	return FinalizeCommandOutput(strings.Join(sections, "\n"), compressOpts(cfg))
 }
 
 func compressOpts(cfg *config.SSHConfig) CompressOptions {

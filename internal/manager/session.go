@@ -30,6 +30,9 @@ type SessionInfo struct {
 	Background     bool   `json:"background,omitempty"`
 	Running        bool   `json:"running,omitempty"`
 	BGCommand      string `json:"bgCommand,omitempty"`
+	// Disconnected is true when the underlying SSH connection dropped but
+	// the logical session (and any remote background job) survives.
+	Disconnected bool `json:"disconnected,omitempty"`
 }
 
 // namedSession is a persistent shell scoped by name; CWD and environment
@@ -45,8 +48,12 @@ type namedSession struct {
 	bgCommand     string
 	bgLogPath     string
 	bgPIDPath     string
+	bgExitPath    string
 	bgOffset      int64
 	bgRunning     bool
+	// disconnected is true when the physical connection dropped; the shell
+	// is nil and will be recreated on next use.
+	disconnected bool
 }
 
 // OpenSession creates a named interactive session on an exec-mode connection.
@@ -54,22 +61,60 @@ func (m *Manager) OpenSession(sessionName, connectionName string) (*SessionInfo,
 	return m.openOrReuseSession(sessionName, connectionName)
 }
 
+// ensureShell returns a usable shell for the session, reconnecting and
+// recreating the shell channel if the connection was dropped. The saved CWD
+// is restored on a fresh shell.
+func (m *Manager) ensureShell(ns *namedSession) (*shellSession, error) {
+	m.mu.Lock()
+	sh := ns.shell
+	disconnected := ns.disconnected
+	m.mu.Unlock()
+	if sh != nil && !disconnected {
+		return sh, nil
+	}
+
+	client, err := m.EnsureConnected(ns.connectionKey)
+	if err != nil {
+		return nil, err
+	}
+	cfg := m.configs[ns.connectionKey]
+	sh, err = newShellSession(client, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if ns.cwd != "" {
+		restore := "cd -- " + shellQuote(ns.cwd) + " || true"
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_, _ = m.runShellScriptOnce(ctx, sh, buildNamedShellScript(restore, "", ""), 15*time.Second, time.Now().Add(15*time.Second), 4096, cfg)
+	}
+
+	m.mu.Lock()
+	ns.shell = sh
+	ns.disconnected = false
+	m.mu.Unlock()
+	return sh, nil
+}
+
 // RunInSession executes a command in a named session, preserving CWD between calls.
-func (m *Manager) RunInSession(ctx context.Context, sessionName, cmdString, directory string, opts RunOptions) (string, error) {
+func (m *Manager) RunInSession(ctx context.Context, sessionName, cmdString, directory string, opts RunOptions) (CommandResult, error) {
 	m.mu.Lock()
 	ns, ok := m.sessions[sessionName]
 	m.mu.Unlock()
 	if !ok {
-		return "", newToolError(CodeCommandValidationFailed,
+		return CommandResult{}, newToolError(CodeCommandValidationFailed,
 			fmt.Sprintf("session %q not found; call session action=open first", sessionName), false)
 	}
+	m.beginOp(ns.connectionKey)
+	defer m.endOp(ns.connectionKey)
 
 	if strings.TrimSpace(cmdString) == "" {
-		return "", newToolError(CodeCommandValidationFailed, "cmdString must be a non-empty command", false)
+		return CommandResult{}, newToolError(CodeCommandValidationFailed, "cmdString must be a non-empty command", false)
 	}
 	if !opts.Prevalidated {
 		if err := m.validateCommand(cmdString, ns.connectionKey); err != nil {
-			return "", err
+			return CommandResult{}, err
 		}
 	}
 
@@ -84,9 +129,12 @@ func (m *Manager) RunInSession(ctx context.Context, sessionName, cmdString, dire
 		defer cancel()
 	}
 
-	output, exitCode, err := m.runNamedShellCommand(ctx, ns, cmdString, directory, cfg.CommandTemplate, timeout)
-	success := err == nil
-	m.RecordCommand(ns.connectionKey, cmdString, exitCode, success)
+	if _, err := m.ensureShell(ns); err != nil {
+		return CommandResult{}, err
+	}
+
+	result, err := m.runNamedShellCommand(ctx, ns, cmdString, directory, cfg.CommandTemplate, timeout)
+	m.RecordCommand(ns.connectionKey, cmdString, result.ExitCode, result.ExitCode == 0)
 
 	ns.lastUsed = time.Now()
 	ns.resetIdleTimer(m)
@@ -103,10 +151,12 @@ func (m *Manager) RunInSession(ctx context.Context, sessionName, cmdString, dire
 		m.Touch(ns.connectionKey, duration)
 	}
 
-	return output, err
+	return result, err
 }
 
-// CloseSession closes a named session and its shell channel.
+// CloseSession closes a named session: stops its background job and shell
+// channel, then removes it. This is the explicit close path; connection
+// teardown does not go through here (see closeSessionsForConnection).
 func (m *Manager) CloseSession(sessionName string) error {
 	m.mu.Lock()
 	ns, ok := m.sessions[sessionName]
@@ -120,7 +170,9 @@ func (m *Manager) CloseSession(sessionName string) error {
 
 	ns.stopIdleTimer()
 	m.stopBackgroundProcess(ns)
-	ns.shell.close()
+	if ns.shell != nil {
+		ns.shell.close()
+	}
 	return nil
 }
 
@@ -145,6 +197,7 @@ func (m *Manager) sessionInfoLocked(ns *namedSession) *SessionInfo {
 		Background:     ns.background,
 		Running:        ns.bgRunning,
 		BGCommand:      ns.bgCommand,
+		Disconnected:   ns.disconnected,
 	}
 }
 
@@ -172,22 +225,33 @@ func (ns *namedSession) stopIdleTimer() {
 	}
 }
 
+// closeSessionsForConnection tears down the physical shell channels of the
+// sessions on a connection when it is disconnected. Logical sessions and
+// remote background jobs survive: the shell is set to nil and the session is
+// marked disconnected so it can be re-attached on next use. This must not
+// call stopBackgroundProcess (which would grab the shell lock held by a
+// running command) nor delete the session.
 func (m *Manager) closeSessionsForConnection(connKey string) {
 	m.mu.Lock()
-	var names []string
-	for name, ns := range m.sessions {
-		if ns.connectionKey == connKey {
-			names = append(names, name)
+	var shells []*shellSession
+	for _, ns := range m.sessions {
+		if ns.connectionKey != connKey {
+			continue
 		}
+		if ns.shell != nil {
+			shells = append(shells, ns.shell)
+			ns.shell = nil
+		}
+		ns.disconnected = true
 	}
 	m.mu.Unlock()
-	for _, name := range names {
-		_ = m.CloseSession(name)
+	for _, sh := range shells {
+		sh.close()
 	}
 }
 
 // runNamedShellCommand runs one command on a named session shell and updates cwd.
-func (m *Manager) runNamedShellCommand(ctx context.Context, ns *namedSession, cmdString, directory, commandTemplate string, timeout time.Duration) (string, int, error) {
+func (m *Manager) runNamedShellCommand(ctx context.Context, ns *namedSession, cmdString, directory, commandTemplate string, timeout time.Duration) (CommandResult, error) {
 	sh := ns.shell
 	cfg := m.configs[ns.connectionKey]
 	maxOutput := 0
@@ -203,16 +267,18 @@ func (m *Manager) runNamedShellCommand(ctx context.Context, ns *namedSession, cm
 	defer stop()
 
 	script := buildNamedShellScript(cmdString, directory, commandTemplate)
-	output, exitCode, err := m.runShellScriptOnce(ctx, sh, script, timeout, deadline, maxOutput, cfg)
+	result, err := m.runShellScriptOnce(ctx, sh, script, timeout, deadline, maxOutput, cfg)
 	if err != nil {
-		return output, exitCode, err
+		return result, err
 	}
 
-	if pwd := extractShellPWD(output); pwd != "" {
+	// The PWD line is the last line of the captured output; extract it
+	// before the result is returned so the session CWD stays in sync.
+	if pwd := extractShellPWD(result.Stdout); pwd != "" {
 		ns.cwd = pwd
 	}
-	output = stripShellPWDLine(output)
-	return FinalizeCommandOutput(output, compressOpts(cfg)), exitCode, err
+	result.Stdout = stripShellPWDLine(result.Stdout)
+	return result, nil
 }
 
 // buildNamedShellScript wraps the command and prints $PWD after execution.
@@ -251,11 +317,12 @@ func stripShellPWDLine(output string) string {
 	return strings.TrimSpace(shellPWDPattern.ReplaceAllString(output, ""))
 }
 
-// runShellScriptOnce executes a marker-framed script on sh and returns output.
-func (m *Manager) runShellScriptOnce(ctx context.Context, sh *shellSession, script string, timeout time.Duration, deadline time.Time, maxOutput int, cfg *config.SSHConfig) (string, int, error) {
+// runShellScriptOnce executes a marker-framed script on sh and returns a
+// structured result. A non-zero exit is a normal result (Status=exited).
+func (m *Manager) runShellScriptOnce(ctx context.Context, sh *shellSession, script string, timeout time.Duration, deadline time.Time, maxOutput int, cfg *config.SSHConfig) (CommandResult, error) {
 	commandID := extractCommandID(script)
 	if commandID == "" {
-		return "", -1, newToolError(CodeCommandExecutionError, "internal: missing command marker", false)
+		return CommandResult{}, newToolError(CodeCommandExecutionError, "internal: missing command marker", false)
 	}
 	beginMarker := "__MCP_BEGIN__" + commandID + "__"
 	endPrefix := "__MCP_END__" + commandID + "__RC__"
@@ -275,10 +342,10 @@ func (m *Manager) runShellScriptOnce(ctx context.Context, sh *shellSession, scri
 
 	sh.stdin.Write([]byte(script))
 
-	abort := func(err error) (string, int, error) {
+	abort := func(res CommandResult, err error) (CommandResult, error) {
 		held = false
 		sh.mu.Unlock()
-		return "", -1, err
+		return res, err
 	}
 
 	for {
@@ -323,12 +390,10 @@ func (m *Manager) runShellScriptOnce(ctx context.Context, sh *shellSession, scri
 					exitCode := 0
 					fmt.Sscanf(matched[1], "%d", &exitCode)
 					output = strings.TrimSpace(strings.TrimPrefix(output, beginMarker+"\n"))
-					output = FinalizeCommandOutput(output, compressOpts(cfg))
 					if exitCode != 0 {
-						return output, exitCode, newToolError(CodeCommandExecutionError,
-							formatCommandFailure(output, "", exitCode, "", cfg), false)
+						return buildCommandResult(output, "", exitCode, StatusExited, cfg), nil
 					}
-					return output, 0, nil
+					return buildCommandResult(output, "", 0, StatusOK, cfg), nil
 				}
 				scanPos = absEnd
 				continue
@@ -339,26 +404,39 @@ func (m *Manager) runShellScriptOnce(ctx context.Context, sh *shellSession, scri
 
 		if maxOutput > 0 && capturedBytes > maxOutput {
 			interruptShell(sh)
-			return abort(newToolError(CodeOutputLimitExceeded,
-				fmt.Sprintf("[truncated] Output exceeded maxOutputBytes=%d; the command was aborted.", maxOutput), false))
+			return abort(buildCommandResult(partialShellOutput(sh, outputStart), "", -1, StatusOutputLimit, cfg),
+				newToolError(CodeOutputLimitExceeded,
+					fmt.Sprintf("[truncated] Output exceeded maxOutputBytes=%d; the command was aborted.", maxOutput), false))
 		}
 
 		if sh.closed {
-			return "", -1, newToolError(CodeCommandExecutionError,
-				"Shell channel closed during command execution", true)
+			return abort(buildCommandResult(partialShellOutput(sh, outputStart), "", -1, StatusConnectionLost, cfg),
+				newToolError(CodeSSHConnectionLost,
+					"SSH connection dropped during command; the remote process may still be running. Do not replay blindly.", false))
 		}
 		if err := ctx.Err(); err != nil {
 			interruptShell(sh)
-			return abort(ctxToolError(ctx, CodeCommandTimeout,
-				fmt.Sprintf("[timeout] Command timed out after %dms", timeout.Milliseconds())))
+			return abort(buildCommandResult(partialShellOutput(sh, outputStart), "", -1, StatusTimeout, cfg),
+				ctxToolError(ctx, CodeCommandTimeout,
+					fmt.Sprintf("[timeout] Command timed out after %dms", timeout.Milliseconds())))
 		}
 		if time.Now().After(deadline) {
 			interruptShell(sh)
-			return abort(newToolError(CodeCommandTimeout,
-				fmt.Sprintf("[timeout] Command timed out after %dms", timeout.Milliseconds()), true))
+			return abort(buildCommandResult(partialShellOutput(sh, outputStart), "", -1, StatusTimeout, cfg),
+				newToolError(CodeCommandTimeout,
+					fmt.Sprintf("[timeout] Command timed out after %dms", timeout.Milliseconds()), true))
 		}
 		sh.waitUntil(deadline)
 	}
+}
+
+// partialShellOutput returns the un-consumed shell output from outputStart to
+// the end of the buffer, cleaned of ANSI escapes.
+func partialShellOutput(sh *shellSession, outputStart int) string {
+	if outputStart < 0 || outputStart >= len(sh.buffer) {
+		return ""
+	}
+	return cleanShellOutput(sh.buffer[outputStart:])
 }
 
 func extractCommandID(script string) string {
