@@ -25,7 +25,7 @@
 
 ## Host key verification
 
-Host keys are verified against an OpenSSH `known_hosts` file (default `~/.ssh/known_hosts`, override per connection with `knownHostsFile`). Three modes, per connection (`hostKeyCheck`):
+Host keys are verified against an OpenSSH `known_hosts` file (default `~/.ssh/known_hosts`, override per connection with `knownHostsFile`; the file and its parent directory are created automatically when missing). Three modes, per connection (`hostKeyCheck`):
 
 | Mode | Behavior |
 |---|---|

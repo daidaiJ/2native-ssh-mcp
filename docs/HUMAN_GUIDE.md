@@ -120,7 +120,7 @@ MCP 客户端配置：
 }
 ```
 
-Admin API（`/__admin/*`）不用这个 token，仍只限本机访问。
+Admin API（`/__admin/*`）不用这个 token，仍只限本机访问（loopback 来源 + loopback `Host` 头）；`/__admin/shutdown` 额外要求 **POST + `Content-Type: application/json`**，防止本地网页用 GET 触发关停。
 
 ### 多服务器配置（config.json）
 
@@ -275,7 +275,7 @@ Server options:
 | `commandLogOnlySuccess` | false | 只记录成功命令 |
 | `sftpConcurrency` / `sftpChunkSize` | 16 / 32768 | SFTP 并发数与分块大小 |
 | `algorithms` | 空 | kex/cipher/serverHostKey/hmac 协商 |
-| `hostKeyCheck` | `accept-new` | 主机密钥校验：`accept-new`（未知记录后接受）/ `strict`（未知拒绝）/ `none`（不校验） |
+| `hostKeyCheck` | `accept-new` | 主机密钥校验：`accept-new`（未知记录后接受）/ `strict`（未知拒绝）/ `none`（不校验）；`known_hosts` 文件及其目录（如 `~/.ssh`）不存在时自动创建 |
 | `knownHostsFile` | `~/.ssh/known_hosts` | 主机密钥校验用的 known_hosts 文件 |
 | `keepaliveIntervalMs` / `keepaliveCountMax` | 10000 / 3 | SSH 心跳 |
 | `commandTimeoutMs` / `connectionTimeoutMs` / `sftpTimeoutMs` | 30000 / 30000 / 300000 | 各类超时 |
