@@ -1,7 +1,8 @@
 # Binaries
 *.exe
 *.exe~
-
+plan
+todo
 # Daemon artifacts
 .2native-ssh-mcp.pid
 autostart.vbs
@@ -19,3 +20,5 @@ downloads/
 
 # Local tooling
 .qwen/
+plan/HARDENING.md
+plan/README.md
