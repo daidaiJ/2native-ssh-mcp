@@ -30,6 +30,12 @@ type SessionInfo struct {
 	Background     bool   `json:"background,omitempty"`
 	Running        bool   `json:"running,omitempty"`
 	BGCommand      string `json:"bgCommand,omitempty"`
+	// LogPath is the remote log file of a background job; it survives the
+	// session so output can be re-read after a process restart.
+	LogPath string `json:"logPath,omitempty"`
+	// ExitCode is the background job's exit code once it has finished
+	// (nil while running or unknown).
+	ExitCode *int `json:"exitCode,omitempty"`
 	// Disconnected is true when the underlying SSH connection dropped but
 	// the logical session (and any remote background job) survives.
 	Disconnected bool `json:"disconnected,omitempty"`
@@ -44,13 +50,20 @@ type namedSession struct {
 	cwd           string
 	lastUsed      time.Time
 	idleTimer     *time.Timer
-	background    bool
-	bgCommand     string
-	bgLogPath     string
-	bgPIDPath     string
-	bgExitPath    string
-	bgOffset      int64
-	bgRunning     bool
+	// idleGen invalidates in-flight idle expire callbacks: every
+	// resetIdleTimer bumps it, and an expire callback only acts when its
+	// generation still matches. Read/written under m.mu.
+	idleGen    uint64
+	background bool
+	bgCommand  string
+	bgLogPath  string
+	bgPIDPath  string
+	bgExitPath string
+	bgOffset   int64
+	bgRunning  bool
+	// bgExitCode is the job's exit code once the remote .exit file is
+	// readable (nil while running or unknown).
+	bgExitCode *int
 	// disconnected is true when the physical connection dropped; the shell
 	// is nil and will be recreated on next use.
 	disconnected bool
@@ -136,7 +149,6 @@ func (m *Manager) RunInSession(ctx context.Context, sessionName, cmdString, dire
 	result, err := m.runNamedShellCommand(ctx, ns, cmdString, directory, cfg.CommandTemplate, timeout)
 	m.RecordCommand(ns.connectionKey, cmdString, result.ExitCode, result.ExitCode == 0)
 
-	ns.lastUsed = time.Now()
 	ns.resetIdleTimer(m)
 
 	keepAlive := true
@@ -157,18 +169,23 @@ func (m *Manager) RunInSession(ctx context.Context, sessionName, cmdString, dire
 // CloseSession closes a named session: stops its background job and shell
 // channel, then removes it. This is the explicit close path; connection
 // teardown does not go through here (see closeSessionsForConnection).
+// Closing a session that does not exist (or was already closed by the idle
+// TTL) is a no-op success so repeated close calls are idempotent.
 func (m *Manager) CloseSession(sessionName string) error {
 	m.mu.Lock()
 	ns, ok := m.sessions[sessionName]
 	if !ok {
 		m.mu.Unlock()
-		return newToolError(CodeCommandValidationFailed,
-			fmt.Sprintf("session %q not found", sessionName), false)
+		return nil
 	}
 	delete(m.sessions, sessionName)
+	ns.idleGen++ // invalidate any in-flight expire callback
+	if ns.idleTimer != nil {
+		ns.idleTimer.Stop()
+		ns.idleTimer = nil
+	}
 	m.mu.Unlock()
 
-	ns.stopIdleTimer()
 	m.stopBackgroundProcess(ns)
 	if ns.shell != nil {
 		ns.shell.close()
@@ -197,32 +214,57 @@ func (m *Manager) sessionInfoLocked(ns *namedSession) *SessionInfo {
 		Background:     ns.background,
 		Running:        ns.bgRunning,
 		BGCommand:      ns.bgCommand,
+		LogPath:        ns.bgLogPath,
+		ExitCode:       ns.bgExitCode,
 		Disconnected:   ns.disconnected,
 	}
 }
 
+// resetIdleTimer (re)arms the session's idle expiry and refreshes lastUsed.
+// Every call bumps the generation so a previously scheduled expire callback
+// can no longer act on this session. All idle fields are updated under m.mu.
 func (ns *namedSession) resetIdleTimer(m *Manager) {
-	if ns.idleTimer != nil {
-		ns.idleTimer.Stop()
-	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ns.lastUsed = time.Now()
+	ns.idleGen++
+	gen := ns.idleGen
 	ttl := defaultSessionIdleTTL
 	if ns.background {
 		ttl = bgSessionIdleTTL
 	}
 	name := ns.name
-	key := ns.connectionKey
 	ns.idleTimer = time.AfterFunc(ttl, func() {
-		logger.Info("Session [%s] idle for %s, closing", name, ttl)
-		_ = m.CloseSession(name)
-		m.Touch(key, DefaultKeepAliveDuration)
+		m.expireSessionIfIdle(name, gen)
 	})
 }
 
-func (ns *namedSession) stopIdleTimer() {
-	if ns.idleTimer != nil {
-		ns.idleTimer.Stop()
-		ns.idleTimer = nil
+// expireSessionIfIdle is the idle TTL callback. It only acts when the
+// session still exists and the generation still matches (i.e. the timer was
+// not reset or the session closed in the meantime). A running background job
+// is never closed by the idle path: the timer is simply re-armed.
+func (m *Manager) expireSessionIfIdle(name string, gen uint64) {
+	m.mu.Lock()
+	ns := m.sessions[name]
+	if ns == nil || ns.idleGen != gen {
+		m.mu.Unlock()
+		return // reset or already closed
 	}
+	if ns.bgRunning {
+		// Job still running: renew the timer, never close or kill it.
+		m.mu.Unlock()
+		ns.resetIdleTimer(m)
+		return
+	}
+	ttl := defaultSessionIdleTTL
+	if ns.background {
+		ttl = bgSessionIdleTTL
+	}
+	key := ns.connectionKey
+	m.mu.Unlock()
+	logger.Info("Session [%s] idle for %s, closing", name, ttl)
+	_ = m.CloseSession(name)
+	m.Touch(key, DefaultKeepAliveDuration)
 }
 
 // closeSessionsForConnection tears down the physical shell channels of the

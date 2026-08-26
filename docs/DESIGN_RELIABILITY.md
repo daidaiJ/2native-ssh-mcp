@@ -2,6 +2,8 @@
 
 给 Auto 的实现规格。按任务顺序落地，不要一次改完再测。每个任务有明确的文件、做法、验收。
 
+T1–T8 落地后的残留缺陷见 [DESIGN_ISSUE_1.md](DESIGN_ISSUE_1.md)（[issue #1](https://github.com/daidaiJ/2native-ssh-mcp/issues/1)）。
+
 **不要做**：扩大工具数量、改认证/白名单模型、加 SSH zlib、改 HTTP daemon 协议。**不要引入** easyssh / goph / go-sshlib / fuchsia sshutil 作为依赖（理由见 §0.5）。
 
 ---

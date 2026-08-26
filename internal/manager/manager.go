@@ -596,8 +596,30 @@ func (m *Manager) validateLocalPath(localPath, name string, purpose string) (str
 		}
 	}
 	return "", newToolError(CodeLocalPathNotAllowed,
-		fmt.Sprintf("Path traversal detected. Local path resolved to: %s. %s",
-			pathToCheck, describeAllowedRoots("local", realRoots)), false)
+		localPathDeniedMessage(localPath, pathToCheck, realRoots), false)
+}
+
+// localPathDeniedMessage distinguishes a path traversal attempt from a plain
+// whitelist miss so the caller can tell an attack from a config issue.
+func localPathDeniedMessage(raw, resolved string, roots []string) string {
+	allowed := describeAllowedRoots("local", roots)
+	if hasDotDotSegment(raw) {
+		return fmt.Sprintf("Path traversal rejected. Local path resolved to: %s. %s", resolved, allowed)
+	}
+	return fmt.Sprintf("Local path is not within the process cwd or configured allowedLocalPaths. Resolved to: %s. %s",
+		resolved, allowed)
+}
+
+// hasDotDotSegment reports whether any path component is exactly "..",
+// accepting both / and \ separators (so foo..bar is not a false positive).
+func hasDotDotSegment(p string) bool {
+	norm := filepath.FromSlash(p)
+	for _, part := range strings.Split(norm, string(filepath.Separator)) {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) validateRemotePath(remotePath, name string) (string, error) {

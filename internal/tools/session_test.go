@@ -104,3 +104,35 @@ func TestSessionToolReadRequiresSessionName(t *testing.T) {
 		t.Fatalf("expected validation error, got: %s", text)
 	}
 }
+
+func TestSessionToolCloseRequiresSessionName(t *testing.T) {
+	m := newTestManager(t)
+	res, err := handleSessionTool(m, map[string]any{"action": "close"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatal("action=close without sessionName must be an error")
+	}
+	text := resultText(t, res)
+	if !strings.Contains(text, "sessionName is required for action=close") {
+		t.Fatalf("expected validation error, got: %s", text)
+	}
+}
+
+func TestSessionToolCloseIdempotent(t *testing.T) {
+	m := newTestManager(t)
+	// Closing a session that was never opened (or already closed by the
+	// idle TTL) must succeed, not report COMMAND_VALIDATION_FAILED.
+	res, err := handleSessionTool(m, map[string]any{"action": "close", "sessionName": "nope"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("close of a never-opened session must succeed, got: %+v", res)
+	}
+	text := resultText(t, res)
+	if !strings.Contains(text, `Session "nope" closed`) {
+		t.Fatalf("expected close confirmation, got: %s", text)
+	}
+}

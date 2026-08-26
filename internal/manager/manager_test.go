@@ -220,6 +220,26 @@ func TestCleanShellOutput(t *testing.T) {
 	}
 }
 
+func TestStripANSI(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"\x1b[32mgreen\x1b[0m", "green"},
+		{"\x1b[38;5;196mred\x1b[0m", "red"},
+		{"\x1b]0;title\x07osc", "osc"},
+		{"\x1b[?25lhide cursor", "hide cursor"},
+		{"\x1b(Bcharset", "charset"},
+		{"plain", "plain"},
+	}
+	for _, c := range cases {
+		if got := stripANSI(c.in); got != c.want {
+			t.Fatalf("stripANSI(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	// Must be idempotent (shell path strips twice).
+	if got := stripANSI(stripANSI("\x1b[32mgreen\x1b[0m")); got != "green" {
+		t.Fatalf("stripANSI must be idempotent, got %q", got)
+	}
+}
+
 func TestParseStatusOutput(t *testing.T) {
 	marker := "__MCP_FIELD_abc_"
 	output := "\n__MCP_FIELD_abc_hostname\nmyhost\n__MCP_FIELD_abc_osName\nLinux\n"

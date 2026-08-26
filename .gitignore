@@ -14,5 +14,8 @@ logs/
 *.test
 *.out
 
+# Local test downloads
+downloads/
+
 # Local tooling
 .qwen/

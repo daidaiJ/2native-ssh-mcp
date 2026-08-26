@@ -21,6 +21,7 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 - `SSH_CONNECTION_LOST` (retriable=false): the connection dropped mid-command; the remote process may still be running. **Do not replay blindly** — the error JSON carries partial `stdout`/`stderr` and `replaySafe: false`.
 - Output cap `maxOutputBytes` (default 10 MB) → `OUTPUT_LIMIT_EXCEEDED`; timeout → `COMMAND_TIMEOUT`. For timeout/lost/limit the error message stays short; partial output is in the same result's `stdout`/`stderr` fields.
 - **Light compress** (default): outputs ≥ `outputCompressThreshold` (4096 B) get head/tail lines + dedup; disable with `"outputCompressLight": false`. See `skills/2native-ssh-mcp-agent` for agent-side habits.
+- **ANSI stripped by default**: colors/progress escapes are removed from all output (exec, shell, background reads); disable per connection with `"stripAnsi": false`.
 - Connections **lazy**; after command kept alive per keepAlive policy, idle expiry closes. `keepAlive: false` closes immediately.
 - Executed commands appended to connection's command log file (if configured) — **without output**.
 
@@ -38,6 +39,7 @@ One tool, `action` param. Progress via `notifications/progress` when client send
 - **Dedup**: destination matches (size+mtime) → skipped. **Resume**: partial destination → continue. Download = temp + atomic rename, stamps remote mtime.
 - Growing source: tail appended after main copy.
 - Concurrent SFTP (16×32 KB default; `sftpConcurrency`/`sftpChunkSize` per connection).
+- Local path outside cwd/`allowedLocalPaths` → `LOCAL_PATH_NOT_ALLOWED` with a scope message ("not within the process cwd or configured allowedLocalPaths"); a `..` escape is reported separately as "Path traversal rejected".
 
 ### list-servers
 No args. Returns **servers** (metadata, status) and **active sessions**. Call first to pick `connectionName` or `sessionName`. **readOnly**.
@@ -48,11 +50,13 @@ One tool, `action` param. Exec-mode connections only.
 | action | Required | Notes |
 |---|---|---|
 | `open` | `sessionName`, `connectionName` (new) | Idempotent; `background=true` + `cmdString` starts long-running job |
-| `read` | `sessionName` | Poll background log; optional `maxBytes`, `offset` |
-| `close` | `sessionName` | Stop background job, release shell |
+| `read` | `sessionName` | Poll background log; optional `maxBytes`, `offset` (negative/omitted = continue, `0` = re-read from start) |
+| `close` | `sessionName` | Stop background job, release shell (**idempotent** — closing an already-closed session succeeds) |
 | `list` | — | All sessions; optional `connectionName` filter |
 
 **Long tasks / no-output tasks: use `session background=true` + `read` polling. Do NOT `nohup ... &` or `setsid` through `execute-command`** — those die with the exec channel. Background jobs are started detached (no PTY, new session) and **survive connection drops**; after a drop the session shows `disconnected=true` and `read`/`execute-command` reconnect automatically. Only `action=close` kills the remote job.
+
+**Finished background jobs keep their session** (and remote log) for 60 min — `close` it to release. `read` returns `logPath` (remote log) and `exitCode` once the job finished; `offset=0` re-reads from the start. Sessions live in memory only: a stdio process exit loses them (the remote log survives at `logPath`); a resident HTTP daemon keeps them across conversations. Re-opening `background=true` on a finished session is rejected with the `logPath` — `close` first, or read the old log.
 
 ### execute-command (with optional session)
 | Param | Notes |
@@ -102,6 +106,7 @@ session(action=close, sessionName=deploy)
     "maxOutputBytes": 10485760,
     "outputCompressLight": true,
     "outputCompressThreshold": 4096,
+    "stripAnsi": true,
     "commandTemplate": "sudo -n <quotedCommand>",
     "pty": true, "tryKeyboard": false
   }

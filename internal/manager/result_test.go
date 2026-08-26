@@ -59,3 +59,20 @@ func TestBuildCommandResultRedacts(t *testing.T) {
 		t.Fatalf("stdout must be redacted, got: %q", res.Stdout)
 	}
 }
+
+func TestBuildCommandResultStripsANSIByDefault(t *testing.T) {
+	cfg := &config.SSHConfig{}
+	res := buildCommandResult("\x1b[31mX\x1b[0m", "\x1b[32mY\x1b[0m", 0, StatusOK, cfg)
+	if res.Stdout != "X" || res.Stderr != "Y" {
+		t.Fatalf("ANSI must be stripped by default, got stdout=%q stderr=%q", res.Stdout, res.Stderr)
+	}
+}
+
+func TestBuildCommandResultKeepsANSIWhenDisabled(t *testing.T) {
+	falseVal := false
+	cfg := &config.SSHConfig{StripAnsi: &falseVal}
+	res := buildCommandResult("\x1b[31mX\x1b[0m", "", 0, StatusOK, cfg)
+	if res.Stdout != "\x1b[31mX\x1b[0m" {
+		t.Fatalf("stripAnsi=false must keep CSI sequences, got: %q", res.Stdout)
+	}
+}

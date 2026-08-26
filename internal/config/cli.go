@@ -434,6 +434,13 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 		}
 		conf.OutputCompressLight = &b
 	}
+	if v, ok := m["stripAnsi"]; ok {
+		b, err := ParseBool(v)
+		if err != nil {
+			return nil, err
+		}
+		conf.StripAnsi = &b
+	}
 
 	intFields := map[string]*int{
 		"shellReadyTimeoutMs":   &conf.ShellReadyTimeoutMs,

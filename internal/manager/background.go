@@ -34,6 +34,12 @@ type SessionOutput struct {
 	Offset      int64  `json:"offset"`
 	TotalBytes  int64  `json:"totalBytes"`
 	Running     bool   `json:"running"`
+	// LogPath is the remote log file; it survives the session so output can
+	// be re-read (e.g. with offset=0) or recovered after a restart.
+	LogPath string `json:"logPath,omitempty"`
+	// ExitCode is the job's exit code once it has finished (nil while
+	// running or unknown).
+	ExitCode *int `json:"exitCode,omitempty"`
 }
 
 // OpenSessionWithOptions creates or reuses a named session. When opts.Background
@@ -52,10 +58,18 @@ func (m *Manager) OpenSessionWithOptions(sessionName, connectionName string, opt
 	}
 	m.mu.Lock()
 	ns := m.sessions[sessionName]
-	if ns != nil && ns.background && ns.bgRunning {
-		out := m.sessionInfoLocked(ns)
+	if ns != nil && ns.background {
+		if ns.bgRunning {
+			out := m.sessionInfoLocked(ns)
+			m.mu.Unlock()
+			return out, nil
+		}
+		// Finished job: refuse to restart it, otherwise the starter would
+		// truncate the old log and the finished output would be lost.
+		logPath := ns.bgLogPath
 		m.mu.Unlock()
-		return out, nil
+		return nil, newToolError(CodeCommandValidationFailed,
+			fmt.Sprintf("session %q already exists (finished); close it first or read logPath=%s", sessionName, logPath), false)
 	}
 	m.mu.Unlock()
 	return m.startBackgroundCommand(sessionName, opts.CmdString, opts.Directory)
@@ -178,11 +192,12 @@ func (m *Manager) startBackgroundCommand(sessionName, cmdString, directory strin
 			"background command failed to start: the job is not alive on the remote host (check the command and that the log file is writable)", false)
 	}
 
+	m.mu.Lock()
 	ns.background = true
 	ns.bgCommand = cmdString
 	ns.bgOffset = 0
 	ns.bgRunning = true
-	ns.lastUsed = time.Now()
+	m.mu.Unlock()
 	ns.resetIdleTimer(m)
 	m.RecordCommand(ns.connectionKey, "[background] "+cmdString, 0, true)
 
@@ -233,9 +248,10 @@ func parseBGStartedPID(output string) int {
 	return pid
 }
 
-// ReadSessionOutput returns new bytes from a background session log. It runs
-// on a fresh no-PTY exec channel so it works even when the named shell is
-// gone (e.g. after a connection drop).
+// ReadSessionOutput returns bytes from a background session log. It runs on
+// a fresh no-PTY exec channel so it works even when the named shell is gone
+// (e.g. after a connection drop). A negative offset continues from the last
+// read position; offset>=0 reads from that byte (0 re-reads from the start).
 func (m *Manager) ReadSessionOutput(sessionName string, maxBytes int64, offset int64) (*SessionOutput, error) {
 	m.mu.Lock()
 	ns, ok := m.sessions[sessionName]
@@ -263,7 +279,7 @@ func (m *Manager) ReadSessionOutput(sessionName string, maxBytes int64, offset i
 		return nil, err
 	}
 
-	readScript := buildBGReadScript(ns.bgLogPath, ns.bgPIDPath, offset, maxBytes)
+	readScript := buildBGReadScript(ns.bgLogPath, ns.bgPIDPath, ns.bgExitPath, offset, maxBytes)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	output, err := m.runDetachedExec(ctx, client, readScript, 30*time.Second)
@@ -271,11 +287,18 @@ func (m *Manager) ReadSessionOutput(sessionName string, maxBytes int64, offset i
 		return nil, err
 	}
 
-	running, total, chunk := parseBGReadOutput(output)
+	running, total, chunk, exitCode := parseBGReadOutput(output)
+	m.mu.Lock()
 	ns.bgOffset = offset + int64(len(chunk))
 	ns.bgRunning = running
-	ns.lastUsed = time.Now()
+	ns.bgExitCode = exitCode
+	m.mu.Unlock()
 	ns.resetIdleTimer(m)
+
+	cfg := m.configs[ns.connectionKey]
+	if cfg == nil || cfg.GetStripAnsi() {
+		chunk = stripANSI(chunk)
+	}
 
 	return &SessionOutput{
 		SessionName: sessionName,
@@ -283,30 +306,35 @@ func (m *Manager) ReadSessionOutput(sessionName string, maxBytes int64, offset i
 		Offset:      ns.bgOffset,
 		TotalBytes:  total,
 		Running:     running,
+		LogPath:     ns.bgLogPath,
+		ExitCode:    exitCode,
 	}, nil
 }
 
 // buildBGReadScript builds a script that reports whether the job is running,
-// the log size, and the requested byte range of the log.
-func buildBGReadScript(logPath, pidPath string, offset, maxBytes int64) string {
+// the log size, the job exit code (empty while running or unknown), and the
+// requested byte range of the log.
+func buildBGReadScript(logPath, pidPath, exitPath string, offset, maxBytes int64) string {
 	return fmt.Sprintf(
-		"LOG=%s\nPIDF=%s\n"+
+		"LOG=%s\nPIDF=%s\nEXITF=%s\n"+
 			"RUN=0\n"+
 			"if [ -f \"$PIDF\" ]; then PID=$(cat \"$PIDF\" 2>/dev/null); "+
 			"if [ -n \"$PID\" ] && kill -0 \"$PID\" 2>/dev/null; then RUN=1; fi; fi\n"+
 			"SIZE=0\n"+
 			"if [ -f \"$LOG\" ]; then SIZE=$(wc -c < \"$LOG\" | tr -d ' '); fi\n"+
-			"printf '__MCP_BG_HDR__running=%%s size=%%s\\n' \"$RUN\" \"$SIZE\"\n"+
+			"EXIT=\n"+
+			"if [ -f \"$EXITF\" ]; then EXIT=$(cat \"$EXITF\" 2>/dev/null | tr -d ' \\n'); fi\n"+
+			"printf '__MCP_BG_HDR__running=%%s size=%%s exit=%%s\\n' \"$RUN\" \"$SIZE\" \"$EXIT\"\n"+
 			"if [ -f \"$LOG\" ] && [ \"$SIZE\" -gt %d ]; then tail -c +%d \"$LOG\" | head -c %d; fi\n",
-		shellQuote(logPath), shellQuote(pidPath),
+		shellQuote(logPath), shellQuote(pidPath), shellQuote(exitPath),
 		offset, offset+1, maxBytes,
 	)
 }
 
-func parseBGReadOutput(output string) (running bool, totalBytes int64, chunk string) {
+func parseBGReadOutput(output string) (running bool, totalBytes int64, chunk string, exitCode *int) {
 	lines := strings.SplitN(output, "\n", 2)
 	if len(lines) == 0 {
-		return false, 0, ""
+		return false, 0, "", nil
 	}
 	header := lines[0]
 	if idx := strings.Index(header, "__MCP_BG_HDR__"); idx >= 0 {
@@ -322,12 +350,18 @@ func parseBGReadOutput(output string) (running bool, totalBytes int64, chunk str
 			running = kv[1] == "1"
 		case "size":
 			totalBytes, _ = strconv.ParseInt(kv[1], 10, 64)
+		case "exit":
+			if kv[1] != "" {
+				if n, err := strconv.Atoi(kv[1]); err == nil {
+					exitCode = &n
+				}
+			}
 		}
 	}
 	if len(lines) > 1 {
 		chunk = lines[1]
 	}
-	return running, totalBytes, chunk
+	return running, totalBytes, chunk, exitCode
 }
 
 // stopBackgroundProcess terminates a background job (TERM, then KILL after a
@@ -342,16 +376,20 @@ func (m *Manager) stopBackgroundProcess(ns *namedSession) {
 
 	client, err := m.EnsureConnected(ns.connectionKey)
 	if err != nil {
+		m.mu.Lock()
 		ns.background = false
 		ns.bgRunning = false
+		m.mu.Unlock()
 		return
 	}
 	script := buildBGStopScript(ns.bgPIDPath, ns.bgLogPath)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_, _ = m.runDetachedExec(ctx, client, script, 15*time.Second)
+	m.mu.Lock()
 	ns.background = false
 	ns.bgRunning = false
+	m.mu.Unlock()
 }
 
 // buildBGStopScript builds a script that TERMs the job's process group, waits

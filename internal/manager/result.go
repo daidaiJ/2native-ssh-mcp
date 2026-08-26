@@ -52,10 +52,15 @@ func (r CommandResult) Text() string {
 	return strings.Join(sections, "\n")
 }
 
-// buildCommandResult redacts and light-compresses stdout/stderr and wraps
-// them in a CommandResult. Interrupted statuses (timeout, output limit,
-// connection lost, cancelled) are marked partial and not replay-safe.
+// buildCommandResult strips ANSI escapes (unless disabled), redacts and
+// light-compresses stdout/stderr and wraps them in a CommandResult.
+// Interrupted statuses (timeout, output limit, connection lost, cancelled)
+// are marked partial and not replay-safe.
 func buildCommandResult(stdout, stderr string, exitCode int, status string, cfg *config.SSHConfig) CommandResult {
+	if cfg == nil || cfg.GetStripAnsi() {
+		stdout = stripANSI(stdout)
+		stderr = stripANSI(stderr)
+	}
 	stdout, stderr = redactCommandOutput(stdout, stderr)
 	replaySafe := status == StatusOK || status == StatusExited
 	return CommandResult{

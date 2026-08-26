@@ -16,8 +16,9 @@ import (
 )
 
 var (
-	ansiOSCPattern = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
-	ansiCSIPattern = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
+	ansiOSCPattern     = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
+	ansiCSIPattern     = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
+	ansiCharsetPattern = regexp.MustCompile(`\x1b\([B0]`)
 	// Matches the exit code printed right after the end marker prefix.
 	shellExitCodePattern = regexp.MustCompile(`^(-?\d+)__(?:\r)?\n`)
 )
@@ -262,10 +263,17 @@ func buildShellScript(commandID, cmdString, directory, commandTemplate string) s
 		beginMarker, body, endMarker)
 }
 
+// stripANSI removes CSI and OSC escape sequences (plus the common charset
+// select ESC(B) from output. It is idempotent and safe to apply twice.
+func stripANSI(s string) string {
+	s = ansiOSCPattern.ReplaceAllString(s, "")
+	s = ansiCSIPattern.ReplaceAllString(s, "")
+	return ansiCharsetPattern.ReplaceAllString(s, "")
+}
+
 // cleanShellOutput strips ANSI escape sequences and normalizes line endings.
 func cleanShellOutput(output string) string {
-	output = ansiOSCPattern.ReplaceAllString(output, "")
-	output = ansiCSIPattern.ReplaceAllString(output, "")
+	output = stripANSI(output)
 	output = strings.ReplaceAll(output, "\r\n", "\n")
 	return strings.ReplaceAll(output, "\r", "\n")
 }

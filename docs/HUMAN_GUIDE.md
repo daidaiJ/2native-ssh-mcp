@@ -166,6 +166,7 @@ MCP 客户端配置：
 - 目标文件与源文件大小、mtime 一致 → 直接跳过（去重）
 - 目标已有部分数据 → 从断点续传；下载走临时文件 + 原子改名
 - 传输中源文件继续增长 → 自动补传尾部
+- 本地路径不在 cwd / `allowedLocalPaths` 内 → `LOCAL_PATH_NOT_ALLOWED`，提示「not within the process cwd or configured allowedLocalPaths」；含 `..` 的路径逃逸单独报「Path traversal rejected」
 
 ### list-servers
 
@@ -178,8 +179,8 @@ MCP 客户端配置：
 | action | 说明 |
 |---|---|
 | `open` | 打开会话；`background=true` + `cmdString` 启动后台任务 |
-| `read` | 轮询后台会话输出 |
-| `close` | 关闭会话并停止后台进程 |
+| `read` | 轮询后台会话输出（`offset` 省略/负值=续读，`0`=从头重读） |
+| `close` | 关闭会话并停止后台进程（**幂等**，可重复调用） |
 | `list` | 列出所有会话（可选 `connectionName` 过滤） |
 
 ### execute-command
@@ -191,6 +192,8 @@ MCP 客户端配置：
 **有状态操作：** `session open` → 多次 `execute-command`（带 sessionName）→ `session close`
 
 **长任务 / 无输出任务请用 `session background=true` + `read` 轮询，不要用 `execute-command` 跑 `nohup ... &` 或 `setsid`**——后者会随 exec 通道关闭而消亡。后台任务以无 PTY 的独立通道启动（新会话、脱离 sshd 进程组），**连接闪断后仍然存活**：断连后 `list-servers` 里会话显示 `disconnected=true`，`read` 或带 `sessionName` 的 `execute-command` 会自动重连；只有 `action=close` 才会杀掉远端后台进程。
+
+**后台作业结束后会话仍然保留**（含远端日志，60 分钟 retain TTL），必须 `close` 才释放；`close` 可重复调用。`read` 可带 `offset=0` 从头重读；返回 JSON 带 `logPath`（远端日志路径）和 `exitCode`（作业结束后）。会话只存在内存中：stdio 进程退出即丢失（远端日志仍在 `logPath`，可另行读取），常驻 HTTP daemon 才能跨对话保留。对已结束的会话重复 `open background=true` 会被拒绝并提示 `logPath`——先 `close` 或先读旧日志。
 
 **命令结果说明：**
 - 非 0 退出码是**正常结果**（不是错误），正文里看 `[exit code] N`；只有校验失败、连不上、超时、输出超限、连接中断才报错
@@ -256,6 +259,8 @@ Server options:
 | `keepaliveIntervalMs` / `keepaliveCountMax` | 10000 / 3 | SSH 心跳 |
 | `commandTimeoutMs` / `connectionTimeoutMs` / `sftpTimeoutMs` | 30000 / 30000 / 300000 | 各类超时 |
 | `maxOutputBytes` | 10485760 | 单命令输出上限，0 为不限 |
+| `outputCompressLight` / `outputCompressThreshold` | true / 4096 | 大输出头尾压缩与阈值 |
+| `stripAnsi` | true | 输出剥离 ANSI 转义序列（false 保留颜色/进度条） |
 | `commandTemplate` | 空 | 命令包装模板（`<command>` / `<quotedCommand>`） |
 | `pty` | true | exec 模式分配伪终端 |
 | `tryKeyboard` | false | 键盘交互认证（2FA 码用环境变量 `SSH_MCP_2FA_CODE`） |

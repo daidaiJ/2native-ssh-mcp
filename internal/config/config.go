@@ -67,6 +67,10 @@ type SSHConfig struct {
 	// OutputCompressThreshold is the byte size before light compression runs
 	// (default 4096; 0 uses default).
 	OutputCompressThreshold int `json:"outputCompressThreshold,omitempty"`
+	// StripAnsi strips ANSI escape sequences from command output before it
+	// is returned (default: true when unset; false keeps colors/progress
+	// bars for debugging).
+	StripAnsi *bool `json:"stripAnsi,omitempty"`
 	KeepaliveIntervalMs   int      `json:"keepaliveIntervalMs,omitempty"`
 	KeepaliveCountMax     int      `json:"keepaliveCountMax,omitempty"`
 	CommandTemplate       string   `json:"commandTemplate,omitempty"`
@@ -200,6 +204,15 @@ func (c *SSHConfig) Normalize() error {
 func (c *SSHConfig) GetPty() bool {
 	if c.Pty != nil {
 		return *c.Pty
+	}
+	return true
+}
+
+// GetStripAnsi returns whether ANSI escape sequences should be stripped from
+// command output (default: true when unset).
+func (c *SSHConfig) GetStripAnsi() bool {
+	if c.StripAnsi != nil {
+		return *c.StripAnsi
 	}
 	return true
 }

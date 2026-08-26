@@ -6,9 +6,33 @@ import (
 )
 
 func TestParseBGReadOutput(t *testing.T) {
-	running, total, chunk := parseBGReadOutput("__MCP_BG_HDR__running=1 size=42\nhello")
+	running, total, chunk, exit := parseBGReadOutput("__MCP_BG_HDR__running=1 size=42 exit=\nhello")
 	if !running || total != 42 || chunk != "hello" {
 		t.Fatalf("parseBGReadOutput: running=%v total=%d chunk=%q", running, total, chunk)
+	}
+	if exit != nil {
+		t.Fatalf("parseBGReadOutput: exit must be nil while running, got %v", *exit)
+	}
+}
+
+func TestParseBGReadOutputLegacyHeader(t *testing.T) {
+	// Old read scripts had no exit= field; parsing must stay compatible.
+	running, total, chunk, exit := parseBGReadOutput("__MCP_BG_HDR__running=0 size=7\nDONE\n")
+	if running || total != 7 || chunk != "DONE\n" {
+		t.Fatalf("parseBGReadOutput legacy: running=%v total=%d chunk=%q", running, total, chunk)
+	}
+	if exit != nil {
+		t.Fatalf("parseBGReadOutput legacy: exit must be nil, got %v", *exit)
+	}
+}
+
+func TestParseBGReadOutputExitCode(t *testing.T) {
+	running, total, chunk, exit := parseBGReadOutput("__MCP_BG_HDR__running=0 size=5 exit=3\nDONE\n")
+	if running || total != 5 || chunk != "DONE\n" {
+		t.Fatalf("parseBGReadOutput: running=%v total=%d chunk=%q", running, total, chunk)
+	}
+	if exit == nil || *exit != 3 {
+		t.Fatalf("parseBGReadOutput: exit = %v, want 3", exit)
 	}
 }
 
@@ -49,8 +73,8 @@ func TestBuildBGStarterScriptQuotesBody(t *testing.T) {
 }
 
 func TestBuildBGReadScript(t *testing.T) {
-	script := buildBGReadScript("/tmp/x.log", "/tmp/x.pid", 10, 1024)
-	for _, want := range []string{"__MCP_BG_HDR__", "kill -0", "tail -c +11", "head -c 1024"} {
+	script := buildBGReadScript("/tmp/x.log", "/tmp/x.pid", "/tmp/x.exit", 10, 1024)
+	for _, want := range []string{"__MCP_BG_HDR__", "kill -0", "tail -c +11", "head -c 1024", "EXITF='/tmp/x.exit'", "exit=%s"} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("read script missing %q:\n%s", want, script)
 		}

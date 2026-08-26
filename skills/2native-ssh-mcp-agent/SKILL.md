@@ -33,6 +33,8 @@ Disable per connection: `"outputCompressLight": false` in config.
 
 Tune threshold: `"outputCompressThreshold": 8192`.
 
+ANSI escape sequences (colors, progress bars) are stripped from all output by default; disable per connection: `"stripAnsi": false`.
+
 ### Agent-side habits (before running)
 
 | Bad | Better |
@@ -72,6 +74,8 @@ session(action=close, sessionName=logs)
 ```
 
 **Long tasks / no-output tasks: use `session background=true` + `read` polling. Do NOT `nohup ... &` / `setsid` through `execute-command`** — those die when the exec channel closes. Background jobs survive connection drops; after a drop the session shows `disconnected=true` and `read`/`execute-command` reconnect automatically. Only `action=close` kills the remote job.
+
+**A finished background job keeps its session and remote log for 60 min** — always `close` when done (idempotent, safe to call twice). `read` supports `offset=0` to re-read from the start; the JSON carries `logPath` (remote log) and `exitCode` once the job finished. Sessions are in-memory: a stdio process restart loses them (the remote log survives at `logPath`); a resident HTTP daemon keeps them across conversations. Re-opening `background=true` on a finished session is rejected with the `logPath` — `close` first, or read the old log.
 
 ## Reading results
 
