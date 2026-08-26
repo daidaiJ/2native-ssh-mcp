@@ -48,7 +48,7 @@ func TestParseArgsConfigFile(t *testing.T) {
 		         "commandLogSize": 20, "commandLogOnlySuccess": true, "sftpConcurrency": 8},
 		"prod": {"host": "10.0.0.2", "port": "2222", "user": "deploy", "privateKey": "~/keys/id_rsa"}
 	}`
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -138,7 +138,7 @@ func TestParseArgsEnvVarReferences(t *testing.T) {
 		"dev": {"host": "${SSH_MCP_TEST_HOST}", "port": 22, "username": "root",
 		        "password": "${SSH_MCP_TEST_PASSWORD}"}
 	}`
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -166,7 +166,7 @@ func TestLoadConfigFileGlobal(t *testing.T) {
 		"$global": {"allowInsecureConfigPerms": true},
 		"dev": {"host": "10.0.0.1", "port": 22, "username": "root", "password": "x"}
 	}`
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -189,7 +189,7 @@ func TestLoadConfigFileGlobalDefaults(t *testing.T) {
 		"$global": {},
 		"dev": {"host": "10.0.0.1", "port": 22, "username": "root", "password": "x"}
 	}`
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -209,7 +209,7 @@ func TestLoadConfigFileGlobalInvalidType(t *testing.T) {
 		"$global": ["not", "an", "object"],
 		"dev": {"host": "10.0.0.1", "port": 22, "username": "root", "password": "x"}
 	}`
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -225,7 +225,7 @@ func TestParseArgsGlobalConfig(t *testing.T) {
 		"$global": {"allowInsecureConfigPerms": true},
 		"dev": {"host": "10.0.0.1", "port": 22, "username": "root", "password": "x"}
 	}`
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -271,7 +271,7 @@ func TestParseArgsMetadata(t *testing.T) {
 			"notes": "测试环境，勿做破坏性操作"
 		}
 	}`
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	opts, err := ParseArgs([]string{"--config-file", path})

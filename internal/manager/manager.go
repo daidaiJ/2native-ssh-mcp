@@ -614,10 +614,10 @@ func localPathDeniedMessage(raw, resolved string, roots []string) string {
 }
 
 // hasDotDotSegment reports whether any path component is exactly "..",
-// accepting both / and \ separators (so foo..bar is not a false positive).
+// accepting both / and \ separators on every platform (so foo..bar is not a
+// false positive, and Windows-style paths are caught on Unix too).
 func hasDotDotSegment(p string) bool {
-	norm := filepath.FromSlash(p)
-	for _, part := range strings.Split(norm, string(filepath.Separator)) {
+	for _, part := range strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' }) {
 		if part == ".." {
 			return true
 		}
