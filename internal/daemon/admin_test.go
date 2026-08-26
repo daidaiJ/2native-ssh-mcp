@@ -82,3 +82,48 @@ func TestAdminLocalOnlyAllEndpoints(t *testing.T) {
 		}
 	}
 }
+
+func TestAdminShutdownRequiresPostJSON(t *testing.T) {
+	admin := NewAdmin(1, "127.0.0.1:8338")
+	h := admin.Handler()
+
+	// A plain GET (e.g. <img src> from a local page) must not stop the daemon.
+	req := httptest.NewRequest(http.MethodGet, "/__admin/shutdown", nil)
+	req.RemoteAddr = "127.0.0.1:1"
+	req.Host = "127.0.0.1"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET shutdown: got %d, want 405", rec.Code)
+	}
+	if shutdownSignaled(admin) {
+		t.Fatal("GET shutdown must not signal shutdown")
+	}
+
+	// POST without the JSON content type is rejected too.
+	req = httptest.NewRequest(http.MethodPost, "/__admin/shutdown", nil)
+	req.RemoteAddr = "127.0.0.1:1"
+	req.Host = "127.0.0.1"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST shutdown without JSON: got %d, want 405", rec.Code)
+	}
+	if shutdownSignaled(admin) {
+		t.Fatal("POST without JSON must not signal shutdown")
+	}
+
+	// The daemon client's request (POST + application/json) works.
+	req = httptest.NewRequest(http.MethodPost, "/__admin/shutdown", nil)
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "127.0.0.1:1"
+	req.Host = "127.0.0.1"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST shutdown with JSON: got %d, want 200", rec.Code)
+	}
+	if !shutdownSignaled(admin) {
+		t.Fatal("POST shutdown with JSON must signal shutdown")
+	}
+}

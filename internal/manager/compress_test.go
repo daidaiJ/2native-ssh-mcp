@@ -3,6 +3,7 @@ package manager
 import (
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -74,7 +75,8 @@ func TestCompressDisabled(t *testing.T) {
 // next write trips the overflow flag.
 func TestLimitedBufferSharedBudget(t *testing.T) {
 	const max = 10
-	budget := max
+	var budget atomic.Int32
+	budget.Store(max)
 	exceeded := false
 	stdout := &limitedBuffer{max: max, shared: &budget, onExceed: func() { exceeded = true }}
 	stderr := &limitedBuffer{max: max, shared: &budget, onExceed: func() { exceeded = true }}

@@ -90,6 +90,12 @@ func (a *Admin) Handler() http.Handler {
 		json.NewEncoder(w).Encode(RefCountResponse{Name: ServerName, RefCount: int(a.refCount.Load())})
 	}))
 	mux.HandleFunc("/__admin/shutdown", a.localOnly(func(w http.ResponseWriter, r *http.Request) {
+		// POST + JSON only: a plain GET (e.g. <img src> from a local page)
+		// must not be able to stop the daemon.
+		if r.Method != http.MethodPost || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		w.Write([]byte(`{"message":"shutdown requested"}`))
 		a.requestShutdown()
 	}))
@@ -109,10 +115,13 @@ func (a *Admin) requestShutdown() {
 }
 
 // applyRefCountDelta applies a refcount change: +1 adds a guest lease with a
-// TTL, -1 removes a guest lease first (falling back to the owner). It
-// returns the new refcount.
+// TTL, -1 removes a guest lease first (falling back to the owner). The
+// counter is settled under mu so a lease removal and its counter change are
+// atomic: a concurrent expireGuests can never deduct the same lease twice.
+// It returns the new refcount.
 func (a *Admin) applyRefCountDelta(delta int) int32 {
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	if delta > 0 {
 		expires := a.now().Add(a.leaseTTL)
 		for i := 0; i < delta; i++ {
@@ -124,8 +133,9 @@ func (a *Admin) applyRefCountDelta(delta int) int32 {
 			a.guests = a.guests[:len(a.guests)-1]
 			remove--
 		}
+		// The counter still moves by the full delta: leases that were not
+		// removed fall back to the owner.
 	}
-	a.mu.Unlock()
 	newVal := a.refCount.Add(int32(delta))
 	if newVal < 0 {
 		a.refCount.Store(0)
@@ -149,10 +159,11 @@ func (a *Admin) TouchGuests() {
 }
 
 // expireGuests drops guest leases past their expiry, decrementing the
-// refcount accordingly. When the count reaches zero the shutdown is
+// refcount accordingly under mu. When the count reaches zero the shutdown is
 // requested. Returns the new refcount.
 func (a *Admin) expireGuests() int32 {
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	now := a.now()
 	kept := a.guests[:0]
 	expired := 0
@@ -164,7 +175,6 @@ func (a *Admin) expireGuests() int32 {
 		kept = append(kept, g)
 	}
 	a.guests = kept
-	a.mu.Unlock()
 	if expired > 0 {
 		newVal := a.refCount.Add(-int32(expired))
 		if newVal <= 0 {

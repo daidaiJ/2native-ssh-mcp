@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -98,11 +99,14 @@ func (m *Manager) ExecuteCommand(ctx context.Context, cmdString, directory, name
 
 // limitedBuffer captures up to max bytes and records overflow. When shared
 // is non-nil, stdout and stderr share one byte budget so the combined output
-// cannot exceed max (the per-stream cap is only a safety bound).
+// stays within max (plus at most one write chunk per stream, since the
+// budget is consumed atomically but the check is not); the per-stream cap is
+// only a safety bound. The budget is atomic because x/crypto/ssh copies
+// stdout and stderr from separate goroutines.
 type limitedBuffer struct {
 	buf      bytes.Buffer
 	max      int
-	shared   *int // shared remaining budget; nil for standalone buffers
+	shared   *atomic.Int32 // shared remaining budget; nil for standalone buffers
 	exceeded bool
 	onExceed func()
 }
@@ -116,14 +120,14 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 	}
 	remaining := b.max - b.buf.Len()
 	if b.shared != nil {
-		remaining = *b.shared
+		remaining = int(b.shared.Load())
 	}
 	if len(p) > remaining {
 		if remaining > 0 {
 			b.buf.Write(p[:remaining])
 		}
 		if b.shared != nil {
-			*b.shared = 0
+			b.shared.Store(0)
 		}
 		b.exceeded = true
 		if b.onExceed != nil {
@@ -132,7 +136,7 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	if b.shared != nil {
-		*b.shared -= len(p)
+		b.shared.Add(-int32(len(p)))
 	}
 	return b.buf.Write(p)
 }
@@ -173,7 +177,8 @@ func (m *Manager) runExecCommand(ctx context.Context, client *ssh.Client, cfg *c
 		default:
 		}
 	}
-	budget := maxOutput
+	var budget atomic.Int32
+	budget.Store(int32(maxOutput))
 	stdout := &limitedBuffer{max: maxOutput, shared: &budget, onExceed: notifyExceed}
 	stderr := &limitedBuffer{max: maxOutput, shared: &budget, onExceed: notifyExceed}
 	session.Stdout = stdout

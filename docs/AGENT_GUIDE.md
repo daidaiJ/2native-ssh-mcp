@@ -160,7 +160,7 @@ MCP client: `{"mcpServers": {"2native-ssh-mcp": {"url": "http://127.0.0.1:8338/m
 
 **/mcp auth**: loopback listen (default) needs no token. Non-loopback listen **requires** a Bearer token or the server refuses to start — sources in order: `--http-token`, env `SSH_MCP_HTTP_TOKEN`, `$global.httpToken` (config file). With a token, the client must send `Authorization: Bearer <token>` on every `/mcp` request (401 otherwise). Admin API is exempt (loopback + Host check only).
 
-Daemon semantics: refcount (first `start` = owner lease, never expires; extra `start` = guest lease with a **15 min TTL** refreshed by any `/mcp` request; `stop` −1 removes a guest first, then the owner; exits at 0), PID file, admin API `/__admin/{health,status,refcount,shutdown}` (loopback client + loopback `Host` header required, `"name":"2native-ssh-mcp"` verified). The daemon never exits from idling — only count 0, `kill`, or a signal.
+Daemon semantics: refcount (first `start` = owner lease, never expires; extra `start` = guest lease with a **15 min TTL** refreshed by any authenticated `/mcp` request — all guest leases at once, regardless of which `start` created them; `stop` −1 removes a guest first, then the owner; exits at 0), PID file, admin API `/__admin/{health,status,refcount,shutdown}` (loopback client + loopback `Host` header required, `"name":"2native-ssh-mcp"` verified; `shutdown` additionally requires POST + `Content-Type: application/json`). The daemon never exits from idling — only count 0, `kill`, or a signal.
 
 ## Release workflow
 

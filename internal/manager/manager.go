@@ -4,6 +4,7 @@ package manager
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -681,6 +682,11 @@ func applyCommandTemplate(template, command string) string {
 	return strings.ReplaceAll(out, "<command>", command)
 }
 
+// randomID returns a cryptographically random id. Used for markers in shell
+// output and for /tmp file suffixes, so the remote side must not be able to
+// predict it.
 func randomID(prefix string) string {
-	return fmt.Sprintf("%s_%d_%x", prefix, time.Now().UnixNano(), os.Getpid()^int(time.Now().UnixNano()>>32))
+	var b [8]byte
+	rand.Read(b[:]) // crypto/rand never returns an error (Go 1.24+)
+	return fmt.Sprintf("%s_%x", prefix, b)
 }

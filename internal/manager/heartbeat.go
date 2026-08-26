@@ -60,9 +60,9 @@ func applyKeepaliveResult(unanswered int, res keepaliveResult) int {
 	return unanswered + 1
 }
 
-// startHeartbeat sends keepalive requests to detect dead connections. The
-// probe runs in a goroutine and at most one probe is in flight at a time, so
-// a half-dead peer cannot pile requests on the SSH mux. Only err matters for
+// startHeartbeat sends keepalive requests to detect dead connections. Each
+// probe runs in a goroutine and is awaited before the next one starts, so a
+// half-dead peer cannot pile requests on the SSH mux. Only err matters for
 // liveness; ok==false (REQUEST_FAILURE) is a normal reply.
 func (m *Manager) startHeartbeat(key string, client *ssh.Client, cfg *config.SSHConfig) {
 	interval := time.Duration(cfg.KeepaliveIntervalMs) * time.Millisecond
@@ -72,7 +72,6 @@ func (m *Manager) startHeartbeat(key string, client *ssh.Client, cfg *config.SSH
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		unanswered := 0
-		var pending chan keepaliveResult // non-nil while a probe is in flight
 		for range ticker.C {
 			m.mu.Lock()
 			current := m.clients[key]
@@ -80,26 +79,9 @@ func (m *Manager) startHeartbeat(key string, client *ssh.Client, cfg *config.SSH
 			if current != client {
 				return
 			}
-			if pending != nil {
-				select {
-				case res := <-pending:
-					pending = nil
-					unanswered = applyKeepaliveResult(unanswered, res)
-				default:
-					// Previous probe still in flight; do not pile up on the mux.
-					continue
-				}
-			}
-			ch := make(chan keepaliveResult, 1)
-			pending = ch
-			go func() { ch <- runKeepaliveRound(client, grace) }()
-			select {
-			case res := <-ch:
-				pending = nil
-				unanswered = applyKeepaliveResult(unanswered, res)
-			case <-time.After(grace):
-				unanswered++
-			}
+			// runKeepaliveRound is bounded by grace internally, so this
+			// blocks at most one grace period per probe.
+			unanswered = applyKeepaliveResult(unanswered, runKeepaliveRound(client, grace))
 			if unanswered >= maxCount {
 				m.keepaliveFailed(key, client)
 				return

@@ -67,8 +67,12 @@ func knownHostsCallback(path string) (ssh.HostKeyCallback, error) {
 	return cb, nil
 }
 
-// ensureKnownHostsFile creates the known_hosts file (0600) when missing.
+// ensureKnownHostsFile creates the known_hosts file (0600) when missing,
+// including its parent directory (0700, e.g. ~/.ssh).
 func ensureKnownHostsFile(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
