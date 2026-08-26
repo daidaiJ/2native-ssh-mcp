@@ -21,11 +21,13 @@
   - `file-transfer` — 上传/下载，带进度通知、去重、断点续传
 - **Agent Skill**：[`skills/2native-ssh-mcp-helper`](skills/2native-ssh-mcp-helper/SKILL.md)（安装配置）、[`skills/2native-ssh-mcp-agent`](skills/2native-ssh-mcp-agent/SKILL.md)（远程执行防御与输出/token 策略）
 - **连接生命周期**：懒连接（首次调用才建立），执行后按 `keepAlive`/`keepAliveDuration` 保活（默认 10 分钟），空闲自动断开；执行中的命令受 in-flight 保护，不会被空闲/心跳误拆
-- **可靠性**：后台任务以无 PTY 独立通道启动（setsid 脱离会话），**连接闪断后仍存活**，会话可自动重连重附着；非 0 退出码是正常结果（看 `exitCode`），连接中断报 `SSH_CONNECTION_LOST`（`retriable=false`，带部分输出，不可盲目重放）
+- **可靠性**：TCP keepalive + 应用层心跳（OpenSSH 语义：任意回复即存活，单 in-flight 发送）；后台任务以无 PTY 独立通道启动（setsid 脱离会话），**连接闪断后仍存活**，会话可自动重连重附着；非 0 退出码是正常结果（看 `exitCode`），连接中断报 `SSH_CONNECTION_LOST`（`retriable=false`，带部分输出，不可盲目重放）
 - **会话保留**：后台作业结束后会话与远端日志保留 60 分钟，`read` 可 `offset=0` 重读（JSON 带 `logPath`/`exitCode`），`close` 幂等可重复调用
+- **输出处理**：默认剥离 ANSI 转义序列（颜色/进度条，`stripAnsi: false` 可关）；大输出（≥4KB）头尾摘要压缩不丢语义（`outputCompressLight`/`outputCompressThreshold`）
 - **命令日志**：按连接记录最近 N 条执行过的命令（不含输出），可只记成功命令，落盘为 JSON 行文件（配置：`commandLogSize` / `commandLogDir` / `commandLogOnlySuccess`，或全局 `--command-log-size` 等 CLI 参数）
-- **安全**：命令白/黑名单、路径白名单、凭据隔离、输出脱敏、**默认剥离 ANSI 转义序列**（颜色/进度条，`stripAnsi: false` 可关）、**轻量输出压缩**（≥4KB 头尾摘要不丢语义）、配置权限检查（Unix `0600`/`0700`，Windows ACL；可用 `--allow-insecure-config-perms` 或配置文件 `$global.allowInsecureConfigPerms` 跳过，见 [SECURITY.md](SECURITY.md)）
-- **实用 SSH 特性**：TCP keepalive、心跳检测、算法协商配置（兼容老服务器）、SFTP 并发传输（高延迟链路提速）、代理（SOCKS5/HTTP/HTTPS）、Pageant/ssh-agent、键盘交互认证（2FA）
+- **安全**：命令白/黑名单、路径白名单（本地/远端）、凭据隔离（SSH 凭据留在本地，不暴露给模型）、输出脱敏、配置权限检查（Unix `0600`/`0700`，Windows ACL；可用 `--allow-insecure-config-perms` 或配置文件 `$global.allowInsecureConfigPerms` 跳过，见 [SECURITY.md](SECURITY.md)）
+- **认证与兼容性**：密码/私钥/ssh-agent/Pageant/键盘交互认证（2FA）、代理（SOCKS5/HTTP/HTTPS）、算法协商配置（兼容老服务器）
+- **文件传输性能**：SFTP 并发传输（`sftpConcurrency`/`sftpChunkSize`，高延迟链路提速）、断点续传、去重、进度通知
 - **HTTP daemon**：`start/stop/status/kill` 子命令 + 引用计数 + PID 文件 + 健康检查端点；`install` 一键注册 Windows 开机自启
 - **自动发布**：推送带消息的 tag 即触发 GitHub Actions 构建 6 平台二进制并创建 Release（日志用 tag 消息）
 
@@ -70,10 +72,16 @@ git push origin v1.0.1
 │   ├── sshconfig/                 # ~/.ssh/config 解析（Include、通配符、first-match-wins）
 │   ├── logger/                    # stderr 日志（不污染 stdio 协议）
 │   ├── manager/                   # 连接管理核心
-│   │   ├── manager.go             #   懒连接、空闲保活、心跳、路径校验、命令日志
+│   │   ├── manager.go             #   懒连接、空闲保活、路径校验、命令日志
 │   │   ├── dial.go                #   认证（密码/私钥/agent/Pageant/2FA）、代理（SOCKS5/HTTP/HTTPS）
 │   │   ├── exec.go                #   exec 模式命令执行（超时/输出上限/退出码）
 │   │   ├── shell.go               #   shell 模式（marker 协议、ANSI 清理、串行队列）
+│   │   ├── background.go          #   后台任务（detached exec、日志轮询、停止）
+│   │   ├── session.go             #   命名会话（CWD 保持、断连重附着、空闲 TTL）
+│   │   ├── heartbeat.go           #   应用层心跳（keepalive 语义、in-flight 保护）
+│   │   ├── result.go              #   结构化结果（退出码、状态、ANSI 剥离）
+│   │   ├── compress.go            #   大输出头尾压缩
+│   │   ├── redact.go              #   输出脱敏
 │   │   ├── sftp.go                #   文件传输（并发拷贝、进度、去重、断点续传）
 │   │   ├── status.go              #   远程系统状态采集（hostname/OS/内存/磁盘等）
 │   │   └── commandlog.go          #   命令日志文件（JSON 行、保留最近 N 条）
