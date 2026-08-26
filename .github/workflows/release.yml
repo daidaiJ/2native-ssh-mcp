@@ -121,4 +121,5 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             dist/2native-ssh-mcp-* \
             --title "${{ github.ref_name }}" \
-            --notes-file notes.md
+            --notes-file notes.md \
+            --discard-existing
