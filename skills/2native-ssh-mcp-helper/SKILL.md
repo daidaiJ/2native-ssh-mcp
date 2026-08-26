@@ -56,11 +56,13 @@ Interactive wizard for **2native-ssh-mcp** (Go SSH MCP server). Produces a locke
    - `allowedLocalPaths` / `allowedRemotePaths`
    - Server metadata: `description`, `business`, `aliases`, `notes` for list-servers
    - Bastion: `"transportMode": "shell"` (no SFTP on shell mode)
+   - Host key check: `"hostKeyCheck"` — default `accept-new` (records unknown keys, rejects changed ones); use `strict` for fixed hosts, `none` for dynamic IP / frequently reimaged machines. `known_hosts` and its directory are auto-created; override path with `"knownHostsFile"`
 
 6. **Write config.json**
    - Store outside the repo if it contains secrets; e.g. `~/.config/2native-ssh-mcp/config.json`
    - Unix: `chmod 600 config.json && chmod 700 $(dirname config.json)`
    - Windows: restrict ACL so other users cannot modify the file
+   - Server refuses to start on insecure perms; dev-only escape hatches: CLI `--allow-insecure-config-perms` or `"$global": { "allowInsecureConfigPerms": true }` in the file itself
    - Example:
 
 ```json
@@ -110,6 +112,23 @@ Interactive wizard for **2native-ssh-mcp** (Go SSH MCP server). Produces a locke
 
    Start daemon once: `2native-ssh-mcp start --config-file /path/config.json --http-addr 127.0.0.1:8338`
 
+   Token rules (v1.3.0+):
+   - Loopback listen (default `127.0.0.1`) → no token needed, zero-config for local clients
+   - Non-loopback listen (e.g. `0.0.0.0`) → **token required, server refuses to start without one** (fail closed)
+   - Token sources, highest first: `--http-token` → env `SSH_MCP_HTTP_TOKEN` → `"$global": { "httpToken": "..." }` (supports `${VAR}` refs)
+   - With a token, clients must send `Authorization: Bearer <token>`:
+
+```json
+{
+  "mcpServers": {
+    "2native-ssh-mcp": {
+      "url": "http://host:8338/mcp",
+      "headers": { "Authorization": "Bearer ${SSH_MCP_HTTP_TOKEN}" }
+    }
+  }
+}
+```
+
    Rules:
    - Use **absolute paths** for binary and config on Windows
    - Each CLI flag and value are **separate** `args` elements
@@ -133,7 +152,9 @@ Interactive wizard for **2native-ssh-mcp** (Go SSH MCP server). Produces a locke
 | Long-running logs | `session action=open` + `background=true`, poll `session action=read` |
 | Stateful shell (exec mode) | `session action=open` → `execute-command` with `sessionName` |
 | File upload/download | `file-transfer` (exec mode only) |
-| Skip config perm check (dev) | `--allow-insecure-config-perms` |
+| Skip config perm check (dev) | `--allow-insecure-config-perms` or `"$global": { "allowInsecureConfigPerms": true }` |
+| Host key verification | `"hostKeyCheck": "accept-new"` (default) / `"strict"` / `"none"`; `"knownHostsFile"` to override path |
+| HTTP token (non-loopback) | `--http-token` / `SSH_MCP_HTTP_TOKEN` / `"$global": { "httpToken": "..." }` |
 
 ## Pitfalls
 

@@ -18,6 +18,7 @@ Defensive playbook for agents using **2native-ssh-mcp**. Read this before execut
 3. **Prefer narrow commands** — scope with `head`, `tail`, `grep`, `wc`, paths; avoid blind `cat` on large files.
 4. **Respect whitelist/blacklist** — if a command is rejected, do not bypass; ask the operator to widen policy.
 5. **Secrets** — server redacts Bearer tokens, PEM blocks, `password=` lines; still avoid printing credentials.
+6. **Host key rejection** — if a connection fails with a host key mismatch (server reimaged / key rotated), do not bypass; report it. Fix is operator-side: remove the stale line from `known_hosts` (or set `"hostKeyCheck": "none"` for dynamic-IP hosts).
 
 ## Output & tokens
 
