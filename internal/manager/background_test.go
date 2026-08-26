@@ -1,8 +1,11 @@
 package manager
 
 import (
+	"regexp"
 	"strings"
 	"testing"
+
+	"2native-ssh-mcp/internal/config"
 )
 
 func TestParseBGReadOutput(t *testing.T) {
@@ -83,9 +86,82 @@ func TestBuildBGReadScript(t *testing.T) {
 
 func TestBuildBGStopScript(t *testing.T) {
 	script := buildBGStopScript("/tmp/x.pid", "/tmp/x.log")
-	for _, want := range []string{"kill -TERM", "kill -KILL", "sleep 2", "rm -f"} {
+	for _, want := range []string{"kill -TERM", "kill -KILL", "sleep 2", "rm -f", bgStopFailedMarker} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("stop script missing %q:\n%s", want, script)
 		}
+	}
+}
+
+func TestBGSessionPaths(t *testing.T) {
+	logPath, pidPath, exitPath := bgPaths("my-session")
+	re := regexp.MustCompile(`^/tmp/\.2native-ssh-mcp-my-session-([A-Za-z0-9_]+)\.(log|pid|exit)$`)
+	m := re.FindStringSubmatch(logPath)
+	if m == nil {
+		t.Fatalf("log path does not match expected pattern: %s", logPath)
+	}
+	id := m[1]
+	if id == "" {
+		t.Fatal("bg path id must be non-empty")
+	}
+	for _, p := range []string{pidPath, exitPath} {
+		m := re.FindStringSubmatch(p)
+		if m == nil {
+			t.Fatalf("path does not match expected pattern: %s", p)
+		}
+		if m[1] != id {
+			t.Fatalf("paths must share the same id: log=%s pid=%s exit=%s", logPath, pidPath, exitPath)
+		}
+	}
+}
+
+// TestCloseSessionOrphanKeepsSession verifies that a close which cannot
+// confirm the remote job stopped keeps the session in the map, marked
+// orphaned, with background state intact.
+func TestCloseSessionOrphanKeepsSession(t *testing.T) {
+	cfg := &config.SSHConfig{
+		Name:                "unreachable",
+		Host:                "127.0.0.1",
+		Port:                1, // nothing listens here: connection refused
+		Username:            "testuser",
+		ConnectionTimeoutMs: 500,
+	}
+	m, err := New(map[string]*config.SSHConfig{"unreachable": cfg}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.DisconnectAll()
+
+	logPath, pidPath, exitPath := bgPaths("orphan-test")
+	ns := &namedSession{
+		name:          "orphan-test",
+		connectionKey: "unreachable",
+		background:    true,
+		bgRunning:     true,
+		bgLogPath:     logPath,
+		bgPIDPath:     pidPath,
+		bgExitPath:    exitPath,
+	}
+	m.mu.Lock()
+	m.sessions["orphan-test"] = ns
+	m.mu.Unlock()
+
+	if err := m.CloseSession("orphan-test"); err == nil {
+		t.Fatal("expected error when the stop cannot be confirmed")
+	}
+
+	m.mu.Lock()
+	_, stillThere := m.sessions["orphan-test"]
+	bg := ns.background
+	orphaned := ns.orphaned
+	m.mu.Unlock()
+	if !stillThere {
+		t.Fatal("session must stay in the map after an unconfirmed stop")
+	}
+	if !bg {
+		t.Fatal("background must stay true after an unconfirmed stop")
+	}
+	if !orphaned {
+		t.Fatal("session must be marked orphaned after an unconfirmed stop")
 	}
 }

@@ -18,6 +18,16 @@ const (
 	bgLogPrefix        = "/tmp/.2native-ssh-mcp-"
 )
 
+// bgPaths returns the three remote file paths for a background session. The
+// one-time random id is shared by all three files so a predictable /tmp path
+// cannot be symlink-preempted by another user.
+func bgPaths(sessionName string) (logPath, pidPath, exitPath string) {
+	id := randomID("bg")
+	return bgLogPrefix + sessionName + "-" + id + ".log",
+		bgLogPrefix + sessionName + "-" + id + ".pid",
+		bgLogPrefix + sessionName + "-" + id + ".exit"
+}
+
 var bgStartedPattern = regexp.MustCompile(`(?m)^__MCP_BG_STARTED__ pid=(\d+)\r?\n`)
 
 // SessionOpenOptions controls optional background start when opening a session.
@@ -131,10 +141,10 @@ func (m *Manager) openOrReuseSession(sessionName, connectionName string) (*Sessi
 		connectionKey: connKey,
 		shell:         sh,
 		lastUsed:      time.Now(),
-		bgLogPath:     bgLogPrefix + sessionName + ".log",
-		bgPIDPath:     bgLogPrefix + sessionName + ".pid",
-		bgExitPath:    bgLogPrefix + sessionName + ".exit",
 	}
+	// One-time random suffix shared by the three files, so a predictable
+	// /tmp path cannot be symlink-preempted by another user.
+	ns.bgLogPath, ns.bgPIDPath, ns.bgExitPath = bgPaths(sessionName)
 	ns.resetIdleTimer(m)
 
 	m.mu.Lock()
@@ -255,31 +265,37 @@ func parseBGStartedPID(output string) int {
 func (m *Manager) ReadSessionOutput(sessionName string, maxBytes int64, offset int64) (*SessionOutput, error) {
 	m.mu.Lock()
 	ns, ok := m.sessions[sessionName]
-	m.mu.Unlock()
 	if !ok {
+		m.mu.Unlock()
 		return nil, newToolError(CodeCommandValidationFailed,
 			fmt.Sprintf("session %q not found", sessionName), false)
 	}
-	if !ns.background {
+	background := ns.background
+	connKey := ns.connectionKey
+	bgLogPath := ns.bgLogPath
+	bgPIDPath := ns.bgPIDPath
+	bgExitPath := ns.bgExitPath
+	if offset < 0 {
+		offset = ns.bgOffset
+	}
+	m.mu.Unlock()
+	if !background {
 		return nil, newToolError(CodeCommandValidationFailed,
 			fmt.Sprintf("session %q is not a background session; open with background=true first", sessionName), false)
 	}
-	m.beginOp(ns.connectionKey)
-	defer m.endOp(ns.connectionKey)
+	m.beginOp(connKey)
+	defer m.endOp(connKey)
 
 	if maxBytes <= 0 {
 		maxBytes = defaultBGReadBytes
 	}
-	if offset < 0 {
-		offset = ns.bgOffset
-	}
 
-	client, err := m.EnsureConnected(ns.connectionKey)
+	client, err := m.EnsureConnected(connKey)
 	if err != nil {
 		return nil, err
 	}
 
-	readScript := buildBGReadScript(ns.bgLogPath, ns.bgPIDPath, ns.bgExitPath, offset, maxBytes)
+	readScript := buildBGReadScript(bgLogPath, bgPIDPath, bgExitPath, offset, maxBytes)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	output, err := m.runDetachedExec(ctx, client, readScript, 30*time.Second)
@@ -288,14 +304,15 @@ func (m *Manager) ReadSessionOutput(sessionName string, maxBytes int64, offset i
 	}
 
 	running, total, chunk, exitCode := parseBGReadOutput(output)
+	newOffset := offset + int64(len(chunk))
 	m.mu.Lock()
-	ns.bgOffset = offset + int64(len(chunk))
+	ns.bgOffset = newOffset
 	ns.bgRunning = running
 	ns.bgExitCode = exitCode
 	m.mu.Unlock()
 	ns.resetIdleTimer(m)
 
-	cfg := m.configs[ns.connectionKey]
+	cfg := m.configs[connKey]
 	if cfg == nil || cfg.GetStripAnsi() {
 		chunk = stripANSI(chunk)
 	}
@@ -303,10 +320,10 @@ func (m *Manager) ReadSessionOutput(sessionName string, maxBytes int64, offset i
 	return &SessionOutput{
 		SessionName: sessionName,
 		Output:      redactCombinedOutput(chunk), // read path: chunk already partial; skip line compression
-		Offset:      ns.bgOffset,
+		Offset:      newOffset,
 		TotalBytes:  total,
 		Running:     running,
-		LogPath:     ns.bgLogPath,
+		LogPath:     bgLogPath,
 		ExitCode:    exitCode,
 	}, nil
 }
@@ -366,34 +383,53 @@ func parseBGReadOutput(output string) (running bool, totalBytes int64, chunk str
 
 // stopBackgroundProcess terminates a background job (TERM, then KILL after a
 // grace period) and removes its pid/log files. It runs on a fresh no-PTY exec
-// channel and is only called on explicit session close.
-func (m *Manager) stopBackgroundProcess(ns *namedSession) {
-	if !ns.background {
-		return
+// channel and is only called on explicit session close. It returns true when
+// the stop was confirmed; otherwise the session is marked orphaned and the
+// background state is kept so a later close can retry.
+func (m *Manager) stopBackgroundProcess(ns *namedSession) bool {
+	m.mu.Lock()
+	background := ns.background
+	connKey := ns.connectionKey
+	pidPath := ns.bgPIDPath
+	logPath := ns.bgLogPath
+	m.mu.Unlock()
+	if !background {
+		return true
 	}
-	m.beginOp(ns.connectionKey)
-	defer m.endOp(ns.connectionKey)
+	m.beginOp(connKey)
+	defer m.endOp(connKey)
 
-	client, err := m.EnsureConnected(ns.connectionKey)
+	client, err := m.EnsureConnected(connKey)
 	if err != nil {
 		m.mu.Lock()
-		ns.background = false
-		ns.bgRunning = false
+		ns.orphaned = true
 		m.mu.Unlock()
-		return
+		return false
 	}
-	script := buildBGStopScript(ns.bgPIDPath, ns.bgLogPath)
+	script := buildBGStopScript(pidPath, logPath)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	_, _ = m.runDetachedExec(ctx, client, script, 15*time.Second)
+	output, err := m.runDetachedExec(ctx, client, script, 15*time.Second)
+	if err != nil || strings.Contains(output, bgStopFailedMarker) {
+		m.mu.Lock()
+		ns.orphaned = true
+		m.mu.Unlock()
+		return false
+	}
 	m.mu.Lock()
 	ns.background = false
 	ns.bgRunning = false
 	m.mu.Unlock()
+	return true
 }
 
+// bgStopFailedMarker is printed by the stop script when the job is still
+// alive after TERM+KILL, i.e. the stop could not be confirmed.
+const bgStopFailedMarker = "__MCP_BG_STOP_FAILED__"
+
 // buildBGStopScript builds a script that TERMs the job's process group, waits
-// 2s, then KILLs it if still alive, and removes the pid/log files.
+// 2s, then KILLs it if still alive, verifies it is gone, and removes the
+// pid/log files. It exits non-zero and prints a marker when the job survived.
 func buildBGStopScript(pidPath, logPath string) string {
 	return fmt.Sprintf(
 		"PIDF=%s\nLOG=%s\n"+
@@ -404,8 +440,12 @@ func buildBGStopScript(pidPath, logPath string) string {
 			"if [ -f \"$PIDF\" ]; then PID=$(cat \"$PIDF\" 2>/dev/null); "+
 			"if [ -n \"$PID\" ] && kill -0 \"$PID\" 2>/dev/null; then "+
 			"kill -KILL -\"$PID\" 2>/dev/null || kill -KILL \"$PID\" 2>/dev/null; fi; fi\n"+
+			"sleep 1\n"+
+			"if [ -f \"$PIDF\" ]; then PID=$(cat \"$PIDF\" 2>/dev/null); "+
+			"if [ -n \"$PID\" ] && kill -0 \"$PID\" 2>/dev/null; then "+
+			"printf '%s\\n'; exit 1; fi; fi\n"+
 			"rm -f \"$PIDF\" \"$LOG\"\n",
-		shellQuote(pidPath), shellQuote(logPath),
+		shellQuote(pidPath), shellQuote(logPath), bgStopFailedMarker,
 	)
 }
 

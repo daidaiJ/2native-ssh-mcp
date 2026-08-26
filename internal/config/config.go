@@ -11,19 +11,19 @@ import (
 
 // Defaults shared by every connection.
 const (
-	DefaultPort                 = 22
-	DefaultTransportMode        = "exec"
-	DefaultShellReadyTimeoutMs  = 10000
-	DefaultCommandTimeoutMs     = 30000
-	DefaultConnectionTimeoutMs  = 30000
-	DefaultSftpTimeoutMs        = 300000
-	DefaultMaxOutputBytes       = 10 * 1024 * 1024
-	DefaultKeepaliveIntervalMs  = 10000
-	DefaultKeepaliveCountMax    = 3
-	DefaultCommandLogSize       = 0
-	DefaultHTTPAddr             = "127.0.0.1:8338"
-	DefaultSftpConcurrency      = 16
-	DefaultSftpChunkSize        = 32 * 1024
+	DefaultPort                = 22
+	DefaultTransportMode       = "exec"
+	DefaultShellReadyTimeoutMs = 10000
+	DefaultCommandTimeoutMs    = 30000
+	DefaultConnectionTimeoutMs = 30000
+	DefaultSftpTimeoutMs       = 300000
+	DefaultMaxOutputBytes      = 10 * 1024 * 1024
+	DefaultKeepaliveIntervalMs = 10000
+	DefaultKeepaliveCountMax   = 3
+	DefaultCommandLogSize      = 0
+	DefaultHTTPAddr            = "127.0.0.1:8338"
+	DefaultSftpConcurrency     = 16
+	DefaultSftpChunkSize       = 32 * 1024
 )
 
 // SSHConfig is a single SSH connection configuration.
@@ -70,10 +70,10 @@ type SSHConfig struct {
 	// StripAnsi strips ANSI escape sequences from command output before it
 	// is returned (default: true when unset; false keeps colors/progress
 	// bars for debugging).
-	StripAnsi *bool `json:"stripAnsi,omitempty"`
-	KeepaliveIntervalMs   int      `json:"keepaliveIntervalMs,omitempty"`
-	KeepaliveCountMax     int      `json:"keepaliveCountMax,omitempty"`
-	CommandTemplate       string   `json:"commandTemplate,omitempty"`
+	StripAnsi           *bool  `json:"stripAnsi,omitempty"`
+	KeepaliveIntervalMs int    `json:"keepaliveIntervalMs,omitempty"`
+	KeepaliveCountMax   int    `json:"keepaliveCountMax,omitempty"`
+	CommandTemplate     string `json:"commandTemplate,omitempty"`
 	// CommandLogSize is how many recent commands to keep in the per-connection
 	// command log file (0 disables the log).
 	CommandLogSize int `json:"commandLogSize,omitempty"`
@@ -86,6 +86,13 @@ type SSHConfig struct {
 	// Algorithms customizes the SSH algorithm negotiation (kex, cipher,
 	// server host key, hmac). Useful for legacy servers.
 	Algorithms *Algorithms `json:"algorithms,omitempty"`
+	// HostKeyCheck controls SSH host key verification: "accept-new" (default,
+	// records unknown hosts into known_hosts), "strict" (rejects unknown
+	// hosts), or "none" (disables verification; MITM risk).
+	HostKeyCheck string `json:"hostKeyCheck,omitempty"`
+	// KnownHostsFile is the OpenSSH known_hosts file used for host key
+	// verification (default: ~/.ssh/known_hosts).
+	KnownHostsFile string `json:"knownHostsFile,omitempty"`
 	// SftpConcurrency is the number of parallel in-flight SFTP requests per
 	// file transfer (default: 16; 1 disables concurrency).
 	SftpConcurrency int `json:"sftpConcurrency,omitempty"`
@@ -171,6 +178,15 @@ func (c *SSHConfig) Normalize() error {
 	}
 	if c.Proxy != "" && c.SocksProxy != "" {
 		return fmt.Errorf("cannot use both 'proxy' and 'socksProxy'")
+	}
+	if c.HostKeyCheck == "" {
+		c.HostKeyCheck = "accept-new"
+	}
+	if c.HostKeyCheck != "accept-new" && c.HostKeyCheck != "strict" && c.HostKeyCheck != "none" {
+		return fmt.Errorf("hostKeyCheck must be 'accept-new', 'strict' or 'none', got: %s", c.HostKeyCheck)
+	}
+	if c.KnownHostsFile != "" {
+		c.KnownHostsFile = ExpandHome(c.KnownHostsFile)
 	}
 	if c.SocksProxy != "" && !strings.HasPrefix(c.SocksProxy, "socks://") && !strings.HasPrefix(c.SocksProxy, "socks5://") {
 		return fmt.Errorf("the legacy 'socksProxy' option only supports socks:// or socks5:// URLs")

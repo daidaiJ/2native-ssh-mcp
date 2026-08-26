@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -15,12 +16,15 @@ import (
 
 // Options holds the parsed command line options.
 type Options struct {
-	Configs    map[string]*SSHConfig
-	ConfigFile string
+	Configs                  map[string]*SSHConfig
+	ConfigFile               string
 	AllowInsecureConfigPerms bool
-	PreConnect bool
-	Transport  string // "stdio" or "http"
-	HTTPAddr   string
+	PreConnect               bool
+	Transport                string // "stdio" or "http"
+	HTTPAddr                 string
+	// HTTPToken authenticates the /mcp endpoint when set. Required when the
+	// HTTP server listens on a non-loopback address (fail closed).
+	HTTPToken string
 	// CommandLogSize is the global default for per-connection command log
 	// size; 0 disables it unless a connection overrides it.
 	CommandLogSize int
@@ -42,6 +46,9 @@ type GlobalConfig struct {
 	// (Unix mode 0600/0700; Windows ACL) for this config file. Equivalent to
 	// the --allow-insecure-config-perms flag, but declared inside the file.
 	AllowInsecureConfigPerms bool `json:"allowInsecureConfigPerms,omitempty"`
+	// HTTPToken authenticates the /mcp endpoint (Bearer). Falls back to
+	// --http-token / SSH_MCP_HTTP_TOKEN when those are set.
+	HTTPToken string `json:"httpToken,omitempty"`
 }
 
 // stringList is a repeatable flag value.
@@ -100,6 +107,9 @@ Connection options:
 Server options:
   --transport <stdio|http>         MCP transport (default: stdio; start implies http)
   --http-addr <host:port>          HTTP listen address (default: 127.0.0.1:8338)
+  --http-token <token>             Bearer token for /mcp (required for non-loopback
+                                   listen; fallback: SSH_MCP_HTTP_TOKEN env, then
+                                   $global.httpToken in the config file)
   --version, -v                    Print version
   --help                           Print this help message`
 
@@ -109,35 +119,36 @@ func ParseArgs(args []string) (*Options, error) {
 	fs.SetOutput(os.Stderr)
 
 	var (
-		configFile       string
-		sshConfigFile    string
-		sshParams        stringList
-		host             string
-		portStr          string
-		username         string
-		password         string
-		privateKey       string
-		passphrase       string
-		agent            string
-		whitelist        string
-		blacklist        string
-		proxy            string
-		socksProxy       string
-		allowedLocal     string
-		allowedRemote    string
-		transportMode    string
-		shellReady       string
-		commandTemplate  string
-		pty              bool
-		ptySet           bool
-		tryKeyboard      bool
-		preConnect       bool
-		commandLogSize   int
-		commandLogDir    string
-		commandLogOnly   bool
-		transport        string
-		httpAddr         string
-		allowInsecure    bool
+		configFile      string
+		sshConfigFile   string
+		sshParams       stringList
+		host            string
+		portStr         string
+		username        string
+		password        string
+		privateKey      string
+		passphrase      string
+		agent           string
+		whitelist       string
+		blacklist       string
+		proxy           string
+		socksProxy      string
+		allowedLocal    string
+		allowedRemote   string
+		transportMode   string
+		shellReady      string
+		commandTemplate string
+		pty             bool
+		ptySet          bool
+		tryKeyboard     bool
+		preConnect      bool
+		commandLogSize  int
+		commandLogDir   string
+		commandLogOnly  bool
+		transport       string
+		httpAddr        string
+		httpToken       string
+		allowInsecure   bool
 	)
 
 	fs.StringVar(&configFile, "config-file", "", "")
@@ -177,6 +188,7 @@ func ParseArgs(args []string) (*Options, error) {
 	fs.BoolVar(&commandLogOnly, "command-log-only-success", false, "")
 	fs.StringVar(&transport, "transport", "stdio", "")
 	fs.StringVar(&httpAddr, "http-addr", DefaultHTTPAddr, "")
+	fs.StringVar(&httpToken, "http-token", "", "")
 	fs.BoolVar(&allowInsecure, "allow-insecure-config-perms", false, "")
 
 	// Track whether --pty was explicitly set (flag package cannot tell us).
@@ -195,15 +207,21 @@ func ParseArgs(args []string) (*Options, error) {
 	}
 
 	positionals := fs.Args()
+	// HTTP token sources, first one wins: --http-token, then
+	// SSH_MCP_HTTP_TOKEN, then $global.httpToken (expanded below).
+	if httpToken == "" {
+		httpToken = os.Getenv("SSH_MCP_HTTP_TOKEN")
+	}
 	opts := &Options{
 		Configs:                  map[string]*SSHConfig{},
 		AllowInsecureConfigPerms: allowInsecure,
 		PreConnect:               preConnect,
-		Transport:      transport,
-		HTTPAddr:       httpAddr,
-		CommandLogSize: commandLogSize,
-		CommandLogDir:  commandLogDir,
-		CommandLogOnlySuccess: commandLogOnly,
+		Transport:                transport,
+		HTTPAddr:                 httpAddr,
+		HTTPToken:                httpToken,
+		CommandLogSize:           commandLogSize,
+		CommandLogDir:            commandLogDir,
+		CommandLogOnlySuccess:    commandLogOnly,
 	}
 
 	// Priority 1: config file.
@@ -216,6 +234,9 @@ func ParseArgs(args []string) (*Options, error) {
 			if err := CheckConfigFilePermissions(configFile); err != nil {
 				return nil, err
 			}
+		}
+		if opts.HTTPToken == "" {
+			opts.HTTPToken = expandEnvVars(global.HTTPToken)
 		}
 		opts.Configs = configs
 		opts.ConfigFile = configFile
@@ -335,6 +356,13 @@ func parseGlobalConfig(raw any, global *GlobalConfig) error {
 		}
 		global.AllowInsecureConfigPerms = b
 	}
+	if v, ok := m["httpToken"]; ok {
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("%s.httpToken must be a string", GlobalConfigKey)
+		}
+		global.HTTPToken = s
+	}
 	return nil
 }
 
@@ -443,18 +471,18 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 	}
 
 	intFields := map[string]*int{
-		"shellReadyTimeoutMs":   &conf.ShellReadyTimeoutMs,
-		"shellCommandTimeoutMs": &conf.ShellCommandTimeoutMs,
-		"commandTimeoutMs":      &conf.CommandTimeoutMs,
-		"connectionTimeoutMs":   &conf.ConnectionTimeoutMs,
-		"sftpTimeoutMs":         &conf.SftpTimeoutMs,
+		"shellReadyTimeoutMs":     &conf.ShellReadyTimeoutMs,
+		"shellCommandTimeoutMs":   &conf.ShellCommandTimeoutMs,
+		"commandTimeoutMs":        &conf.CommandTimeoutMs,
+		"connectionTimeoutMs":     &conf.ConnectionTimeoutMs,
+		"sftpTimeoutMs":           &conf.SftpTimeoutMs,
 		"maxOutputBytes":          &conf.MaxOutputBytes,
 		"outputCompressThreshold": &conf.OutputCompressThreshold,
-		"keepaliveIntervalMs":   &conf.KeepaliveIntervalMs,
-		"keepaliveCountMax":     &conf.KeepaliveCountMax,
-		"commandLogSize":        &conf.CommandLogSize,
-		"sftpConcurrency":       &conf.SftpConcurrency,
-		"sftpChunkSize":         &conf.SftpChunkSize,
+		"keepaliveIntervalMs":     &conf.KeepaliveIntervalMs,
+		"keepaliveCountMax":       &conf.KeepaliveCountMax,
+		"commandLogSize":          &conf.CommandLogSize,
+		"sftpConcurrency":         &conf.SftpConcurrency,
+		"sftpChunkSize":           &conf.SftpChunkSize,
 	}
 	for field, target := range intFields {
 		if v, ok := m[field]; ok && v != nil && v != "" {
@@ -597,12 +625,20 @@ func str(v any) string {
 	return ""
 }
 
+// envVarPattern matches only ${VAR} references; $HOME, $foo and $$ are left
+// as literal text so passwords containing OpenSSH-style fragments stay safe.
+var envVarPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
 // expandEnvVars resolves ${VAR} references in a config value from the
 // environment, so credentials can stay out of the config file:
 //
 //	"password": "${SSH_MCP_PASSWORD}"
+//
+// An unset ${VAR} becomes the empty string, matching os.Expand.
 func expandEnvVars(s string) string {
-	return os.Expand(s, os.Getenv)
+	return envVarPattern.ReplaceAllStringFunc(s, func(m string) string {
+		return os.Getenv(m[2 : len(m)-1])
+	})
 }
 
 func firstStr(vals ...any) string {

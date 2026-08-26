@@ -96,10 +96,13 @@ func (m *Manager) ExecuteCommand(ctx context.Context, cmdString, directory, name
 	return result, err
 }
 
-// limitedBuffer captures up to max bytes and records overflow.
+// limitedBuffer captures up to max bytes and records overflow. When shared
+// is non-nil, stdout and stderr share one byte budget so the combined output
+// cannot exceed max (the per-stream cap is only a safety bound).
 type limitedBuffer struct {
 	buf      bytes.Buffer
 	max      int
+	shared   *int // shared remaining budget; nil for standalone buffers
 	exceeded bool
 	onExceed func()
 }
@@ -112,15 +115,24 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	remaining := b.max - b.buf.Len()
+	if b.shared != nil {
+		remaining = *b.shared
+	}
 	if len(p) > remaining {
 		if remaining > 0 {
 			b.buf.Write(p[:remaining])
+		}
+		if b.shared != nil {
+			*b.shared = 0
 		}
 		b.exceeded = true
 		if b.onExceed != nil {
 			b.onExceed()
 		}
 		return len(p), nil
+	}
+	if b.shared != nil {
+		*b.shared -= len(p)
 	}
 	return b.buf.Write(p)
 }
@@ -161,8 +173,9 @@ func (m *Manager) runExecCommand(ctx context.Context, client *ssh.Client, cfg *c
 		default:
 		}
 	}
-	stdout := &limitedBuffer{max: maxOutput, onExceed: notifyExceed}
-	stderr := &limitedBuffer{max: maxOutput, onExceed: notifyExceed}
+	budget := maxOutput
+	stdout := &limitedBuffer{max: maxOutput, shared: &budget, onExceed: notifyExceed}
+	stderr := &limitedBuffer{max: maxOutput, shared: &budget, onExceed: notifyExceed}
 	session.Stdout = stdout
 	session.Stderr = stderr
 

@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -124,5 +125,27 @@ func TestCloseSessionIdempotent(t *testing.T) {
 	m := newIdleTestManager(t)
 	if err := m.CloseSession("never-opened"); err != nil {
 		t.Fatalf("closing a never-opened session must succeed, got: %v", err)
+	}
+}
+
+// TestRunNamedShellCommandNilShellReturnsError verifies the concurrency
+// contract: after closeSessionsForConnection has torn down a session's shell
+// (ns.shell == nil under m.mu), a racing runNamedShellCommand must return a
+// retriable connection error instead of panicking on the nil shell.
+func TestRunNamedShellCommandNilShellReturnsError(t *testing.T) {
+	m := newIdleTestManager(t)
+	ns := &namedSession{name: "s1", connectionKey: "dev", lastUsed: time.Now()}
+	addSession(m, ns)
+
+	_, err := m.runNamedShellCommand(context.Background(), ns, "echo hi", "", "", time.Second)
+	if err == nil {
+		t.Fatal("expected error when session shell is nil")
+	}
+	te, ok := err.(*ToolError)
+	if !ok {
+		t.Fatalf("expected *ToolError, got %T", err)
+	}
+	if te.Code != CodeSSHConnectionFailed || !te.Retriable {
+		t.Fatalf("expected retriable connection error, got code=%s retriable=%v", te.Code, te.Retriable)
 	}
 }

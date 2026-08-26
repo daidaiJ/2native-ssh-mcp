@@ -74,6 +74,7 @@ git push origin v1.0.1
 │   ├── manager/                   # 连接管理核心
 │   │   ├── manager.go             #   懒连接、空闲保活、路径校验、命令日志
 │   │   ├── dial.go                #   认证（密码/私钥/agent/Pageant/2FA）、代理（SOCKS5/HTTP/HTTPS）
+│   │   ├── hostkey.go             #   主机密钥校验（accept-new/strict/none，known_hosts）
 │   │   ├── exec.go                #   exec 模式命令执行（超时/输出上限/退出码）
 │   │   ├── shell.go               #   shell 模式（marker 协议、ANSI 清理、串行队列）
 │   │   ├── background.go          #   后台任务（detached exec、日志轮询、停止）
@@ -85,13 +86,16 @@ git push origin v1.0.1
 │   │   ├── sftp.go                #   文件传输（并发拷贝、进度、去重、断点续传）
 │   │   ├── status.go              #   远程系统状态采集（hostname/OS/内存/磁盘等）
 │   │   └── commandlog.go          #   命令日志文件（JSON 行、保留最近 N 条）
-│   ├── daemon/                    # HTTP daemon：PID 文件、refcount、admin 端点、Windows 自启动
+│   ├── daemon/                    # HTTP daemon：PID 文件、refcount+guest 租约、admin 端点、Windows 自启动
 │   └── tools/                     # MCP 工具：list-servers / execute-command / session / file-transfer
 ├── SECURITY.md                    # 威胁模型与安全建议
 ├── docs/
 │   ├── AGENT_GUIDE.md             # 🤖 Agent 版指南（省 token，按需读取）
 │   └── HUMAN_GUIDE.md             # 👤 人类版指南（易读）
+├── .github/workflows/ci.yml       # push/PR → ubuntu-latest go test -race ./...
 ├── .github/workflows/release.yml  # tag 推送 → 6 平台构建 + Release（日志 = tag 消息）
+├── plan/                          # 设计规格（HARDENING.md 等，git-ignored）
+├── todo/                          # 实施任务清单 T01–T10（git-ignored）
 ├── LICENSE                        # ISC（含上游版权声明）
 └── README.md
 ```
@@ -106,7 +110,7 @@ go test -race ./...
 ## 已知限制
 
 - Go 的 `x/crypto/ssh` 不支持 SSH zlib 压缩（[golang/go#22795](https://github.com/golang/go/issues/22795)）；高延迟/低带宽场景建议依赖 TCP keepalive 与 SFTP 并发传输（`sftpConcurrency`）缓解
-- 主机密钥不做校验（与参考实现一致）
+- 主机密钥默认按 `accept-new` 校验（首次连接记录到 `known_hosts`，之后密钥变更会被拒绝）；动态 IP / 频繁换密钥的机器需设 `"hostKeyCheck": "none"`
 - shell 传输模式下不支持 SFTP 上传/下载
 
 ## 参考项目

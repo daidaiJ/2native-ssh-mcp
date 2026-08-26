@@ -39,10 +39,19 @@ type SessionInfo struct {
 	// Disconnected is true when the underlying SSH connection dropped but
 	// the logical session (and any remote background job) survives.
 	Disconnected bool `json:"disconnected,omitempty"`
+	// Orphaned is true when a close could not confirm that the remote
+	// background job stopped (connection unavailable); the session stays
+	// visible until a later close succeeds.
+	Orphaned bool `json:"orphaned,omitempty"`
 }
 
 // namedSession is a persistent shell scoped by name; CWD and environment
 // persist between run-in-session calls on exec-mode connections.
+//
+// Concurrency contract: every mutable field (shell, cwd, bgOffset,
+// background, bgRunning, disconnected) is read or written only while holding
+// m.mu, or copied to a local variable under the lock before use. Never touch
+// these fields after unlocking.
 type namedSession struct {
 	name          string
 	connectionKey string
@@ -67,6 +76,9 @@ type namedSession struct {
 	// disconnected is true when the physical connection dropped; the shell
 	// is nil and will be recreated on next use.
 	disconnected bool
+	// orphaned is true when a close could not confirm the remote background
+	// job stopped; the session is kept in the map until a close succeeds.
+	orphaned bool
 }
 
 // OpenSession creates a named interactive session on an exec-mode connection.
@@ -81,6 +93,7 @@ func (m *Manager) ensureShell(ns *namedSession) (*shellSession, error) {
 	m.mu.Lock()
 	sh := ns.shell
 	disconnected := ns.disconnected
+	cwd := ns.cwd
 	m.mu.Unlock()
 	if sh != nil && !disconnected {
 		return sh, nil
@@ -96,8 +109,8 @@ func (m *Manager) ensureShell(ns *namedSession) (*shellSession, error) {
 		return nil, err
 	}
 
-	if ns.cwd != "" {
-		restore := "cd -- " + shellQuote(ns.cwd) + " || true"
+	if cwd != "" {
+		restore := "cd -- " + shellQuote(cwd) + " || true"
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		_, _ = m.runShellScriptOnce(ctx, sh, buildNamedShellScript(restore, "", ""), 15*time.Second, time.Now().Add(15*time.Second), 4096, cfg)
@@ -171,6 +184,10 @@ func (m *Manager) RunInSession(ctx context.Context, sessionName, cmdString, dire
 // teardown does not go through here (see closeSessionsForConnection).
 // Closing a session that does not exist (or was already closed by the idle
 // TTL) is a no-op success so repeated close calls are idempotent.
+//
+// The session is only removed from the map when the background stop is
+// confirmed; otherwise it stays visible (orphaned) so list/read still see it
+// and a later close can retry.
 func (m *Manager) CloseSession(sessionName string) error {
 	m.mu.Lock()
 	ns, ok := m.sessions[sessionName]
@@ -178,17 +195,30 @@ func (m *Manager) CloseSession(sessionName string) error {
 		m.mu.Unlock()
 		return nil
 	}
-	delete(m.sessions, sessionName)
 	ns.idleGen++ // invalidate any in-flight expire callback
 	if ns.idleTimer != nil {
 		ns.idleTimer.Stop()
 		ns.idleTimer = nil
 	}
+	sh := ns.shell
+	ns.shell = nil
 	m.mu.Unlock()
 
-	m.stopBackgroundProcess(ns)
-	if ns.shell != nil {
-		ns.shell.close()
+	if !m.stopBackgroundProcess(ns) {
+		// Remote job state unconfirmed: keep the session so a later close
+		// (after the connection is back) can retry the stop.
+		ns.resetIdleTimer(m)
+		if sh != nil {
+			sh.close()
+		}
+		return newToolError(CodeSSHConnectionFailed,
+			fmt.Sprintf("session %q: could not confirm the remote background job stopped (connection unavailable); the job may still be running. Reconnect and close again", sessionName), true)
+	}
+	m.mu.Lock()
+	delete(m.sessions, sessionName)
+	m.mu.Unlock()
+	if sh != nil {
+		sh.close()
 	}
 	return nil
 }
@@ -217,6 +247,7 @@ func (m *Manager) sessionInfoLocked(ns *namedSession) *SessionInfo {
 		LogPath:        ns.bgLogPath,
 		ExitCode:       ns.bgExitCode,
 		Disconnected:   ns.disconnected,
+		Orphaned:       ns.orphaned,
 	}
 }
 
@@ -294,7 +325,13 @@ func (m *Manager) closeSessionsForConnection(connKey string) {
 
 // runNamedShellCommand runs one command on a named session shell and updates cwd.
 func (m *Manager) runNamedShellCommand(ctx context.Context, ns *namedSession, cmdString, directory, commandTemplate string, timeout time.Duration) (CommandResult, error) {
+	m.mu.Lock()
 	sh := ns.shell
+	m.mu.Unlock()
+	if sh == nil {
+		return CommandResult{}, newToolError(CodeSSHConnectionFailed,
+			fmt.Sprintf("session %q shell is not available (connection dropped); retry", ns.name), true)
+	}
 	cfg := m.configs[ns.connectionKey]
 	maxOutput := 0
 	if cfg != nil {
@@ -317,7 +354,9 @@ func (m *Manager) runNamedShellCommand(ctx context.Context, ns *namedSession, cm
 	// The PWD line is the last line of the captured output; extract it
 	// before the result is returned so the session CWD stays in sync.
 	if pwd := extractShellPWD(result.Stdout); pwd != "" {
+		m.mu.Lock()
 		ns.cwd = pwd
+		m.mu.Unlock()
 	}
 	result.Stdout = stripShellPWDLine(result.Stdout)
 	return result, nil

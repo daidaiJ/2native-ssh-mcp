@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -31,10 +32,15 @@ func (m *Manager) dial(key string, cfg *config.SSHConfig) (*ssh.Client, error) {
 			fmt.Sprintf("No valid authentication method provided for [%s] (agent, password, private key, or tryKeyboard)", key), false)
 	}
 
+	hkcb, err := buildHostKeyCallback(cfg)
+	if err != nil {
+		return nil, newToolError(CodeSSHConnectionFailed,
+			fmt.Sprintf("SSH connection [%s] failed: %v", key, err), false)
+	}
 	clientConfig := &ssh.ClientConfig{
 		User:            cfg.Username,
 		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: hkcb,
 		Timeout:         time.Duration(cfg.ConnectionTimeoutMs) * time.Millisecond,
 	}
 	if cfg.Algorithms != nil {
@@ -70,6 +76,10 @@ func (m *Manager) dial(key string, cfg *config.SSHConfig) (*ssh.Client, error) {
 	_ = conn.SetDeadline(time.Time{})
 	if err != nil {
 		conn.Close()
+		var te *ToolError
+		if errors.As(err, &te) {
+			return nil, te
+		}
 		return nil, newToolError(CodeSSHConnectionFailed,
 			fmt.Sprintf("SSH connection [%s] failed: %v", key, err), true)
 	}

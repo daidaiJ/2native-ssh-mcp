@@ -93,6 +93,8 @@ MCP 客户端配置里只出现配置文件路径：
 2native-ssh-mcp.exe uninstall
 ```
 
+**引用计数与租约**：第一个 `start` 是 owner（与 daemon 进程同寿，永不过期）；额外的 `start` 是 **guest 租约**，空闲 **15 分钟**没有 `/mcp` 请求就会被回收（计数自动 -1）。任何 `/mcp` 成功请求都会刷新全部 guest 的到期时间——daemon 正在被用就不会掉 guest。`stop` 优先减一个 guest，没有 guest 才减 owner；计数归零 daemon 退出。daemon 进程本身不会因空闲退出（owner 不过期）。`kill` / Ctrl-C 直接关，不看计数。
+
 MCP 客户端配置：
 
 ```json
@@ -104,6 +106,21 @@ MCP 客户端配置：
   }
 }
 ```
+
+**/mcp 鉴权（token）**：监听地址是 loopback（默认 `127.0.0.1`）时不需要 token，本机客户端零配置。监听非 loopback 地址（如 `0.0.0.0`）时**必须**配置 token，否则拒绝启动（fail closed）。token 来源按优先级：`--http-token` → 环境变量 `SSH_MCP_HTTP_TOKEN` → 配置文件 `$global.httpToken`（支持 `${VAR}` 展开）。带 token 时客户端加请求头：
+
+```json
+{
+  "mcpServers": {
+    "2native-ssh-mcp": {
+      "url": "http://0.0.0.0:8338/mcp",
+      "headers": { "Authorization": "Bearer ${SSH_MCP_HTTP_TOKEN}" }
+    }
+  }
+}
+```
+
+Admin API（`/__admin/*`）不用这个 token，仍只限本机访问。
 
 ### 多服务器配置（config.json）
 
@@ -138,6 +155,7 @@ MCP 客户端配置：
 | 配置 | 默认 | 说明 |
 |---|---|---|
 | `allowInsecureConfigPerms` | false | 跳过本配置文件的权限检查（等价于命令行 `--allow-insecure-config-perms`，但声明在文件内部；不推荐，仅开发用） |
+| `httpToken` | 空 | `/mcp` 的 Bearer token（优先级低于 `--http-token` 和 `SSH_MCP_HTTP_TOKEN`；支持 `${VAR}` 引用） |
 
 ## 工具说明
 
@@ -193,7 +211,7 @@ MCP 客户端配置：
 
 **长任务 / 无输出任务请用 `session background=true` + `read` 轮询，不要用 `execute-command` 跑 `nohup ... &` 或 `setsid`**——后者会随 exec 通道关闭而消亡。后台任务以无 PTY 的独立通道启动（新会话、脱离 sshd 进程组），**连接闪断后仍然存活**：断连后 `list-servers` 里会话显示 `disconnected=true`，`read` 或带 `sessionName` 的 `execute-command` 会自动重连；只有 `action=close` 才会杀掉远端后台进程。
 
-**后台作业结束后会话仍然保留**（含远端日志，60 分钟 retain TTL），必须 `close` 才释放；`close` 可重复调用。`read` 可带 `offset=0` 从头重读；返回 JSON 带 `logPath`（远端日志路径）和 `exitCode`（作业结束后）。会话只存在内存中：stdio 进程退出即丢失（远端日志仍在 `logPath`，可另行读取），常驻 HTTP daemon 才能跨对话保留。对已结束的会话重复 `open background=true` 会被拒绝并提示 `logPath`——先 `close` 或先读旧日志。
+**后台作业结束后会话仍然保留**（含远端日志，60 分钟 retain TTL），必须 `close` 才释放；`close` 可重复调用。`read` 可带 `offset=0` 从头重读；返回 JSON 带 `logPath`（远端日志路径）和 `exitCode`（作业结束后）。会话只存在内存中：stdio 进程退出即丢失（远端日志仍在 `logPath`，可另行读取），常驻 HTTP daemon 才能跨对话保留。对已结束的会话重复 `open background=true` 会被拒绝并提示 `logPath`——先 `close` 或先读旧日志。**连接不可用时 `close` 无法确认远端作业已停**：会话会留在列表里并标记 `orphaned=true`（`background` 仍为 true），报可重试错误，等连接恢复后再 `close` 一次即可。后台日志/pid/exit 文件路径带一次性随机后缀（`/tmp/.2native-ssh-mcp-<会话名>-<id>.log` 等），`logPath` 字段始终给出实际路径。
 
 **命令结果说明：**
 - 非 0 退出码是**正常结果**（不是错误），正文里看 `[exit code] N`；只有校验失败、连不上、超时、输出超限、连接中断才报错
@@ -232,13 +250,14 @@ Connection options:
   --command-template <template>
   --pty / --try-keyboard
   --command-log-size <n> / --command-log-dir <dir> / --command-log-only-success
-  --pre-connect
+  --pre-connect                     启动前预连接所有服务器（任一失败即退出，fail-fast）
 
   --allow-insecure-config-perms    跳过配置文件权限检查（不推荐，仅开发用；也可在配置文件的 $global 里声明）
 
 Server options:
   --transport <stdio|http>         默认 stdio；start 隐含 http
   --http-addr <host:port>          默认 127.0.0.1:8338
+  --http-token <token>             /mcp 的 Bearer token（非 loopback 监听必填；也可用 SSH_MCP_HTTP_TOKEN 或 $global.httpToken）
   --version, -v / --help
 ```
 
@@ -248,7 +267,7 @@ Server options:
 |---|---|---|
 | `$global.allowInsecureConfigPerms` | false | 跳过本配置文件权限检查（等价 `--allow-insecure-config-perms`，仅开发用） |
 | `description` / `business` / `aliases` / `notes` | 空 | 给 list-servers 展示的元数据：用途、业务、别名、注意事项 |
-| `transportMode` | `exec` | `shell` 用于堡垒机/跳板机场景 |
+| `transportMode` | `exec` | `shell` 用于堡垒机/跳板机场景；**要求远端是 POSIX `sh` 兼容的交互式 shell**（依赖 `PS1`、`stty`、`printf`、`export`），csh/tcsh/fish 堡垒机请用 `exec` + `commandTemplate` |
 | `commandWhitelist` / `commandBlacklist` | 空 | 命令正则白/黑名单 |
 | `allowedLocalPaths` / `allowedRemotePaths` | 空 | 文件传输路径白名单 |
 | `commandLogSize` | 0（关闭） | 命令日志保留条数 |
@@ -256,9 +275,11 @@ Server options:
 | `commandLogOnlySuccess` | false | 只记录成功命令 |
 | `sftpConcurrency` / `sftpChunkSize` | 16 / 32768 | SFTP 并发数与分块大小 |
 | `algorithms` | 空 | kex/cipher/serverHostKey/hmac 协商 |
+| `hostKeyCheck` | `accept-new` | 主机密钥校验：`accept-new`（未知记录后接受）/ `strict`（未知拒绝）/ `none`（不校验） |
+| `knownHostsFile` | `~/.ssh/known_hosts` | 主机密钥校验用的 known_hosts 文件 |
 | `keepaliveIntervalMs` / `keepaliveCountMax` | 10000 / 3 | SSH 心跳 |
 | `commandTimeoutMs` / `connectionTimeoutMs` / `sftpTimeoutMs` | 30000 / 30000 / 300000 | 各类超时 |
-| `maxOutputBytes` | 10485760 | 单命令输出上限，0 为不限 |
+| `maxOutputBytes` | 10485760 | 单命令 stdout+stderr 合计输出上限，0 为不限 |
 | `outputCompressLight` / `outputCompressThreshold` | true / 4096 | 大输出头尾压缩与阈值 |
 | `stripAnsi` | true | 输出剥离 ANSI 转义序列（false 保留颜色/进度条） |
 | `commandTemplate` | 空 | 命令包装模板（`<command>` / `<quotedCommand>`） |

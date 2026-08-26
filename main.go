@@ -4,16 +4,17 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
 	"2native-ssh-mcp/internal/config"
@@ -94,13 +95,16 @@ func runForeground(args []string) {
 		logger.Error("%v", err)
 		os.Exit(1)
 	}
+	if opts.PreConnect {
+		preConnect(m)
+	}
 
 	s := newMCPServer(m)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	if opts.Transport == "http" {
-		runHTTPServer(ctx, s, m, opts.HTTPAddr, nil)
+		runHTTPServer(ctx, s, m, opts.HTTPAddr, opts.HTTPToken, nil)
 		return
 	}
 
@@ -125,7 +129,11 @@ func runStart(args []string) {
 		os.Exit(1)
 	}
 
-	port := portFromAddr(opts.HTTPAddr)
+	port, err := portFromAddr(opts.HTTPAddr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	// If the daemon is already running, just increase the refcount.
 	if _, err := daemon.GetHealth(port); err == nil {
@@ -144,9 +152,12 @@ func runStart(args []string) {
 		logger.Error("%v", err)
 		os.Exit(1)
 	}
+	if opts.PreConnect {
+		preConnect(m)
+	}
 
 	s := newMCPServer(m)
-	admin := daemon.NewAdmin(1)
+	admin := daemon.NewAdmin(1, opts.HTTPAddr)
 	if err := daemon.WritePID(os.Getpid(), port); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to write PID file: %v\n", err)
 		os.Exit(1)
@@ -166,19 +177,46 @@ func runStart(args []string) {
 		}
 	}()
 
-	runHTTPServer(ctx, s, m, opts.HTTPAddr, admin)
+	runHTTPServer(ctx, s, m, opts.HTTPAddr, opts.HTTPToken, admin)
 	_ = daemon.RemovePID()
 }
 
+// preConnect establishes every configured connection up front. The point of
+// --pre-connect is fail-fast: any failure exits non-zero instead of starting
+// a server that cannot reach its hosts.
+func preConnect(m *manager.Manager) {
+	for _, name := range m.ConfigNames() {
+		if _, err := m.EnsureConnected(name); err != nil {
+			logger.Error("pre-connect failed for [%s]: %v", name, err)
+			os.Exit(1)
+		}
+	}
+}
+
 // runHTTPServer serves the MCP endpoint at /mcp and, when admin is set, the
-// daemon admin API under /__admin/.
-func runHTTPServer(ctx context.Context, s *server.MCPServer, m *manager.Manager, addr string, admin *daemon.Admin) {
+// daemon admin API under /__admin/. A non-loopback listen address requires a
+// token (fail closed): without one the server refuses to start.
+func runHTTPServer(ctx context.Context, s *server.MCPServer, m *manager.Manager, addr, httpToken string, admin *daemon.Admin) {
+	if httpToken == "" && !isLoopbackBind(addr) {
+		logger.Error("refusing to start HTTP server on %s: non-loopback listen requires a token (--http-token, SSH_MCP_HTTP_TOKEN, or $global.httpToken)", addr)
+		os.Exit(1)
+	}
 	mux := http.NewServeMux()
 	httpServer := &http.Server{Addr: addr, Handler: mux}
 	streamable := server.NewStreamableHTTPServer(s, server.WithStreamableHTTPServer(httpServer))
-	mux.Handle("/mcp", streamable)
+	var mcpHandler http.Handler = streamable
+	if admin != nil {
+		// Authorized /mcp traffic keeps guest leases alive; the daemon's
+		// own owner lease never expires.
+		mcpHandler = touchGuests(mcpHandler, admin)
+	}
+	if httpToken != "" {
+		mcpHandler = requireToken(mcpHandler, httpToken)
+	}
+	mux.Handle("/mcp", mcpHandler)
 	if admin != nil {
 		mux.Handle("/__admin/", admin.Handler())
+		go admin.StartLeaseTicker(ctx)
 	}
 
 	errCh := make(chan error, 1)
@@ -277,21 +315,62 @@ func daemonPort() int {
 	if info, err := daemon.ReadPID(); err == nil && info.Port > 0 {
 		return info.Port
 	}
-	return portFromAddr(config.DefaultHTTPAddr)
-}
-
-// portFromAddr extracts the port from a host:port address.
-func portFromAddr(addr string) int {
-	_, portStr, err := net.SplitHostPort(addr)
-	if err != nil {
-		return 8338
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return 8338
-	}
+	port, _ := portFromAddr(config.DefaultHTTPAddr)
 	return port
 }
 
-// keep mcp import referenced for documentation purposes.
-var _ = mcp.ServerCapabilities{}
+// portFromAddr extracts the port from a host:port address. It returns an
+// error instead of silently falling back to a default so a mistyped
+// --http-addr cannot target the wrong daemon.
+func portFromAddr(addr string) (int, error) {
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid --http-addr %q: %v", addr, err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid --http-addr %q: port %q is not a number", addr, portStr)
+	}
+	return port, nil
+}
+
+// isLoopbackBind reports whether the listen address binds a loopback
+// interface only. An empty host (":8338") binds all interfaces and is not
+// loopback.
+func isLoopbackBind(addr string) bool {
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// touchGuests refreshes guest lease expiries after each authorized /mcp
+// request, so an actively used daemon never drops its extra refcounts.
+func touchGuests(next http.Handler, admin *daemon.Admin) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		admin.TouchGuests()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requireToken wraps a handler with Bearer token authentication. Requests
+// without a matching Authorization: Bearer <token> header get 401.
+func requireToken(next http.Handler, token string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		const prefix = "Bearer "
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, prefix) ||
+			subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(auth, prefix)), []byte(token)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="2native-ssh-mcp"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}

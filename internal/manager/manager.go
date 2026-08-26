@@ -34,6 +34,8 @@ const (
 	CodeSSHConnectionFailed     = "SSH_CONNECTION_FAILED"
 	CodeSSHConnectionTimeout    = "SSH_CONNECTION_TIMEOUT"
 	CodeSSHAuthMissing          = "SSH_AUTHENTICATION_MISSING"
+	CodeSSHHostKeyMismatch      = "SSH_HOST_KEY_MISMATCH"
+	CodeSSHHostKeyUnknown       = "SSH_HOST_KEY_UNKNOWN"
 	CodeLocalPathNotAllowed     = "LOCAL_PATH_NOT_ALLOWED"
 	CodeRemotePathNotAllowed    = "REMOTE_PATH_NOT_ALLOWED"
 	CodeLocalFileReadFailed     = "LOCAL_FILE_READ_FAILED"

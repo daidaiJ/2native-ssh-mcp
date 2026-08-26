@@ -123,8 +123,9 @@ func collapseExcessiveBlankLines(lines []string) []string {
 	return out
 }
 
-// FinalizeCommandOutput redacts secrets then optionally compresses for the agent.
+// FinalizeCommandOutput optionally compresses output for the agent.
+// Redaction happens earlier in buildCommandResult (and once in the
+// background read path); this function only compresses.
 func FinalizeCommandOutput(output string, opts CompressOptions) string {
-	out := redactCombinedOutput(output)
-	return CompressCommandOutput(out, opts)
+	return CompressCommandOutput(output, opts)
 }

@@ -286,3 +286,28 @@ func TestParseArgsMetadata(t *testing.T) {
 		t.Fatalf("aliases not parsed: %+v", conf.Aliases)
 	}
 }
+
+func TestExpandEnvVarsOnlyBraced(t *testing.T) {
+	os.Setenv("SSH_MCP_PASSWORD", "s3cret")
+	os.Setenv("HOME", "/home/testuser")
+	defer os.Unsetenv("SSH_MCP_PASSWORD")
+	defer os.Unsetenv("HOME")
+
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"abc$HOME", "abc$HOME"},              // unbraced stays literal
+		{"${SSH_MCP_PASSWORD}", "s3cret"},     // braced expands
+		{"${UNSET_VAR_XYZ}", ""},              // unset braced -> empty
+		{"$HOME/keys", "$HOME/keys"},          // unbraced path stays literal
+		{"$$", "$$"},                          // double dollar stays literal
+		{"a${SSH_MCP_PASSWORD}b", "as3cretb"}, // inline expansion
+		{"${HOME}/x", "/home/testuser/x"},     // braced path expands
+	}
+	for _, tc := range cases {
+		if got := expandEnvVars(tc.in); got != tc.want {
+			t.Errorf("expandEnvVars(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

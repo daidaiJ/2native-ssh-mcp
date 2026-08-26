@@ -19,7 +19,7 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 - Whitelist/blacklist regexes per connection; rejected → `COMMAND_VALIDATION_FAILED`.
 - **Non-zero exit is a normal result, not an error** — read `exitCode` from the text (`[exit code] N`). Errors are reserved for validation/connect failures, `COMMAND_TIMEOUT`, `OUTPUT_LIMIT_EXCEEDED`, and `SSH_CONNECTION_LOST`.
 - `SSH_CONNECTION_LOST` (retriable=false): the connection dropped mid-command; the remote process may still be running. **Do not replay blindly** — the error JSON carries partial `stdout`/`stderr` and `replaySafe: false`.
-- Output cap `maxOutputBytes` (default 10 MB) → `OUTPUT_LIMIT_EXCEEDED`; timeout → `COMMAND_TIMEOUT`. For timeout/lost/limit the error message stays short; partial output is in the same result's `stdout`/`stderr` fields.
+- Output cap `maxOutputBytes` (default 10 MB, **stdout+stderr combined**) → `OUTPUT_LIMIT_EXCEEDED`; timeout → `COMMAND_TIMEOUT`. For timeout/lost/limit the error message stays short; partial output is in the same result's `stdout`/`stderr` fields.
 - **Light compress** (default): outputs ≥ `outputCompressThreshold` (4096 B) get head/tail lines + dedup; disable with `"outputCompressLight": false`. See `skills/2native-ssh-mcp-agent` for agent-side habits.
 - **ANSI stripped by default**: colors/progress escapes are removed from all output (exec, shell, background reads); disable per connection with `"stripAnsi": false`.
 - Connections **lazy**; after command kept alive per keepAlive policy, idle expiry closes. `keepAlive: false` closes immediately.
@@ -56,7 +56,7 @@ One tool, `action` param. Exec-mode connections only.
 
 **Long tasks / no-output tasks: use `session background=true` + `read` polling. Do NOT `nohup ... &` or `setsid` through `execute-command`** — those die with the exec channel. Background jobs are started detached (no PTY, new session) and **survive connection drops**; after a drop the session shows `disconnected=true` and `read`/`execute-command` reconnect automatically. Only `action=close` kills the remote job.
 
-**Finished background jobs keep their session** (and remote log) for 60 min — `close` it to release. `read` returns `logPath` (remote log) and `exitCode` once the job finished; `offset=0` re-reads from the start. Sessions live in memory only: a stdio process exit loses them (the remote log survives at `logPath`); a resident HTTP daemon keeps them across conversations. Re-opening `background=true` on a finished session is rejected with the `logPath` — `close` first, or read the old log.
+**Finished background jobs keep their session** (and remote log) for 60 min — `close` it to release. `read` returns `logPath` (remote log) and `exitCode` once the job finished; `offset=0` re-reads from the start. Sessions live in memory only: a stdio process exit loses them (the remote log survives at `logPath`); a resident HTTP daemon keeps them across conversations. Re-opening `background=true` on a finished session is rejected with the `logPath` — `close` first, or read the old log. **If the connection is down, `close` cannot confirm the remote job stopped**: the session stays listed with `orphaned=true` and the close returns a retriable error — retry `close` after the connection is back. BG log/pid/exit files use a one-time random suffix (`/tmp/.2native-ssh-mcp-<name>-<id>.log`); always use the returned `logPath`, never guess a fixed path.
 
 ### execute-command (with optional session)
 | Param | Notes |
@@ -101,6 +101,8 @@ session(action=close, sessionName=deploy)
     "commandLogSize": 50, "commandLogDir": "logs", "commandLogOnlySuccess": true,
     "sftpConcurrency": 16, "sftpChunkSize": 32768,
     "algorithms": {"kex": ["curve25519-sha256"], "cipher": ["aes128-ctr"]},
+    "hostKeyCheck": "accept-new",            // or "strict" / "none"
+    "knownHostsFile": "~/.ssh/known_hosts",
     "keepaliveIntervalMs": 10000, "keepaliveCountMax": 3,
     "commandTimeoutMs": 30000, "connectionTimeoutMs": 30000, "sftpTimeoutMs": 300000,
     "maxOutputBytes": 10485760,
@@ -156,7 +158,9 @@ Command output is redacted (Bearer tokens, PEM blocks, password=/token= lines) b
 ```
 MCP client: `{"mcpServers": {"2native-ssh-mcp": {"url": "http://127.0.0.1:8338/mcp"}}}`
 
-Daemon semantics: refcount (start +1, stop −1, exits at 0), PID file, admin API `/__admin/{health,status,refcount,shutdown}` (loopback-only, `"name":"2native-ssh-mcp"` verified).
+**/mcp auth**: loopback listen (default) needs no token. Non-loopback listen **requires** a Bearer token or the server refuses to start — sources in order: `--http-token`, env `SSH_MCP_HTTP_TOKEN`, `$global.httpToken` (config file). With a token, the client must send `Authorization: Bearer <token>` on every `/mcp` request (401 otherwise). Admin API is exempt (loopback + Host check only).
+
+Daemon semantics: refcount (first `start` = owner lease, never expires; extra `start` = guest lease with a **15 min TTL** refreshed by any `/mcp` request; `stop` −1 removes a guest first, then the owner; exits at 0), PID file, admin API `/__admin/{health,status,refcount,shutdown}` (loopback client + loopback `Host` header required, `"name":"2native-ssh-mcp"` verified). The daemon never exits from idling — only count 0, `kill`, or a signal.
 
 ## Release workflow
 
@@ -169,8 +173,8 @@ git push origin v1.0.1
 ## Gotchas
 
 - Logs → **stderr** only (stdio protocol on stdout).
-- Host keys not verified (`InsecureIgnoreHostKey`, same as reference impl).
-- Shell mode serializes commands per connection; no SFTP in shell mode.
+- Host keys verified against `known_hosts` by default (`hostKeyCheck: accept-new`): first contact is recorded, later key changes fail with `SSH_HOST_KEY_MISMATCH` (retriable=false). `strict` rejects unknown hosts (`SSH_HOST_KEY_UNKNOWN`); `none` disables verification. A rekeyed server needs its stale `known_hosts` line removed (or `hostKeyCheck: none`).
+- Shell mode serializes commands per connection; no SFTP in shell mode. **`transportMode: shell` requires a POSIX `sh`-compatible interactive shell** (relies on `PS1`, `stty`, `printf`, `export`) — csh/tcsh/fish bastions must use `exec` + `commandTemplate` instead.
 - Command log files: `<dir>/<name>.log`, JSON lines, bounded, survive restarts.
 - MCP endpoint path: `/mcp`.
 - No SSH zlib compression (x/crypto/ssh limitation); use TCP keepalive + SFTP concurrency for slow links.

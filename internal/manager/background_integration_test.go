@@ -197,8 +197,11 @@ func TestBackgroundJobIntegration(t *testing.T) {
 	if !out.Running {
 		t.Fatalf("expected job running on first read, got %+v", out)
 	}
-	if !remoteFileExists(t, m, "/tmp/.2native-ssh-mcp-bgtest.log") {
-		t.Fatal("expected remote log file to exist")
+	if out.LogPath == "" {
+		t.Fatal("expected LogPath in read output")
+	}
+	if !remoteFileExists(t, m, out.LogPath) {
+		t.Fatalf("expected remote log file to exist at %s", out.LogPath)
 	}
 
 	// Simulate a connection drop: disconnect, then read again. The job must
@@ -217,7 +220,7 @@ func TestBackgroundJobIntegration(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 	time.Sleep(3 * time.Second)
-	if remoteFileExists(t, m, "/tmp/.2native-ssh-mcp-bgtest.pid") {
+	if remoteFileExists(t, m, strings.TrimSuffix(out.LogPath, ".log")+".pid") {
 		t.Fatal("expected pid file to be removed after close")
 	}
 }

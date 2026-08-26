@@ -92,14 +92,7 @@ func (m *Manager) startHeartbeat(key string, client *ssh.Client, cfg *config.SSH
 			}
 			ch := make(chan keepaliveResult, 1)
 			pending = ch
-			go func() {
-				ok, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
-				if keepaliveOK(ok, err) {
-					ch <- keepaliveAlive
-				} else {
-					ch <- keepaliveDead
-				}
-			}()
+			go func() { ch <- runKeepaliveRound(client, grace) }()
 			select {
 			case res := <-ch:
 				pending = nil
