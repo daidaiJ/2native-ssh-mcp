@@ -175,7 +175,7 @@ Admin API（`/__admin/*`）不用这个 token，仍只限本机访问（loopback
 | 参数 | 必填 | 说明 |
 |---|---|---|
 | `action` | ✅ | `upload` 或 `download` |
-| `localPath` | ✅ | 本地路径（须在 cwd 或 `allowedLocalPaths` 内） |
+| `localPath` | ✅ | 本地路径（受 `localPathMode` 限制，默认 cwd + `allowedLocalPaths`） |
 | `remotePath` | ✅ | 远端绝对路径（配置了 `allowedRemotePaths` 时须在其内） |
 | `connectionName` | | 连接名或 list-servers 中的别名 |
 | `force` | | 跳过去重/续传，强制全量传输 |
@@ -184,7 +184,7 @@ Admin API（`/__admin/*`）不用这个 token，仍只限本机访问（loopback
 - 目标文件与源文件大小、mtime 一致 → 直接跳过（去重）
 - 目标已有部分数据 → 从断点续传；下载走临时文件 + 原子改名
 - 传输中源文件继续增长 → 自动补传尾部
-- 本地路径不在 cwd / `allowedLocalPaths` 内 → `LOCAL_PATH_NOT_ALLOWED`，提示「not within the process cwd or configured allowedLocalPaths」；含 `..` 的路径逃逸单独报「Path traversal rejected」
+- 本地路径不在允许范围内（`localPathMode` 决定范围）→ `LOCAL_PATH_NOT_ALLOWED`，提示「not within the allowed local paths for this connection」；含 `..` 的路径逃逸单独报「Path traversal rejected」
 
 ### list-servers
 
@@ -246,6 +246,7 @@ Connection options:
   -W, --whitelist / -B, --blacklist
   --proxy <url> / -s, --socksProxy <url>
   --allowed-local-paths / --allowed-remote-paths
+  --local-path-mode <cwd|list|any>  本地路径限制：cwd（默认）/ list / any
   --transport-mode <exec|shell>
   --command-template <template>
   --pty / --try-keyboard
@@ -270,6 +271,7 @@ Server options:
 | `transportMode` | `exec` | `shell` 用于堡垒机/跳板机场景；**要求远端是 POSIX `sh` 兼容的交互式 shell**（依赖 `PS1`、`stty`、`printf`、`export`），csh/tcsh/fish 堡垒机请用 `exec` + `commandTemplate` |
 | `commandWhitelist` / `commandBlacklist` | 空 | 命令正则白/黑名单 |
 | `allowedLocalPaths` / `allowedRemotePaths` | 空 | 文件传输路径白名单 |
+| `localPathMode` | `cwd` | 本地路径限制：`cwd`（进程工作目录 + `allowedLocalPaths`）/ `list`（仅 `allowedLocalPaths`）/ `any`（不限制） |
 | `commandLogSize` | 0（关闭） | 命令日志保留条数 |
 | `commandLogDir` | 空 | 命令日志目录（`<dir>/<连接名>.log`） |
 | `commandLogOnlySuccess` | false | 只记录成功命令 |

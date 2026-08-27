@@ -89,8 +89,9 @@ Connection options:
   -B, --blacklist <patterns>       Command blacklist regexes, comma-separated
   --proxy <url>                    Proxy URL (SOCKS5, HTTP, or HTTPS)
   -s, --socksProxy <url>           Legacy SOCKS5 proxy URL
-  --allowed-local-paths <paths>    Extra allowed local paths, comma-separated
+  --allowed-local-paths <paths>    Allowed local paths, comma-separated (cwd mode: extra roots; list mode: the only roots)
   --allowed-remote-paths <paths>   Allowed remote POSIX absolute paths, comma-separated
+  --local-path-mode <mode>         Local path restriction: cwd (default), list, or any
   --transport-mode <mode>          SSH transport mode: exec or shell (default: exec)
   --shell-ready-timeout <ms>       Shell readiness probe timeout (default: 10000)
   --command-template <template>    Wrap commands with <command> or <quotedCommand>
@@ -135,6 +136,7 @@ func ParseArgs(args []string) (*Options, error) {
 		socksProxy      string
 		allowedLocal    string
 		allowedRemote   string
+		localPathMode   string
 		transportMode   string
 		shellReady      string
 		commandTemplate string
@@ -177,6 +179,7 @@ func ParseArgs(args []string) (*Options, error) {
 	fs.StringVar(&socksProxy, "s", "", "")
 	fs.StringVar(&allowedLocal, "allowed-local-paths", "", "")
 	fs.StringVar(&allowedRemote, "allowed-remote-paths", "", "")
+	fs.StringVar(&localPathMode, "local-path-mode", "", "")
 	fs.StringVar(&transportMode, "transport-mode", "", "")
 	fs.StringVar(&shellReady, "shell-ready-timeout", "", "")
 	fs.StringVar(&commandTemplate, "command-template", "", "")
@@ -260,7 +263,7 @@ func ParseArgs(args []string) (*Options, error) {
 	if len(opts.Configs) == 0 {
 		conf, err := buildSingleHostConfig(host, portStr, username, password,
 			privateKey, passphrase, agent, whitelist, blacklist, proxy, socksProxy,
-			allowedLocal, allowedRemote, transportMode, shellReady, commandTemplate,
+			allowedLocal, allowedRemote, localPathMode, transportMode, shellReady, commandTemplate,
 			pty, ptySet, tryKeyboard, positionals, sshConfigFile)
 		if err != nil {
 			return nil, err
@@ -429,6 +432,7 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 		CommandBlacklist:   StringSlice(firstAny(m["commandBlacklist"], m["blacklist"])),
 		AllowedLocalPaths:  StringSlice(m["allowedLocalPaths"]),
 		AllowedRemotePaths: StringSlice(m["allowedRemotePaths"]),
+		LocalPathMode:      str(m["localPathMode"]),
 		TransportMode:      str(m["transportMode"]),
 		CommandTemplate:    str(m["commandTemplate"]),
 		CommandLogDir:      expandEnvVars(str(m["commandLogDir"])),
@@ -510,7 +514,7 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 // buildSingleHostConfig builds the "default" connection from legacy flags.
 func buildSingleHostConfig(host, portStr, username, password, privateKey, passphrase,
 	agent, whitelist, blacklist, proxy, socksProxy, allowedLocal, allowedRemote,
-	transportMode, shellReady, commandTemplate string, pty, ptySet, tryKeyboard bool,
+	localPathMode, transportMode, shellReady, commandTemplate string, pty, ptySet, tryKeyboard bool,
 	positionals []string, sshConfigFile string) (*SSHConfig, error) {
 
 	if host == "" && len(positionals) > 0 {
@@ -595,6 +599,7 @@ func buildSingleHostConfig(host, portStr, username, password, privateKey, passph
 	conf.CommandBlacklist = splitCSV(blacklist)
 	conf.AllowedLocalPaths = splitCSV(allowedLocal)
 	conf.AllowedRemotePaths = splitCSV(allowedRemote)
+	conf.LocalPathMode = localPathMode
 	if shellReady != "" {
 		n, err := strconv.Atoi(shellReady)
 		if err != nil || n <= 0 {

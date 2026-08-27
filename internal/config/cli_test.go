@@ -259,6 +259,45 @@ func TestNormalizeSftpDefaults(t *testing.T) {
 	}
 }
 
+func TestNormalizeLocalPathMode(t *testing.T) {
+	conf := &SSHConfig{Host: "h", Username: "u"}
+	if err := conf.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if conf.LocalPathMode != LocalPathModeCwd {
+		t.Fatalf("default localPathMode must be %q, got: %q", LocalPathModeCwd, conf.LocalPathMode)
+	}
+
+	for _, mode := range []string{LocalPathModeCwd, LocalPathModeList, LocalPathModeAny} {
+		conf := &SSHConfig{Host: "h", Username: "u", LocalPathMode: mode}
+		if err := conf.Normalize(); err != nil {
+			t.Fatalf("localPathMode %q must be accepted, got: %v", mode, err)
+		}
+	}
+
+	conf = &SSHConfig{Host: "h", Username: "u", LocalPathMode: "bogus"}
+	if err := conf.Normalize(); err == nil {
+		t.Fatal("invalid localPathMode must be rejected")
+	}
+}
+
+func TestParseArgsLocalPathModeFlag(t *testing.T) {
+	opts, err := ParseArgs([]string{
+		"--host", "192.0.2.1", "--username", "u", "--password", "x",
+		"--local-path-mode", "any",
+	})
+	if err != nil {
+		t.Fatalf("ParseArgs failed: %v", err)
+	}
+	conf := opts.Configs["default"]
+	if conf == nil {
+		t.Fatal("expected a default connection")
+	}
+	if conf.LocalPathMode != "any" {
+		t.Fatalf("unexpected localPathMode: %q", conf.LocalPathMode)
+	}
+}
+
 func TestParseArgsMetadata(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")

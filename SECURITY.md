@@ -10,7 +10,7 @@
 
 - Keeps SSH credentials in local config / env / agent — never in MCP tool arguments exposed to the model
 - Validates commands against per-connection whitelist/blacklist regexes
-- Restricts file-transfer paths via `allowedLocalPaths` / `allowedRemotePaths`
+- Restricts file-transfer paths via `allowedLocalPaths` / `allowedRemotePaths` (local scope per connection: `localPathMode` — `cwd` default, `list`, or `any`)
 - Redacts common secret patterns (Bearer tokens, PEM blocks, `password=`/`token=` lines) from command output before returning to the client
 - Checks config file permissions at startup (Unix: mode `0600` file / `0700` dir; Windows: ACL modify access)
 - Verifies SSH host keys against `known_hosts` by default (`accept-new`), rejecting changed keys
@@ -41,7 +41,7 @@ The default changed from "accept any key" to `accept-new` deliberately: first co
 2. **Use whitelist regexes in production.** Start read-only (`^ls `, `^cat `, `^df `) and expand deliberately.
 3. **Store credentials in env refs:** `"password": "${SSH_MCP_PASSWORD}"` — not in MCP client JSON args.
 4. **Lock down the config file:** `chmod 600 config.json && chmod 700 $(dirname config.json)` on Unix.
-5. **Set `allowedRemotePaths` and `allowedLocalPaths`** to the smallest scope needed.
+5. **Set `allowedRemotePaths` and `allowedLocalPaths`** to the smallest scope needed; use `"localPathMode": "list"` to exclude the process working directory from the local scope. `"localPathMode": "any"` disables the local restriction — only for trusted single-user machines.
 6. **Do not expose the HTTP daemon** (`start`) beyond `127.0.0.1` without a token: a non-loopback listen address requires `--http-token` / `SSH_MCP_HTTP_TOKEN` / `$global.httpToken` (fail closed), and every `/mcp` request must then carry `Authorization: Bearer <token>`.
 7. **Prefer exec mode + named sessions** for stateful work; reserve `transportMode: shell` for bastions that block exec.
 

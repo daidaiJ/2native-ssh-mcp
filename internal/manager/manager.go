@@ -554,9 +554,16 @@ func (m *Manager) validateLocalPath(localPath, name string, purpose string) (str
 		return "", err
 	}
 
+	// "any" mode disables the local path restriction entirely.
+	if cfg.LocalPathMode == config.LocalPathModeAny {
+		return resolved, nil
+	}
+
 	allowedRoots := []string{}
-	if cwd, err := os.Getwd(); err == nil {
-		allowedRoots = append(allowedRoots, cwd)
+	if cfg.LocalPathMode != config.LocalPathModeList {
+		if cwd, err := os.Getwd(); err == nil {
+			allowedRoots = append(allowedRoots, cwd)
+		}
 	}
 	for _, p := range cfg.AllowedLocalPaths {
 		if strings.TrimSpace(p) != "" {
@@ -609,7 +616,7 @@ func localPathDeniedMessage(raw, resolved string, roots []string) string {
 	if hasDotDotSegment(raw) {
 		return fmt.Sprintf("Path traversal rejected. Local path resolved to: %s. %s", resolved, allowed)
 	}
-	return fmt.Sprintf("Local path is not within the process cwd or configured allowedLocalPaths. Resolved to: %s. %s",
+	return fmt.Sprintf("Local path is not within the allowed local paths for this connection. Resolved to: %s. %s",
 		resolved, allowed)
 }
 
@@ -657,6 +664,9 @@ func (m *Manager) validateRemotePath(remotePath, name string) (string, error) {
 }
 
 func describeAllowedRoots(kind string, roots []string) string {
+	if len(roots) == 0 {
+		return fmt.Sprintf("No allowed %s paths for this connection.", kind)
+	}
 	return fmt.Sprintf("Allowed %s paths for this connection: %s.", kind, strings.Join(roots, ", "))
 }
 

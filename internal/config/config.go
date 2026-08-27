@@ -26,6 +26,17 @@ const (
 	DefaultSftpChunkSize       = 32 * 1024
 )
 
+// Local path restriction modes for file transfers.
+const (
+	// LocalPathModeCwd restricts local paths to the process working
+	// directory plus allowedLocalPaths (default).
+	LocalPathModeCwd = "cwd"
+	// LocalPathModeList restricts local paths to allowedLocalPaths only.
+	LocalPathModeList = "list"
+	// LocalPathModeAny disables the local path restriction entirely.
+	LocalPathModeAny = "any"
+)
+
 // SSHConfig is a single SSH connection configuration.
 type SSHConfig struct {
 	Name string `json:"name,omitempty"`
@@ -38,29 +49,34 @@ type SSHConfig struct {
 	// (list-servers / connectionName).
 	Aliases []string `json:"aliases,omitempty"`
 	// Notes are operational caveats the agent should read before acting.
-	Notes                 string   `json:"notes,omitempty"`
-	Host                  string   `json:"host"`
-	Port                  int      `json:"port"`
-	Username              string   `json:"username"`
-	Password              string   `json:"password,omitempty"`
-	PrivateKey            string   `json:"privateKey,omitempty"`
-	Passphrase            string   `json:"passphrase,omitempty"`
-	Agent                 string   `json:"agent,omitempty"`
-	TryKeyboard           bool     `json:"tryKeyboard,omitempty"`
-	CommandWhitelist      []string `json:"commandWhitelist,omitempty"`
-	CommandBlacklist      []string `json:"commandBlacklist,omitempty"`
-	Proxy                 string   `json:"proxy,omitempty"`
-	SocksProxy            string   `json:"socksProxy,omitempty"`
-	Pty                   *bool    `json:"pty,omitempty"`
-	AllowedLocalPaths     []string `json:"allowedLocalPaths,omitempty"`
-	AllowedRemotePaths    []string `json:"allowedRemotePaths,omitempty"`
-	TransportMode         string   `json:"transportMode,omitempty"`
-	ShellReadyTimeoutMs   int      `json:"shellReadyTimeoutMs,omitempty"`
-	ShellCommandTimeoutMs int      `json:"shellCommandTimeoutMs,omitempty"`
-	CommandTimeoutMs      int      `json:"commandTimeoutMs,omitempty"`
-	ConnectionTimeoutMs   int      `json:"connectionTimeoutMs,omitempty"`
-	SftpTimeoutMs         int      `json:"sftpTimeoutMs,omitempty"`
-	MaxOutputBytes        int      `json:"maxOutputBytes,omitempty"`
+	Notes              string   `json:"notes,omitempty"`
+	Host               string   `json:"host"`
+	Port               int      `json:"port"`
+	Username           string   `json:"username"`
+	Password           string   `json:"password,omitempty"`
+	PrivateKey         string   `json:"privateKey,omitempty"`
+	Passphrase         string   `json:"passphrase,omitempty"`
+	Agent              string   `json:"agent,omitempty"`
+	TryKeyboard        bool     `json:"tryKeyboard,omitempty"`
+	CommandWhitelist   []string `json:"commandWhitelist,omitempty"`
+	CommandBlacklist   []string `json:"commandBlacklist,omitempty"`
+	Proxy              string   `json:"proxy,omitempty"`
+	SocksProxy         string   `json:"socksProxy,omitempty"`
+	Pty                *bool    `json:"pty,omitempty"`
+	AllowedLocalPaths  []string `json:"allowedLocalPaths,omitempty"`
+	AllowedRemotePaths []string `json:"allowedRemotePaths,omitempty"`
+	// LocalPathMode controls which local paths file transfers may touch:
+	// "cwd" (default) allows the process working directory plus
+	// allowedLocalPaths, "list" allows only allowedLocalPaths, "any"
+	// disables the restriction.
+	LocalPathMode         string `json:"localPathMode,omitempty"`
+	TransportMode         string `json:"transportMode,omitempty"`
+	ShellReadyTimeoutMs   int    `json:"shellReadyTimeoutMs,omitempty"`
+	ShellCommandTimeoutMs int    `json:"shellCommandTimeoutMs,omitempty"`
+	CommandTimeoutMs      int    `json:"commandTimeoutMs,omitempty"`
+	ConnectionTimeoutMs   int    `json:"connectionTimeoutMs,omitempty"`
+	SftpTimeoutMs         int    `json:"sftpTimeoutMs,omitempty"`
+	MaxOutputBytes        int    `json:"maxOutputBytes,omitempty"`
 	// OutputCompressLight enables lossy head/tail line compression when output
 	// exceeds outputCompressThreshold bytes (default: true when unset).
 	OutputCompressLight *bool `json:"outputCompressLight,omitempty"`
@@ -184,6 +200,12 @@ func (c *SSHConfig) Normalize() error {
 	}
 	if c.HostKeyCheck != "accept-new" && c.HostKeyCheck != "strict" && c.HostKeyCheck != "none" {
 		return fmt.Errorf("hostKeyCheck must be 'accept-new', 'strict' or 'none', got: %s", c.HostKeyCheck)
+	}
+	if c.LocalPathMode == "" {
+		c.LocalPathMode = LocalPathModeCwd
+	}
+	if c.LocalPathMode != LocalPathModeCwd && c.LocalPathMode != LocalPathModeList && c.LocalPathMode != LocalPathModeAny {
+		return fmt.Errorf("localPathMode must be 'cwd', 'list' or 'any', got: %s", c.LocalPathMode)
 	}
 	if c.KnownHostsFile != "" {
 		c.KnownHostsFile = ExpandHome(c.KnownHostsFile)

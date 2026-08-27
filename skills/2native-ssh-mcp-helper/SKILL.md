@@ -53,7 +53,7 @@ Interactive wizard for **2native-ssh-mcp** (Go SSH MCP server). Produces a locke
 5. **Security prompts** (AskQuestion yes/no each)
    - Command whitelist regexes (recommended for prod)
    - Command blacklist
-   - `allowedLocalPaths` / `allowedRemotePaths`
+   - `allowedLocalPaths` / `allowedRemotePaths` (+ `localPathMode`: `cwd` default, `list` = only `allowedLocalPaths`, `any` = unrestricted)
    - Server metadata: `description`, `business`, `aliases`, `notes` for list-servers
    - Bastion: `"transportMode": "shell"` (no SFTP on shell mode)
    - Host key check: `"hostKeyCheck"` — default `accept-new` (records unknown keys, rejects changed ones); use `strict` for fixed hosts, `none` for dynamic IP / frequently reimaged machines. `known_hosts` and its directory are auto-created; override path with `"knownHostsFile"`
@@ -75,7 +75,8 @@ Interactive wizard for **2native-ssh-mcp** (Go SSH MCP server). Produces a locke
     "description": "Dev jump host",
     "aliases": ["dev"],
     "commandWhitelist": ["^ls ", "^cat ", "^df "],
-    "allowedRemotePaths": ["/tmp", "/home/deploy"]
+    "allowedRemotePaths": ["/tmp", "/home/deploy"],
+    "localPathMode": "cwd"
   }
 }
 ```

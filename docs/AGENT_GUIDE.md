@@ -31,7 +31,7 @@ One tool, `action` param. Progress via `notifications/progress` when client send
 | Param | Type | Req | Notes |
 |---|---|---|---|
 | `action` | string | ✅ | `upload` \| `download` |
-| `localPath` | string | ✅ | Under cwd or `allowedLocalPaths` |
+| `localPath` | string | ✅ | Under `localPathMode` scope (default: cwd + `allowedLocalPaths`; `list` = only `allowedLocalPaths`; `any` = unrestricted) |
 | `remotePath` | string | ✅ | Absolute POSIX; under `allowedRemotePaths` if set |
 | `connectionName` | string | | Name or alias from list-servers |
 | `force` | boolean | | Skip dedup/resume, full transfer |
@@ -39,7 +39,7 @@ One tool, `action` param. Progress via `notifications/progress` when client send
 - **Dedup**: destination matches (size+mtime) → skipped. **Resume**: partial destination → continue. Download = temp + atomic rename, stamps remote mtime.
 - Growing source: tail appended after main copy.
 - Concurrent SFTP (16×32 KB default; `sftpConcurrency`/`sftpChunkSize` per connection).
-- Local path outside cwd/`allowedLocalPaths` → `LOCAL_PATH_NOT_ALLOWED` with a scope message ("not within the process cwd or configured allowedLocalPaths"); a `..` escape is reported separately as "Path traversal rejected".
+- Local path outside the `localPathMode` scope → `LOCAL_PATH_NOT_ALLOWED` with a scope message ("not within the allowed local paths for this connection"); a `..` escape is reported separately as "Path traversal rejected".
 
 ### list-servers
 No args. Returns **servers** (metadata, status) and **active sessions**. Call first to pick `connectionName` or `sessionName`. **readOnly**.
@@ -97,6 +97,7 @@ session(action=close, sessionName=deploy)
     "commandBlacklist": ["rm -rf"],
     "allowedLocalPaths": ["C:/data"],
     "allowedRemotePaths": ["/tmp", "/home"],
+    "localPathMode": "cwd",                    // or "list" / "any"
     "transportMode": "exec",                   // or "shell" (bastion)
     "commandLogSize": 50, "commandLogDir": "logs", "commandLogOnlySuccess": true,
     "sftpConcurrency": 16, "sftpChunkSize": 32768,
