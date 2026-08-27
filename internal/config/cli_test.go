@@ -6,6 +6,18 @@ import (
 	"testing"
 )
 
+// newConfigDir returns a temp dir with restrictive permissions. Go 1.24+
+// t.TempDir() creates 0755 subdirectories, which fails the config file
+// permission check (Unix 0700) on Linux CI.
+func newConfigDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func TestParseArgsSingleHost(t *testing.T) {
 	opts, err := ParseArgs([]string{
 		"--host", "192.168.1.1", "--port", "2222",
@@ -41,7 +53,7 @@ func TestParseArgsPositionals(t *testing.T) {
 }
 
 func TestParseArgsConfigFile(t *testing.T) {
-	dir := t.TempDir()
+	dir := newConfigDir(t)
 	path := filepath.Join(dir, "config.json")
 	content := `{
 		"dev": {"host": "10.0.0.1", "port": 22, "username": "root", "password": "x",
@@ -132,7 +144,7 @@ func TestParseArgsMissingAuth(t *testing.T) {
 func TestParseArgsEnvVarReferences(t *testing.T) {
 	t.Setenv("SSH_MCP_TEST_PASSWORD", "s3cret")
 	t.Setenv("SSH_MCP_TEST_HOST", "10.9.9.9")
-	dir := t.TempDir()
+	dir := newConfigDir(t)
 	path := filepath.Join(dir, "config.json")
 	content := `{
 		"dev": {"host": "${SSH_MCP_TEST_HOST}", "port": 22, "username": "root",
@@ -160,7 +172,7 @@ func TestParseArgsNoConfig(t *testing.T) {
 }
 
 func TestLoadConfigFileGlobal(t *testing.T) {
-	dir := t.TempDir()
+	dir := newConfigDir(t)
 	path := filepath.Join(dir, "config.json")
 	content := `{
 		"$global": {"allowInsecureConfigPerms": true},
@@ -183,7 +195,7 @@ func TestLoadConfigFileGlobal(t *testing.T) {
 }
 
 func TestLoadConfigFileGlobalDefaults(t *testing.T) {
-	dir := t.TempDir()
+	dir := newConfigDir(t)
 	path := filepath.Join(dir, "config.json")
 	content := `{
 		"$global": {},
@@ -203,7 +215,7 @@ func TestLoadConfigFileGlobalDefaults(t *testing.T) {
 }
 
 func TestLoadConfigFileGlobalInvalidType(t *testing.T) {
-	dir := t.TempDir()
+	dir := newConfigDir(t)
 	path := filepath.Join(dir, "config.json")
 	content := `{
 		"$global": ["not", "an", "object"],
@@ -219,7 +231,7 @@ func TestLoadConfigFileGlobalInvalidType(t *testing.T) {
 }
 
 func TestParseArgsGlobalConfig(t *testing.T) {
-	dir := t.TempDir()
+	dir := newConfigDir(t)
 	path := filepath.Join(dir, "config.json")
 	content := `{
 		"$global": {"allowInsecureConfigPerms": true},
@@ -299,7 +311,7 @@ func TestParseArgsLocalPathModeFlag(t *testing.T) {
 }
 
 func TestParseArgsMetadata(t *testing.T) {
-	dir := t.TempDir()
+	dir := newConfigDir(t)
 	path := filepath.Join(dir, "config.json")
 	content := `{
 		"centos": {
