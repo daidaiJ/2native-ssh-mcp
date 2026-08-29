@@ -5,9 +5,15 @@
 #   - injects the tag name as the binary version (-X main.version=<tag>)
 #   - release notes = the annotated tag message (read via GitHub API)
 #   - attaches every binary with its own .sha256 checksum
+#   - packages each binary as an .mcpb bundle (MCP Bundle, zip + manifest.json)
+#   - a tag with the "-registry" suffix (e.g. v1.0.0-registry) additionally
+#     publishes the matching stable release (v1.0.0) to the official MCP
+#     Registry (registry.modelcontextprotocol.io) via OIDC. Publishing to the
+#     registry is explicit: plain tags (v1.0.0) only build the release.
 #
 # To reuse in another project: replace "2native-ssh-mcp" with your binary
-# name, and make sure main.go declares `var version = "..."` (not const).
+# name, make sure main.go declares `var version = "..."` (not const), and
+# update the registry name/URL in the publish-registry job.
 
 name: Release
 
@@ -22,6 +28,7 @@ permissions:
 jobs:
   build:
     name: Build ${{ matrix.goos }}-${{ matrix.arch }}
+    if: ${{ !endsWith(github.ref_name, '-registry') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -30,21 +37,27 @@ jobs:
           - goos: windows
             arch: amd64
             ext: .exe
+            mcpbPlatform: win32
           - goos: windows
             arch: arm64
             ext: .exe
+            mcpbPlatform: win32
           - goos: linux
             arch: amd64
             ext: ''
+            mcpbPlatform: linux
           - goos: linux
             arch: arm64
             ext: ''
+            mcpbPlatform: linux
           - goos: darwin
             arch: amd64
             ext: ''
+            mcpbPlatform: darwin
           - goos: darwin
             arch: arm64
             ext: ''
+            mcpbPlatform: darwin
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -67,16 +80,53 @@ jobs:
           go build -trimpath -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
             -o dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}${{ matrix.ext }} .
 
+      - name: Package MCPB bundle
+        run: |
+          mkdir -p bundle/server
+          cp dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}${{ matrix.ext }} \
+            bundle/server/2native-ssh-mcp${{ matrix.ext }}
+          cat > bundle/manifest.json <<'EOF'
+          {
+            "manifest_version": "0.3",
+            "name": "2native-ssh-mcp",
+            "display_name": "2native SSH MCP Server",
+            "version": "${{ github.ref_name }}",
+            "description": "SSH-based MCP server for remote command execution and file transfer. Credentials stay local.",
+            "author": {
+              "name": "daidaiJ"
+            },
+            "server": {
+              "type": "binary",
+              "entry_point": "server/2native-ssh-mcp${{ matrix.ext }}",
+              "mcp_config": {
+                "command": "${__dirname}/server/2native-ssh-mcp${{ matrix.ext }}",
+                "args": [],
+                "env": {}
+              }
+            },
+            "compatibility": {
+              "platforms": ["${{ matrix.mcpbPlatform }}"]
+            }
+          }
+          EOF
+          (cd bundle && zip -r ../dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}.mcpb .)
+          sha256sum dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}.mcpb \
+            > dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}.mcpb.sha256
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: 2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}
-          path: dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}${{ matrix.ext }}
+          path: |
+            dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}${{ matrix.ext }}
+            dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}.mcpb
+            dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}.mcpb.sha256
           if-no-files-found: error
 
   release:
     name: Create release
     needs: build
+    if: ${{ !endsWith(github.ref_name, '-registry') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -111,6 +161,7 @@ jobs:
           cd dist
           for f in 2native-ssh-mcp-*; do
             [ -f "$f" ] || continue
+            case "$f" in *.sha256) continue ;; esac
             sha256sum "$f" > "$f.sha256"
           done
 
@@ -123,3 +174,71 @@ jobs:
             dist/2native-ssh-mcp-* \
             --title "${{ github.ref_name }}" \
             --notes-file notes.md
+
+  publish-registry:
+    name: Publish to MCP Registry
+    # Triggered only by a "-registry" suffix tag (e.g. v1.0.0-registry).
+    # Publishes the matching stable release (v1.0.0) to the official registry.
+    if: ${{ endsWith(github.ref_name, '-registry') }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download MCPB bundles
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"          # v1.0.0-registry
+          BASE_TAG="${TAG%-registry}"             # v1.0.0
+          echo "Publishing $BASE_TAG to MCP Registry"
+          mkdir -p mcpb-assets
+          gh release download "$BASE_TAG" \
+            --pattern "*.mcpb" --pattern "*.mcpb.sha256" \
+            --dir mcpb-assets
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+
+      - name: Generate server.json
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"          # v1.0.0-registry
+          BASE_TAG="${TAG%-registry}"             # v1.0.0
+          VERSION="${BASE_TAG#v}"                 # 1.0.0
+          PACKAGES='[]'
+          for f in mcpb-assets/*.mcpb; do
+            base="$(basename "$f" .mcpb)"
+            sha="$(awk '{print $1}' "$f.sha256")"
+            url="https://github.com/daidaiJ/2native-ssh-mcp/releases/download/$BASE_TAG/$base.mcpb"
+            PACKAGES="$(jq --arg url "$url" --arg sha "$sha" \
+              '. + [{"registryType":"mcpb","identifier":$url,"fileSha256":$sha,"transport":{"type":"stdio"}}]' \
+              <<< "$PACKAGES")"
+          done
+          jq -n \
+            --arg name "io.github.daidaiJ/2native-ssh-mcp" \
+            --arg version "$VERSION" \
+            --argjson packages "$PACKAGES" \
+            '{
+              "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+              "name": $name,
+              "title": "2native SSH MCP Server",
+              "description": "SSH-based MCP server for remote command execution and file transfer with named sessions, progress notifications, and resumable transfers. SSH credentials stay local and are never exposed to the model.",
+              "version": $version,
+              "repository": {
+                "url": "https://github.com/daidaiJ/2native-ssh-mcp",
+                "source": "github"
+              },
+              "packages": $packages
+            }' > server.json
+          echo "--- server.json ---"
+          jq . server.json
+
+      - name: Publish server to MCP Registry
+        run: ./mcp-publisher publish
