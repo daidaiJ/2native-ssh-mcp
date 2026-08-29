@@ -229,7 +229,7 @@ jobs:
               "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
               "name": $name,
               "title": "2native SSH MCP Server",
-              "description": "SSH-based MCP server for remote command execution and file transfer with named sessions, progress notifications, and resumable transfers. SSH credentials stay local and are never exposed to the model.",
+              "description": "SSH-based MCP server for remote command execution and file transfer. Credentials stay local.",
               "version": $version,
               "repository": {
                 "url": "https://github.com/daidaiJ/2native-ssh-mcp",
