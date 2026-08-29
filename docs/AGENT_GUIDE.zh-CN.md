@@ -1,4 +1,4 @@
-> [中文版](AGENT_GUIDE.zh-CN.md)
+> [English](AGENT_GUIDE.md)
 
 # 2native-ssh-mcp — Agent Guide
 
@@ -91,10 +91,10 @@ session(action=close, sessionName=deploy)
   "dev": {
     "host": "10.0.0.1", "port": 22, "username": "root",
     "password": "${SSH_MCP_PASSWORD}",
-    "description": "Development environment jump host",
-    "business": "Order/Payment integration testing",
-    "aliases": ["dev-box", "development"],
-    "notes": "Read-only primarily; avoid heavy queries during peak hours",
+    "description": "开发环境跳板机",
+    "business": "订单/支付联调",
+    "aliases": ["dev-box", "开发"],
+    "notes": "只读为主；高峰期勿跑重查询",
     "commandWhitelist": ["^ls ", "^cat "],
     "commandBlacklist": ["rm -rf"],
     "allowedLocalPaths": ["C:/data"],
