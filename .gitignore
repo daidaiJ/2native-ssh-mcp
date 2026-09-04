@@ -22,3 +22,6 @@ downloads/
 .qwen/
 plan/HARDENING.md
 plan/README.md
+
+# Spilled command output
+.ssh-mcp-out/

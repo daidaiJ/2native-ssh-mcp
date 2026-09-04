@@ -53,10 +53,20 @@ func TestBuildCommandResultReplaySafe(t *testing.T) {
 }
 
 func TestBuildCommandResultRedacts(t *testing.T) {
+	// Redaction is opt-in (redactSecrets): by default secrets stay visible.
 	cfg := &config.SSHConfig{}
 	res := buildCommandResult("token=SECRET123 done", "", 0, StatusOK, cfg)
+	if !strings.Contains(res.Stdout, "SECRET123") {
+		t.Fatalf("redaction must be off by default, got: %q", res.Stdout)
+	}
+
+	yes := true
+	res = buildCommandResult("token=SECRET123 done", "", 0, StatusOK, &config.SSHConfig{RedactSecrets: &yes})
 	if strings.Contains(res.Stdout, "SECRET123") {
-		t.Fatalf("stdout must be redacted, got: %q", res.Stdout)
+		t.Fatalf("redactSecrets=true must redact, got: %q", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "[REDACTED]") {
+		t.Fatalf("redactSecrets=true must show the placeholder, got: %q", res.Stdout)
 	}
 }
 

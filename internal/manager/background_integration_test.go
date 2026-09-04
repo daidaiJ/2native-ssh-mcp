@@ -190,7 +190,7 @@ func TestBackgroundJobIntegration(t *testing.T) {
 	}
 
 	// Read: job should be running and the log file present.
-	out, err := m.ReadSessionOutput("bgtest", 0, -1)
+	out, err := m.ReadSessionOutput("bgtest", 0, -1, 0)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestBackgroundJobIntegration(t *testing.T) {
 	// Simulate a connection drop: disconnect, then read again. The job must
 	// survive and still report running.
 	m.Disconnect("ubuntu")
-	out, err = m.ReadSessionOutput("bgtest", 0, -1)
+	out, err = m.ReadSessionOutput("bgtest", 0, -1, 0)
 	if err != nil {
 		t.Fatalf("read after disconnect: %v", err)
 	}
@@ -222,5 +222,58 @@ func TestBackgroundJobIntegration(t *testing.T) {
 	time.Sleep(3 * time.Second)
 	if remoteFileExists(t, m, strings.TrimSuffix(out.LogPath, ".log")+".pid") {
 		t.Fatal("expected pid file to be removed after close")
+	}
+}
+
+// TestSessionReadWaitMs verifies action=read blocks for new output instead
+// of returning empty (issue #3 Slice B: no idle spin-polling).
+func TestSessionReadWaitMs(t *testing.T) {
+	m := loadTestManager(t)
+	name := "bgwait"
+	_ = m.CloseSession(name)
+	_, err := m.OpenSessionWithOptions(name, "ubuntu", SessionOpenOptions{
+		Background: true,
+		CmdString:  "sleep 2; echo WAITMS_DONE",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.CloseSession(name)
+
+	start := time.Now()
+	out, err := m.ReadSessionOutput(name, 0, -1, 8000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "WAITMS_DONE") {
+		t.Fatalf("waitMs read must return the delayed output, got: %q", out.Output)
+	}
+	if time.Since(start) < 500*time.Millisecond {
+		t.Fatalf("waitMs read returned before the job could produce output")
+	}
+}
+
+// TestBackgroundPTY verifies the opt-in PTY wrapper for background jobs:
+// the detached process sees a TTY on stdout (issue #3 Slice C).
+func TestBackgroundPTY(t *testing.T) {
+	m := loadTestManager(t)
+	name := "bgpty"
+	_ = m.CloseSession(name)
+	_, err := m.OpenSessionWithOptions(name, "ubuntu", SessionOpenOptions{
+		Background: true,
+		Pty:        true,
+		CmdString:  "sleep 2; if [ -t 1 ]; then echo BG_PTY_YES; else echo BG_PTY_NO; fi",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.CloseSession(name)
+
+	out, err := m.ReadSessionOutput(name, 0, -1, 8000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "BG_PTY_YES") {
+		t.Fatalf("background job with pty=true must see a TTY, got: %q", out.Output)
 	}
 }

@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/ssh"
-
 	"2native-ssh-mcp/internal/config"
 	"2native-ssh-mcp/internal/logger"
 )
@@ -351,14 +349,15 @@ func (m *Manager) runNamedShellCommand(ctx context.Context, ns *namedSession, cm
 		return result, err
 	}
 
-	// The PWD line is the last line of the captured output; extract it
-	// before the result is returned so the session CWD stays in sync.
-	if pwd := extractShellPWD(result.Stdout); pwd != "" {
+	// The PWD was extracted from the raw output inside runShellScriptOnce
+	// (before trimming would remove the line separator the regex needs) and
+	// travels in result.CWD so the session stays in sync even when the
+	// output itself was spilled to a file or compressed.
+	if result.CWD != "" {
 		m.mu.Lock()
-		ns.cwd = pwd
+		ns.cwd = result.CWD
 		m.mu.Unlock()
 	}
-	result.Stdout = stripShellPWDLine(result.Stdout)
 	return result, nil
 }
 
@@ -395,7 +394,23 @@ func extractShellPWD(output string) string {
 }
 
 func stripShellPWDLine(output string) string {
-	return strings.TrimSpace(shellPWDPattern.ReplaceAllString(output, ""))
+	return shellPWDPattern.ReplaceAllString(output, "")
+}
+
+// finalizeShellOutput strips the __MCP_PWD__ line from the raw shell output —
+// before any trimming can remove the trailing newline the PWD regex needs —
+// then trims and wraps the cleaned output in a CommandResult that carries the
+// PWD in CWD. This keeps the session CWD working even when the output is
+// later spilled to a file or compressed.
+func finalizeShellOutput(output string, exitCode int, status string, cfg *config.SSHConfig) CommandResult {
+	pwd := extractShellPWD(output)
+	if pwd != "" {
+		output = stripShellPWDLine(output)
+	}
+	output = strings.TrimSpace(output)
+	res := buildCommandResult(output, "", exitCode, status, cfg)
+	res.CWD = pwd
+	return res
 }
 
 // runShellScriptOnce executes a marker-framed script on sh and returns a
@@ -470,11 +485,11 @@ func (m *Manager) runShellScriptOnce(ctx context.Context, sh *shellSession, scri
 					sh.buffer = sh.buffer[consumedEnd:]
 					exitCode := 0
 					fmt.Sscanf(matched[1], "%d", &exitCode)
-					output = strings.TrimSpace(strings.TrimPrefix(output, beginMarker+"\n"))
+					output = strings.TrimPrefix(output, beginMarker+"\n")
 					if exitCode != 0 {
-						return buildCommandResult(output, "", exitCode, StatusExited, cfg), nil
+						return finalizeShellOutput(output, exitCode, StatusExited, cfg), nil
 					}
-					return buildCommandResult(output, "", 0, StatusOK, cfg), nil
+					return finalizeShellOutput(output, 0, StatusOK, cfg), nil
 				}
 				scanPos = absEnd
 				continue
@@ -485,25 +500,27 @@ func (m *Manager) runShellScriptOnce(ctx context.Context, sh *shellSession, scri
 
 		if maxOutput > 0 && capturedBytes > maxOutput {
 			interruptShell(sh)
-			return abort(buildCommandResult(partialShellOutput(sh, outputStart), "", -1, StatusOutputLimit, cfg),
+			res := finalizeShellOutput(partialShellOutput(sh, outputStart), -1, StatusOutputLimit, cfg)
+			res.Truncated = true // the tail stayed in the remote pipe; clipped size unknown
+			return abort(res,
 				newToolError(CodeOutputLimitExceeded,
 					fmt.Sprintf("[truncated] Output exceeded maxOutputBytes=%d; the command was aborted.", maxOutput), false))
 		}
 
 		if sh.closed {
-			return abort(buildCommandResult(partialShellOutput(sh, outputStart), "", -1, StatusConnectionLost, cfg),
+			return abort(finalizeShellOutput(partialShellOutput(sh, outputStart), -1, StatusConnectionLost, cfg),
 				newToolError(CodeSSHConnectionLost,
 					"SSH connection dropped during command; the remote process may still be running. Do not replay blindly.", false))
 		}
 		if err := ctx.Err(); err != nil {
 			interruptShell(sh)
-			return abort(buildCommandResult(partialShellOutput(sh, outputStart), "", -1, StatusTimeout, cfg),
+			return abort(finalizeShellOutput(partialShellOutput(sh, outputStart), -1, StatusTimeout, cfg),
 				ctxToolError(ctx, CodeCommandTimeout,
 					fmt.Sprintf("[timeout] Command timed out after %dms", timeout.Milliseconds())))
 		}
 		if time.Now().After(deadline) {
 			interruptShell(sh)
-			return abort(buildCommandResult(partialShellOutput(sh, outputStart), "", -1, StatusTimeout, cfg),
+			return abort(finalizeShellOutput(partialShellOutput(sh, outputStart), -1, StatusTimeout, cfg),
 				newToolError(CodeCommandTimeout,
 					fmt.Sprintf("[timeout] Command timed out after %dms", timeout.Milliseconds()), true))
 		}
@@ -539,19 +556,6 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
-}
-
-// signalRemoteProcess attempts to terminate a remote exec-session process.
-func signalRemoteProcess(session *ssh.Session, done <-chan error) {
-	if session == nil {
-		return
-	}
-	_ = session.Signal(ssh.SIGTERM)
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		_ = session.Signal(ssh.SIGKILL)
-	}
 }
 
 // interruptShell sends Ctrl-C to the foreground process in a shell session.

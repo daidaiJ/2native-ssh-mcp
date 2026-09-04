@@ -52,7 +52,7 @@ func TestParseBGStartedPID(t *testing.T) {
 }
 
 func TestBuildBGStarterScriptDetaches(t *testing.T) {
-	script := buildBGStarterScript("/tmp/x.log", "/tmp/x.pid", "/tmp/x.exit", "sleep 60; echo DONE")
+	script := buildBGStarterScript("/tmp/x.log", "/tmp/x.pid", "/tmp/x.exit", "sleep 60; echo DONE", false)
 	for _, want := range []string{"setsid", "</dev/null", "__MCP_BG_STARTED__", "kill -0", "sleep 1"} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("starter script missing %q:\n%s", want, script)
@@ -69,7 +69,7 @@ func TestBuildBGStarterScriptDetaches(t *testing.T) {
 
 func TestBuildBGStarterScriptQuotesBody(t *testing.T) {
 	// A body with a single quote must survive quoting.
-	script := buildBGStarterScript("/tmp/x.log", "/tmp/x.pid", "/tmp/x.exit", "echo it's")
+	script := buildBGStarterScript("/tmp/x.log", "/tmp/x.pid", "/tmp/x.exit", "echo it's", false)
 	if !strings.Contains(script, `'echo it'\''s'`) {
 		t.Fatalf("starter must shell-quote the body:\n%s", script)
 	}
@@ -163,5 +163,30 @@ func TestCloseSessionOrphanKeepsSession(t *testing.T) {
 	}
 	if !orphaned {
 		t.Fatal("session must be marked orphaned after an unconfirmed stop")
+	}
+}
+
+func TestBGStarterScriptUnsetsBuffering(t *testing.T) {
+	script := buildBGStarterScript("/tmp/l", "/tmp/p", "/tmp/e", "echo hi", false)
+	if !strings.Contains(script, "export PYTHONUNBUFFERED=1") {
+		t.Fatal("background jobs must disable Python block buffering so logs stream")
+	}
+}
+
+func TestBGStarterScriptPTYFlag(t *testing.T) {
+	plain := buildBGStarterScript("/tmp/l", "/tmp/p", "/tmp/e", "echo hi", false)
+	// The script text carries both branches; the flag argument selects one.
+	if !strings.Contains(plain, `"$EXITF" 0 &`) {
+		t.Fatalf("pty=false must pass flag 0: %s", plain)
+	}
+	pty := buildBGStarterScript("/tmp/l", "/tmp/p", "/tmp/e", "echo hi", true)
+	for _, want := range []string{`script -qefc "$2" /dev/null`, `"$4" = "1"`, "PYTHONUNBUFFERED=1"} {
+		if !strings.Contains(pty, want) {
+			t.Fatalf("pty=true starter missing %q:\n%s", want, pty)
+		}
+	}
+	// The pty flag must degrade gracefully when script(1) is absent.
+	if !strings.Contains(pty, `command -v script`) || !strings.Contains(pty, `eval "$2"`) {
+		t.Fatal("pty=true starter must fall back to eval when script is missing")
 	}
 }

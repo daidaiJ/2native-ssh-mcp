@@ -17,9 +17,12 @@ import (
 // RunOptions controls a single command execution.
 type RunOptions struct {
 	Timeout           time.Duration // overrides the connection's command timeout
-	KeepAlive         *bool         // keep the connection alive after the command (default: true)
+	KeepAlive         *bool         // keep the connection alive after the command (default: true; named sessions ignore false because the connection may host other sessions)
 	KeepAliveDuration time.Duration // idle duration after the command (default: 10 minutes)
-	Prevalidated      bool          // skip whitelist/blacklist (internal commands)
+	// Pty overrides the connection's pty setting for this exec command
+	// (default: connection config, which itself defaults to no PTY).
+	Pty          *bool
+	Prevalidated bool // skip whitelist/blacklist (internal commands)
 }
 
 // ExecuteCommand runs a command on the named connection and returns a
@@ -73,7 +76,7 @@ func (m *Manager) ExecuteCommand(ctx context.Context, cmdString, directory, name
 	if cfg.TransportMode == "shell" {
 		result, err = m.runShellCommand(ctx, key, cmdString, directory, timeout)
 	} else {
-		result, err = m.runExecCommand(ctx, client, cfg, cmdString, directory, timeout, key)
+		result, err = m.runExecCommand(ctx, client, cfg, cmdString, directory, timeout, key, opts)
 	}
 
 	m.RecordCommand(key, cmdString, result.ExitCode, result.ExitCode == 0)
@@ -108,6 +111,10 @@ type limitedBuffer struct {
 	max      int
 	shared   *atomic.Int32 // shared remaining budget; nil for standalone buffers
 	exceeded bool
+	// dropped counts bytes discarded once the cap was hit, so the result
+	// can report how much output was clipped. Written only by the single
+	// copy goroutine feeding this buffer.
+	dropped  int64
 	onExceed func()
 }
 
@@ -116,6 +123,7 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 		return b.buf.Write(p)
 	}
 	if b.exceeded {
+		b.dropped += int64(len(p))
 		return len(p), nil
 	}
 	remaining := b.max - b.buf.Len()
@@ -124,7 +132,10 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 	}
 	if len(p) > remaining {
 		if remaining > 0 {
-			b.buf.Write(p[:remaining])
+			b.buf.Write(p[:utf8SafeCutLen(p, remaining)])
+			b.dropped += int64(len(p)) - int64(remaining)
+		} else {
+			b.dropped += int64(len(p))
 		}
 		if b.shared != nil {
 			b.shared.Store(0)
@@ -145,7 +156,7 @@ func (b *limitedBuffer) String() string { return b.buf.String() }
 
 // runExecCommand executes a command over a fresh exec channel.
 func (m *Manager) runExecCommand(ctx context.Context, client *ssh.Client, cfg *config.SSHConfig,
-	cmdString, directory string, timeout time.Duration, key string) (CommandResult, error) {
+	cmdString, directory string, timeout time.Duration, key string, opts RunOptions) (CommandResult, error) {
 
 	commandToRun := cmdString
 	if directory != "" {
@@ -155,6 +166,12 @@ func (m *Manager) runExecCommand(ctx context.Context, client *ssh.Client, cfg *c
 		commandToRun = applyCommandTemplate(cfg.CommandTemplate, commandToRun)
 	}
 
+	// The wrapper records the remote shell's PID so the timeout path can
+	// kill the whole process group; the in-band channel Signal alone is
+	// frequently ignored by OpenSSH and leaks the remote process.
+	pidFile := fmt.Sprintf("/tmp/.ssh-mcp-%s.pid", randomID("pid"))
+	commandToRun = buildPIDWrapperScript(commandToRun, pidFile)
+
 	session, err := client.NewSession()
 	if err != nil {
 		return CommandResult{}, newToolError(CodeCommandExecutionError,
@@ -162,7 +179,11 @@ func (m *Manager) runExecCommand(ctx context.Context, client *ssh.Client, cfg *c
 	}
 	defer session.Close()
 
-	if cfg.GetPty() {
+	usePty := cfg.GetPty()
+	if opts.Pty != nil {
+		usePty = *opts.Pty
+	}
+	if usePty {
 		if err := session.RequestPty("xterm", 80, 24, ssh.TerminalModes{}); err != nil {
 			return CommandResult{}, newToolError(CodeCommandExecutionError,
 				fmt.Sprintf("PTY request failed: %v", err), true)
@@ -195,7 +216,10 @@ func (m *Manager) runExecCommand(ctx context.Context, client *ssh.Client, cfg *c
 	select {
 	case waitErr := <-done:
 		if stdout.exceeded || stderr.exceeded {
-			return buildCommandResult(stdout.String(), stderr.String(), -1, StatusOutputLimit, cfg), newToolError(CodeOutputLimitExceeded,
+			res := buildCommandResult(stdout.String(), stderr.String(), -1, StatusOutputLimit, cfg)
+			res.Truncated = true
+			res.ClippedBytes = stdout.dropped + stderr.dropped
+			return res, newToolError(CodeOutputLimitExceeded,
 				fmt.Sprintf("[truncated] Output exceeded maxOutputBytes=%d; the command was aborted.", maxOutput), false)
 		}
 		if waitErr != nil {
@@ -217,12 +241,15 @@ func (m *Manager) runExecCommand(ctx context.Context, client *ssh.Client, cfg *c
 		}
 		return buildCommandResult(stdout.String(), stderr.String(), 0, StatusOK, cfg), nil
 	case <-exceededCh:
-		signalRemoteProcess(session, done)
+		(&remoteCommandContext{client: client, session: session, pidFile: pidFile, done: done}).kill()
 		session.Close()
-		return buildCommandResult(stdout.String(), stderr.String(), -1, StatusOutputLimit, cfg), newToolError(CodeOutputLimitExceeded,
+		res := buildCommandResult(stdout.String(), stderr.String(), -1, StatusOutputLimit, cfg)
+		res.Truncated = true
+		res.ClippedBytes = stdout.dropped + stderr.dropped
+		return res, newToolError(CodeOutputLimitExceeded,
 			fmt.Sprintf("[truncated] Output exceeded maxOutputBytes=%d; the command was aborted.", maxOutput), false)
 	case <-ctx.Done():
-		signalRemoteProcess(session, done)
+		(&remoteCommandContext{client: client, session: session, pidFile: pidFile, done: done}).kill()
 		session.Close()
 		return buildCommandResult(stdout.String(), stderr.String(), -1, StatusTimeout, cfg), ctxToolError(ctx, CodeCommandTimeout,
 			fmt.Sprintf("[timeout] Command timed out after %dms", timeout.Milliseconds()))

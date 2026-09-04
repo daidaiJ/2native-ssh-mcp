@@ -24,6 +24,15 @@ const (
 	DefaultHTTPAddr            = "127.0.0.1:8338"
 	DefaultSftpConcurrency     = 16
 	DefaultSftpChunkSize       = 32 * 1024
+	// DefaultOutputSpillThreshold is the combined stdout+stderr size above
+	// which command output is spilled to a local file (one or two terminal
+	// screens of a normal command; below it, light compression still applies
+	// from 4KiB).
+	DefaultOutputSpillThreshold = 8192
+	// DefaultOutputSpillDir is the local directory for spilled command
+	// output, relative to the process working directory so a workspace agent
+	// can Grep it.
+	DefaultOutputSpillDir = ".ssh-mcp-out"
 )
 
 // Local path restriction modes for file transfers.
@@ -83,10 +92,25 @@ type SSHConfig struct {
 	// OutputCompressThreshold is the byte size before light compression runs
 	// (default 4096; 0 uses default).
 	OutputCompressThreshold int `json:"outputCompressThreshold,omitempty"`
+	// OutputSpillThreshold is the combined stdout+stderr size above which the
+	// full redacted output is written to a local file and the MCP result only
+	// carries a short notice plus a small preview (default 8192; 0 uses the
+	// default; -1 disables spilling).
+	OutputSpillThreshold int `json:"outputSpillThreshold,omitempty"`
+	// OutputSpillDir is the local directory for spilled command output
+	// (default: .ssh-mcp-out under the process working directory; ~ is
+	// expanded).
+	OutputSpillDir string `json:"outputSpillDir,omitempty"`
 	// StripAnsi strips ANSI escape sequences from command output before it
 	// is returned (default: true when unset; false keeps colors/progress
 	// bars for debugging).
-	StripAnsi           *bool  `json:"stripAnsi,omitempty"`
+	StripAnsi *bool `json:"stripAnsi,omitempty"`
+	// RedactSecrets masks common secret patterns (password/token/bearer/PEM
+	// blocks) in command output before it is returned or spilled to disk.
+	// Default is false: even with a cheap anchor pre-scan, redacting output
+	// that actually contains secrets costs ~200ms per MiB (regex passes), so
+	// it is opt-in for connections whose commands print credentials.
+	RedactSecrets *bool `json:"redactSecrets,omitempty"`
 	KeepaliveIntervalMs int    `json:"keepaliveIntervalMs,omitempty"`
 	KeepaliveCountMax   int    `json:"keepaliveCountMax,omitempty"`
 	CommandTemplate     string `json:"commandTemplate,omitempty"`
@@ -187,6 +211,16 @@ func (c *SSHConfig) Normalize() error {
 	if c.SftpChunkSize < 1024 {
 		return fmt.Errorf("sftpChunkSize must be at least 1024 bytes, got: %d", c.SftpChunkSize)
 	}
+	if c.OutputSpillThreshold < 0 {
+		c.OutputSpillThreshold = -1
+	}
+	if c.OutputSpillThreshold == 0 {
+		c.OutputSpillThreshold = DefaultOutputSpillThreshold
+	}
+	if c.OutputSpillDir == "" {
+		c.OutputSpillDir = DefaultOutputSpillDir
+	}
+	c.OutputSpillDir = ExpandHome(c.OutputSpillDir)
 	if c.CommandTemplate != "" &&
 		!strings.Contains(c.CommandTemplate, "<command>") &&
 		!strings.Contains(c.CommandTemplate, "<quotedCommand>") {
@@ -239,11 +273,14 @@ func (c *SSHConfig) Normalize() error {
 }
 
 // GetPty returns whether a pseudo-tty should be allocated for exec commands.
+// Default is false: PTY allocation makes long-running commands (docker, npm)
+// behave interactively and die with the channel (SIGHUP). Interactive
+// commands must opt in via "pty": true or the execute-command pty parameter.
 func (c *SSHConfig) GetPty() bool {
 	if c.Pty != nil {
 		return *c.Pty
 	}
-	return true
+	return false
 }
 
 // GetStripAnsi returns whether ANSI escape sequences should be stripped from
@@ -253,6 +290,15 @@ func (c *SSHConfig) GetStripAnsi() bool {
 		return *c.StripAnsi
 	}
 	return true
+}
+
+// GetRedactSecrets returns whether common secret patterns should be masked
+// in command output (default: false — opt-in for its scanning cost).
+func (c *SSHConfig) GetRedactSecrets() bool {
+	if c.RedactSecrets != nil {
+		return *c.RedactSecrets
+	}
+	return false
 }
 
 // ExpandHome expands a leading ~ in a path.

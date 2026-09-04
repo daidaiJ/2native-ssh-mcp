@@ -362,3 +362,57 @@ func TestExpandEnvVarsOnlyBraced(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeOutputSpillDefaults(t *testing.T) {
+	conf := &SSHConfig{Host: "h", Username: "u"}
+	if err := conf.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if conf.OutputSpillThreshold != DefaultOutputSpillThreshold {
+		t.Fatalf("default outputSpillThreshold must be %d, got: %d", DefaultOutputSpillThreshold, conf.OutputSpillThreshold)
+	}
+	if conf.OutputSpillDir != DefaultOutputSpillDir {
+		t.Fatalf("default outputSpillDir must be %q, got: %q", DefaultOutputSpillDir, conf.OutputSpillDir)
+	}
+}
+
+func TestNormalizeOutputSpillDisableAndCustom(t *testing.T) {
+	conf := &SSHConfig{Host: "h", Username: "u", OutputSpillThreshold: -1}
+	if err := conf.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if conf.OutputSpillThreshold != -1 {
+		t.Fatalf("-1 must disable spilling, got: %d", conf.OutputSpillThreshold)
+	}
+
+	conf = &SSHConfig{Host: "h", Username: "u", OutputSpillThreshold: -7}
+	if err := conf.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if conf.OutputSpillThreshold != -1 {
+		t.Fatalf("any negative value must normalize to -1, got: %d", conf.OutputSpillThreshold)
+	}
+
+	conf = &SSHConfig{Host: "h", Username: "u", OutputSpillThreshold: 4096, OutputSpillDir: "~/spill"}
+	if err := conf.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if conf.OutputSpillThreshold != 4096 {
+		t.Fatalf("custom threshold must be kept, got: %d", conf.OutputSpillThreshold)
+	}
+	if !filepath.IsAbs(conf.OutputSpillDir) {
+		t.Fatalf("~ in outputSpillDir must be expanded to an absolute path, got: %q", conf.OutputSpillDir)
+	}
+}
+
+func TestRedactSecretsDefaultOff(t *testing.T) {
+	conf := &SSHConfig{Host: "h", Username: "u"}
+	if conf.GetRedactSecrets() {
+		t.Fatal("redactSecrets must default to false (opt-in for its scanning cost)")
+	}
+	yes := true
+	conf.RedactSecrets = &yes
+	if !conf.GetRedactSecrets() {
+		t.Fatal("explicit redactSecrets=true must be kept")
+	}
+}

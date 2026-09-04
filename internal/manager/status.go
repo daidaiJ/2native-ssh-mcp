@@ -192,5 +192,5 @@ func (m *Manager) runCommandInternal(key, command string, opts RunOptions) (Comm
 	if cfg.TransportMode == "shell" {
 		return m.runShellCommand(context.Background(), key, command, "", timeout)
 	}
-	return m.runExecCommand(context.Background(), client, cfg, command, "", timeout, key)
+	return m.runExecCommand(context.Background(), client, cfg, command, "", timeout, key, RunOptions{})
 }

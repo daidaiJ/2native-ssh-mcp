@@ -2,6 +2,7 @@ package manager
 
 import (
 	"sync"
+	"unicode/utf8"
 	"sync/atomic"
 	"testing"
 )
@@ -44,5 +45,31 @@ func TestLimitedBufferSharedBudgetConcurrent(t *testing.T) {
 	combined := stdout.buf.Len() + stderr.buf.Len()
 	if combined > max+4*len(chunk) {
 		t.Fatalf("combined output %d exceeds shared budget %d (+4 chunks)", combined, max)
+	}
+}
+// TestLimitedBufferUTF8SafeCut verifies that a truncation at the byte cap
+// backs off to a rune boundary instead of splitting a multi-byte UTF-8
+// sequence (issue #3 Slice C).
+func TestLimitedBufferUTF8SafeCut(t *testing.T) {
+	s := "abc字字字" // 3 + 3*3 = 12 bytes
+	var budget atomic.Int32
+	budget.Store(10)
+	buf := &limitedBuffer{max: 10, shared: &budget}
+	buf.Write([]byte(s))
+	if buf.buf.Len() != 9 {
+		t.Fatalf("cut must back off to the rune boundary (9 bytes), got %d", buf.buf.Len())
+	}
+	if !utf8.ValidString(buf.String()) {
+		t.Fatalf("buffered output must stay valid UTF-8: %q", buf.String())
+	}
+	if !buf.exceeded {
+		t.Fatal("buffer must be marked exceeded")
+	}
+
+	// Standalone buffer, cap landing exactly on a rune start.
+	buf2 := &limitedBuffer{max: 6}
+	buf2.Write([]byte(s))
+	if buf2.buf.Len() != 6 || !utf8.ValidString(buf2.String()) {
+		t.Fatalf("cap on a rune start must not split: len=%d %q", buf2.buf.Len(), buf2.String())
 	}
 }

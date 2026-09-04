@@ -266,6 +266,9 @@ func buildShellScript(commandID, cmdString, directory, commandTemplate string) s
 // stripANSI removes CSI and OSC escape sequences (plus the common charset
 // select ESC(B) from output. It is idempotent and safe to apply twice.
 func stripANSI(s string) string {
+	if strings.IndexByte(s, 0x1b) < 0 {
+		return s // every ANSI sequence starts with ESC
+	}
 	s = ansiOSCPattern.ReplaceAllString(s, "")
 	s = ansiCSIPattern.ReplaceAllString(s, "")
 	return ansiCharsetPattern.ReplaceAllString(s, "")

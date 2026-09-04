@@ -16,6 +16,10 @@ import (
 const (
 	defaultBGReadBytes = 64 * 1024
 	bgLogPrefix        = "/tmp/.2native-ssh-mcp-"
+	// maxBGWaitMs caps the session read waitMs parameter; bgWaitPollInterval
+	// is the polling cadence while waiting for new output.
+	maxBGWaitMs        = 30000
+	bgWaitPollInterval = 200 * time.Millisecond
 )
 
 // bgPaths returns the three remote file paths for a background session. The
@@ -35,6 +39,10 @@ type SessionOpenOptions struct {
 	Background bool
 	CmdString  string
 	Directory  string
+	// Pty wraps the detached job in a pseudo-terminal (util-linux `script`).
+	// Off by default; opt in for programs that refuse to run without a TTY
+	// (their line buffering also disappears, on top of PYTHONUNBUFFERED).
+	Pty bool
 }
 
 // SessionOutput holds polled background session output.
@@ -82,7 +90,7 @@ func (m *Manager) OpenSessionWithOptions(sessionName, connectionName string, opt
 			fmt.Sprintf("session %q already exists (finished); close it first or read logPath=%s", sessionName, logPath), false)
 	}
 	m.mu.Unlock()
-	return m.startBackgroundCommand(sessionName, opts.CmdString, opts.Directory)
+	return m.startBackgroundCommand(sessionName, opts.CmdString, opts.Directory, opts.Pty)
 }
 
 // openOrReuseSession is the core of OpenSession without background start.
@@ -160,7 +168,7 @@ func (m *Manager) openOrReuseSession(sessionName, connectionName string) (*Sessi
 // channel: a fresh no-PTY exec runs a starter that setsid's the job into a
 // new session with stdio redirected to a remote log, then exits. The job
 // survives connection drops; read/stop re-attach via fresh exec channels.
-func (m *Manager) startBackgroundCommand(sessionName, cmdString, directory string) (*SessionInfo, error) {
+func (m *Manager) startBackgroundCommand(sessionName, cmdString, directory string, pty bool) (*SessionInfo, error) {
 	m.mu.Lock()
 	ns, ok := m.sessions[sessionName]
 	m.mu.Unlock()
@@ -189,7 +197,7 @@ func (m *Manager) startBackgroundCommand(sessionName, cmdString, directory strin
 		return nil, err
 	}
 
-	script := buildBGStarterScript(ns.bgLogPath, ns.bgPIDPath, ns.bgExitPath, body)
+	script := buildBGStarterScript(ns.bgLogPath, ns.bgPIDPath, ns.bgExitPath, body, pty)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	output, err := m.runDetachedExec(ctx, client, script, 15*time.Second)
@@ -223,7 +231,16 @@ func (m *Manager) startBackgroundCommand(sessionName, cmdString, directory strin
 // PID written to the pid file. The starter exits quickly after confirming the
 // job is alive. The body is passed as a single-quoted argument and eval'd by
 // the inner shell so embedded '&' and quoting survive.
-func buildBGStarterScript(logPath, pidPath, exitPath, body string) string {
+//
+// With pty=true the job runs under util-linux `script` so it gets a
+// pseudo-terminal (-e propagates the exit code, -f flushes output); without
+// one, the body is eval'd directly. PYTHONUNBUFFERED is always exported so
+// Python logs stream instead of block-buffering.
+func buildBGStarterScript(logPath, pidPath, exitPath, body string, pty bool) string {
+	flag := "0"
+	if pty {
+		flag = "1"
+	}
 	return fmt.Sprintf(
 		"LOG=%s\nPIDF=%s\nEXITF=%s\n"+
 			"rm -f \"$PIDF\" \"$EXITF\"\n"+
@@ -231,10 +248,15 @@ func buildBGStarterScript(logPath, pidPath, exitPath, body string) string {
 			"setsid sh -c '\n"+
 			"  trap \"\" HUP\n"+
 			"  exec </dev/null\n"+
+			"  export PYTHONUNBUFFERED=1\n"+
 			"  exec >>\"$1\" 2>&1\n"+
-			"  eval \"$2\"\n"+
+			"  if [ \"$4\" = \"1\" ] && command -v script >/dev/null 2>&1; then\n"+
+			"    script -qefc \"$2\" /dev/null\n"+
+			"  else\n"+
+			"    eval \"$2\"\n"+
+			"  fi\n"+
 			"  echo $? > \"$3\"\n"+
-			"' _ \"$LOG\" %s \"$EXITF\" &\n"+
+			"' _ \"$LOG\" %s \"$EXITF\" %s &\n"+
 			"echo $! > \"$PIDF\"\n"+
 			"sleep 1\n"+
 			"PID=$(cat \"$PIDF\" 2>/dev/null)\n"+
@@ -244,7 +266,7 @@ func buildBGStarterScript(logPath, pidPath, exitPath, body string) string {
 			"fi\n"+
 			"printf '__MCP_BG_FAILED__\\n'\n"+
 			"exit 1\n",
-		shellQuote(logPath), shellQuote(pidPath), shellQuote(exitPath), shellQuote(body),
+		shellQuote(logPath), shellQuote(pidPath), shellQuote(exitPath), shellQuote(body), flag,
 	)
 }
 
@@ -262,7 +284,39 @@ func parseBGStartedPID(output string) int {
 // a fresh no-PTY exec channel so it works even when the named shell is gone
 // (e.g. after a connection drop). A negative offset continues from the last
 // read position; offset>=0 reads from that byte (0 re-reads from the start).
-func (m *Manager) ReadSessionOutput(sessionName string, maxBytes int64, offset int64) (*SessionOutput, error) {
+// waitMs blocks for up to that many milliseconds when there is nothing new
+// and the job is still running (0 returns immediately; capped at 30s), so
+// callers do not have to spin-poll.
+func (m *Manager) ReadSessionOutput(sessionName string, maxBytes, offset, waitMs int64) (*SessionOutput, error) {
+	if waitMs < 0 {
+		waitMs = 0
+	}
+	if waitMs > maxBGWaitMs {
+		waitMs = maxBGWaitMs
+	}
+	deadline := time.Now().Add(time.Duration(waitMs) * time.Millisecond)
+
+	out, err := m.readSessionOutputOnce(sessionName, maxBytes, offset)
+	if err != nil || waitMs == 0 || !out.Running || out.Output != "" {
+		return out, err
+	}
+	// Nothing new yet and the job is still running: poll until new bytes
+	// arrive, the job exits, or the wait budget runs out.
+	for {
+		time.Sleep(bgWaitPollInterval)
+		prev := out.Offset
+		out, err = m.readSessionOutputOnce(sessionName, maxBytes, -1)
+		if err != nil || out.Output != "" || !out.Running || out.Offset != prev {
+			return out, err
+		}
+		if !time.Now().Before(deadline) {
+			return out, err
+		}
+	}
+}
+
+// readSessionOutputOnce performs a single background log read.
+func (m *Manager) readSessionOutputOnce(sessionName string, maxBytes, offset int64) (*SessionOutput, error) {
 	m.mu.Lock()
 	ns, ok := m.sessions[sessionName]
 	if !ok {
@@ -316,10 +370,14 @@ func (m *Manager) ReadSessionOutput(sessionName string, maxBytes int64, offset i
 	if cfg == nil || cfg.GetStripAnsi() {
 		chunk = stripANSI(chunk)
 	}
+	// Redaction is opt-in (redactSecrets), matching the command result path.
+	if cfg != nil && cfg.GetRedactSecrets() {
+		chunk = redactCombinedOutput(chunk)
+	}
 
 	return &SessionOutput{
 		SessionName: sessionName,
-		Output:      redactCombinedOutput(chunk), // read path: chunk already partial; skip line compression
+		Output:      chunk, // read path: chunk already partial; skip line compression
 		Offset:      newOffset,
 		TotalBytes:  total,
 		Running:     running,

@@ -436,6 +436,7 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 		TransportMode:      str(m["transportMode"]),
 		CommandTemplate:    str(m["commandTemplate"]),
 		CommandLogDir:      expandEnvVars(str(m["commandLogDir"])),
+		OutputSpillDir:     expandEnvVars(str(m["outputSpillDir"])),
 	}
 
 	if v, ok := m["pty"]; ok {
@@ -473,6 +474,13 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 		}
 		conf.StripAnsi = &b
 	}
+	if v, ok := m["redactSecrets"]; ok {
+		b, err := ParseBool(v)
+		if err != nil {
+			return nil, err
+		}
+		conf.RedactSecrets = &b
+	}
 
 	intFields := map[string]*int{
 		"shellReadyTimeoutMs":     &conf.ShellReadyTimeoutMs,
@@ -482,6 +490,7 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 		"sftpTimeoutMs":           &conf.SftpTimeoutMs,
 		"maxOutputBytes":          &conf.MaxOutputBytes,
 		"outputCompressThreshold": &conf.OutputCompressThreshold,
+		"outputSpillThreshold":    &conf.OutputSpillThreshold,
 		"keepaliveIntervalMs":     &conf.KeepaliveIntervalMs,
 		"keepaliveCountMax":       &conf.KeepaliveCountMax,
 		"commandLogSize":          &conf.CommandLogSize,
