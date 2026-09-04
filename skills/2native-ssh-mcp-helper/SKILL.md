@@ -159,11 +159,12 @@ Interactive wizard for **2native-ssh-mcp** (Go SSH MCP server). Produces a locke
 
 ## Pitfalls
 
-- **Do not let long terminal output flood the context window.** Avoid commands that dump huge output (`cat` on large files, `tail -f`, recursive `grep`/`find`). Output is capped (`maxOutputBytes`, default 10 MB) and head/tail-compressed (`outputCompressLight`, threshold 4096 B), but even compressed output consumes tokens. For long-running or chatty commands use `session action=open` + `background=true` and poll with `session action=read` (bounded by `maxBytes`); to inspect a large remote file, download it with `file-transfer` and read locally instead of `cat`-ing it.
+- **Do not let long terminal output flood the context window.** Avoid commands that dump huge output (`cat` on large files, `tail -f`, recursive `grep`/`find`). Output is capped (`maxOutputBytes`, default 10 MB); at 8KB+ (`outputSpillThreshold`) it is spilled to a local file (default `.ssh-mcp-out/`) with only a notice + preview in the result, and 4-8KB output is head/tail-compressed (`outputCompressLight`), but even compressed output consumes tokens. For long-running or chatty commands use `session action=open` + `background=true` and poll with `session action=read` (bounded by `maxBytes`); to inspect a large remote file, download it with `file-transfer` and read locally instead of `cat`-ing it.
 - Do not use `--password` in MCP `args` (visible in process list)
 - `transportMode: shell` disables SFTP file-transfer
 - Config file must be mode 0600 on Unix or server refuses to start
 - Named sessions require `transportMode: exec` (default)
+- **Local WSL**: SSH to sshd inside the distro (`host: 127.0.0.1`); do not set MCP `"command": "wsl"`. `localPath` is the OS running this binary (Windows paths if the exe is on Windows). If Windows OpenSSH already uses port 22, use another port for WSL sshd. Details: [HUMAN_GUIDE Connecting to local WSL](../../docs/HUMAN_GUIDE.md#connecting-to-local-wsl)
 
 ## More docs
 

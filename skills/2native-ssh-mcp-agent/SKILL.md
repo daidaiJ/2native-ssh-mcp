@@ -17,22 +17,19 @@ Defensive playbook for agents using **2native-ssh-mcp**. Read this before execut
 2. **Never use root** — use a dedicated low-privilege account.
 3. **Prefer narrow commands** — scope with `head`, `tail`, `grep`, `wc`, paths; avoid blind `cat` on large files.
 4. **Respect whitelist/blacklist** — if a command is rejected, do not bypass; ask the operator to widen policy.
-5. **Secrets** — server redacts Bearer tokens, PEM blocks, `password=` lines; still avoid printing credentials.
+5. **Secrets** — redaction is off by default (`"redactSecrets": true` enables it per connection); regardless, avoid printing credentials.
 6. **Host key rejection** — if a connection fails with a host key mismatch (server reimaged / key rotated), do not bypass; report it. Fix is operator-side: remove the stale line from `known_hosts` (or set `"hostKeyCheck": "none"` for dynamic-IP hosts).
 
 ## Output & tokens
 
 ### Built-in (automatic)
 
-2native-ssh-mcp applies **light compression** when output ≥ 4KB (default):
+2native-ssh-mcp layers large output automatically:
 
-- Head + tail lines, middle replaced with `... [N lines omitted] ...`
-- Consecutive duplicate lines collapsed (`... [repeated K times]`)
-- Excessive blank lines trimmed
-
-Disable per connection: `"outputCompressLight": false` in config.
-
-Tune threshold: `"outputCompressThreshold": 8192`.
+- **Directories transfer recursively** via `file-transfer` (per-file atomic upload, `files`/`failed` in the result; single files get a sha256 check).
+- **≥ 8KB** (`outputSpillThreshold`, `-1` disables): the full output is written to a local file (default `.ssh-mcp-out/`, `outputSpillDir` configurable, newest 32 kept). The result carries only a short notice, the absolute path, byte/line counts and a ~12-line preview. **Grep/Read that local file — never re-run the command or `cat` it remotely.**
+- **4–8KB**: light compression — head + tail lines, middle replaced with `... [N lines omitted] ...`, duplicate/blank lines collapsed.
+- Disable compression per connection: `"outputCompressLight": false`; tune threshold: `"outputCompressThreshold": 8192`.
 
 ANSI escape sequences (colors, progress bars) are stripped from all output by default; disable per connection: `"stripAnsi": false`.
 
@@ -82,8 +79,8 @@ session(action=close, sessionName=logs)
 
 - **Non-zero exit is a normal result** — read `[exit code] N` from the text; do not treat it as a transport failure.
 - **`SSH_CONNECTION_LOST` (retriable=false)**: the connection dropped mid-command; the remote process may still be running. **Do not replay blindly** — inspect the partial `stdout` in the error JSON (`replaySafe: false`).
-- Foreground `timeout` must exceed the real runtime (default `commandTimeoutMs=30000`).
-- Build/CI hosts: suggest `"pty": false` in the connection config.
+- Foreground `timeout` must exceed the real runtime (default `commandTimeoutMs=30000`). On timeout the remote process group is killed by PID, so nothing is left running remotely.
+- exec runs **without a PTY by default**; interactive commands need `"pty": true` (connection config) or the `pty` tool parameter.
 
 ## Production checklist
 
@@ -91,7 +88,7 @@ session(action=close, sessionName=logs)
 - [ ] Confirm connection name/alias (not guessing host IP)
 - [ ] Start with read-only probes (`whoami`, `pwd`, `df -h`, `systemctl status`)
 - [ ] Destructive commands (`rm`, `systemctl restart`, migrations) — confirm with operator
-- [ ] Large output — use head/tail/grep or background session + read
+- [ ] Large output — use head/tail/grep or background session + read; if the result carries an output-file notice, Grep that local file
 - [ ] Close sessions when done (`session action=close`)
 
 ## Related

@@ -159,6 +159,35 @@ Admin API（`/__admin/*`）不用这个 token，仍只限本机访问（loopback
 | `allowInsecureConfigPerms` | false | 跳过本配置文件的权限检查（等价于命令行 `--allow-insecure-config-perms`，但声明在文件内部；不推荐，仅开发用） |
 | `httpToken` | 空 | `/mcp` 的 Bearer token（优先级低于 `--http-token` 和 `SSH_MCP_HTTP_TOKEN`；支持 `${VAR}` 引用） |
 
+## 连接本地 WSL
+
+本项目**没有**单独的 `wsl` 传输模式。把 WSL 当普通 Linux SSH 目标即可：MCP 跑在 Windows 上，发行版里开 sshd，用密钥连 `127.0.0.1`。不要用 MCP 配置里的 `"command": "wsl"` 把本进程塞进发行版（`wsl.exe` 非交互启动不读 login shell，还会混进 Windows PATH）。
+
+发行版内启用并启动 sshd 后，配置示例：
+
+```json
+{
+  "wsl": {
+    "host": "127.0.0.1",
+    "port": 2222,
+    "username": "your-linux-user",
+    "privateKey": "~/.ssh/id_ed25519",
+    "hostKeyCheck": "accept-new",
+    "pty": false,
+    "description": "本机 WSL",
+    "allowedRemotePaths": ["/home", "/tmp"]
+  }
+}
+```
+
+注意：
+
+- **端口**：Windows 若已开启 OpenSSH Server（占用 22），WSL sshd 换端口（如 2222）。mirrored networking 下 Windows 与 WSL **不能各听同一端口**；从局域网进 WSL 还要加 Hyper-V 防火墙入站规则。
+- **localhost**：Windows → WSL 的 localhost 转发在多数机器上可用。默认 NAT 下，**WSL 里的 `127.0.0.1` 不是 Windows 的 loopback**。MCP HTTP daemon 若绑在 Windows 的 `127.0.0.1:8338`，WSL 内的客户端打不通；反过来也一样。需要跨侧访问时用 mirrored networking（`.wslconfig` 里 `networkingMode=mirrored`，必要时 `hostAddressLoopback=true`），或把 daemon 绑在对方能路由到的地址并配 `--http-token`。
+- **路径**：`file-transfer` 的 `localPath` 是 **MCP 进程所在 OS** 的路径。Windows 上跑就用 `D:\\proj\\a.tar`，不要传 `/mnt/c/...` 或 `\\\\wsl$\\Ubuntu\\...`。`remotePath` 仍是发行版内的 POSIX 路径（如 `/home/you/a.tar`）。
+- **文件放哪**：SFTP 落到 Linux 的 `/home`（ext4）是快路径。不要把构建目录放在 `/mnt/c`，也不要从 Windows 经 `\\\\wsl$\\` 扫整棵树（9P 跨文件系统，I/O 很慢）。
+- **PTY**：WSL 上跑 docker/npm/构建时建议该连接 `"pty": false`（与其它 Linux 目标相同）。
+
 ## 工具说明
 
 ### execute-command
@@ -168,8 +197,10 @@ Admin API（`/__admin/*`）不用这个 token，仍只限本机访问（loopback
 | `cmdString` | ✅ | 要执行的命令 |
 | `directory` | | 工作目录 |
 | `connectionName` | | 连接名或 list-servers 中的别名 |
-| `timeout` | | 超时（毫秒），默认 30000 |
-| `keepAlive` | | 执行后是否保活连接，默认 `true` |
+| `timeout` | | 超时（毫秒），默认 30000；超时后按远端 PID 杀掉进程组 |
+| `pty` | | 分配伪终端，默认 `false`（交互命令按需开启；`background=true` 时用 `script` 包裹后台任务） |
+| `background` | | `true` 时命令转入后台会话立即返回 `sessionName`/`logPath`，用 `session read` 轮询（分钟级任务用它，别调大 timeout） |
+| `keepAlive` | | 执行后是否保活连接，默认 `true`（named session 忽略 `false`） |
 | `keepAliveDuration` | | 保活时长（毫秒），默认 600000（10 分钟） |
 
 ### file-transfer
@@ -182,9 +213,13 @@ Admin API（`/__admin/*`）不用这个 token，仍只限本机访问（loopback
 | `connectionName` | | 连接名或 list-servers 中的别名 |
 | `force` | | 跳过去重/续传，强制全量传输 |
 
-- 客户端在请求中携带 `_meta.progressToken` 时，服务端通过 `notifications/progress` 上报进度（约 100ms 节流，结束必报 100%）
+- `localPath`/`remotePath` 是**目录**时递归传输整棵树（自动建远端父目录，空目录不重建）；逐文件走原子上传/去重/续传，单文件失败收集进 `failed` 不中断整批，结果带 `files` 计数；目录模式不做整体 sha256
+- 单文件传输完成后 sha256 双端校验：一致标 `verified`，远端无 `sha256sum` 标 `unverified`（不算失败），mismatch 硬报错提示 `force` 重传
+- 进度通知只发给发起请求的客户端（HTTP 多客户端不再互相串扰）；约 100ms 节流，结束必报 100%
 - 目标文件与源文件大小、mtime 一致 → 直接跳过（去重）
-- 目标已有部分数据 → 从断点续传；下载走临时文件 + 原子改名
+- 上传**原子落盘**：先写同目录 `<目标>.part`，字节数校验通过后 posix-rename 替换目标；失败不触碰已有目标，`<目标>.part` 保留供续传（服务端不支持 posix-rename 且目标已存在时报错提示手动 mv）
+- 远端已有 `<目标>.part` 且头部匹配 → 从断点续传（并发写失败会截回已确认前缀再保留）；下载走临时文件 + 原子改名
+- 传输前即拒绝目录目标（`IsDir` 提前报错）
 - 传输中源文件继续增长 → 自动补传尾部
 - 本地路径不在允许范围内（`localPathMode` 决定范围）→ `LOCAL_PATH_NOT_ALLOWED`，提示「not within the allowed local paths for this connection」；含 `..` 的路径逃逸单独报「Path traversal rejected」
 
@@ -198,8 +233,8 @@ Admin API（`/__admin/*`）不用这个 token，仍只限本机访问（loopback
 
 | action | 说明 |
 |---|---|
-| `open` | 打开会话；`background=true` + `cmdString` 启动后台任务 |
-| `read` | 轮询后台会话输出（`offset` 省略/负值=续读，`0`=从头重读） |
+| `open` | 打开会话；`background=true` + `cmdString` 启动后台任务（`pty=true` 为后台任务包一层 TTY） |
+| `read` | 轮询后台会话输出（`offset` 省略/负值=续读，`0`=从头重读；`waitMs` 无新输出时最多阻塞 30s 等数据或作业结束） |
 | `close` | 关闭会话并停止后台进程（**幂等**，可重复调用） |
 | `list` | 列出所有会话（可选 `connectionName` 过滤） |
 
@@ -211,15 +246,16 @@ Admin API（`/__admin/*`）不用这个 token，仍只限本机访问（loopback
 
 **有状态操作：** `session open` → 多次 `execute-command`（带 sessionName）→ `session close`
 
-**长任务 / 无输出任务请用 `session background=true` + `read` 轮询，不要用 `execute-command` 跑 `nohup ... &` 或 `setsid`**——后者会随 exec 通道关闭而消亡。后台任务以无 PTY 的独立通道启动（新会话、脱离 sshd 进程组），**连接闪断后仍然存活**：断连后 `list-servers` 里会话显示 `disconnected=true`，`read` 或带 `sessionName` 的 `execute-command` 会自动重连；只有 `action=close` 才会杀掉远端后台进程。
+**长任务 / 无输出任务：用 `execute-command` 带 `background: true`（自动建 `bg-*` 会话并返回 `sessionName`/`logPath`），或 `session background=true` + `cmdString`；用 `read` 轮询（`waitMs` 阻塞等新输出，别空转）。不要在前台 `execute-command` 里跑 `nohup ... &` 或 `setsid`**——后者会随 exec 通道关闭而消亡。后台任务以无 PTY 的独立通道启动（新会话、脱离 sshd 进程组），**连接闪断后仍然存活**：断连后 `list-servers` 里会话显示 `disconnected=true`，`read` 或带 `sessionName` 的 `execute-command` 会自动重连；只有 `action=close` 才会杀掉远端后台进程。
 
 **后台作业结束后会话仍然保留**（含远端日志，60 分钟 retain TTL），必须 `close` 才释放；`close` 可重复调用。`read` 可带 `offset=0` 从头重读；返回 JSON 带 `logPath`（远端日志路径）和 `exitCode`（作业结束后）。会话只存在内存中：stdio 进程退出即丢失（远端日志仍在 `logPath`，可另行读取），常驻 HTTP daemon 才能跨对话保留。对已结束的会话重复 `open background=true` 会被拒绝并提示 `logPath`——先 `close` 或先读旧日志。**连接不可用时 `close` 无法确认远端作业已停**：会话会留在列表里并标记 `orphaned=true`（`background` 仍为 true），报可重试错误，等连接恢复后再 `close` 一次即可。后台日志/pid/exit 文件路径带一次性随机后缀（`/tmp/.2native-ssh-mcp-<会话名>-<id>.log` 等），`logPath` 字段始终给出实际路径。
 
 **命令结果说明：**
-- 非 0 退出码是**正常结果**（不是错误），正文里看 `[exit code] N`；只有校验失败、连不上、超时、输出超限、连接中断才报错
+- 非 0 退出码是**正常结果**（不是错误）：成功结果是 JSON，看 `exitCode` / `status`（`ok`/`exited`）/ `stdout` / `stderr` 字段；只有校验失败、连不上、超时、输出超限、连接中断才报错误 JSON（带 `code`/`message`/`retriable` + 部分 `stdout`/`stderr`）
 - 连接中断报 `SSH_CONNECTION_LOST`（`retriable=false`），远端进程可能还在跑，**不要盲目重放**；错误 JSON 里带部分 `stdout`/`stderr` 和 `replaySafe: false`
-- 前台命令的 `timeout` 必须大于真实耗时（默认 `commandTimeoutMs=30000` 仍然生效）
-- 跑 build/CI 的连接建议配置 `"pty": false`，避免 docker/npm 等误以为有交互终端
+- 前台命令的 `timeout` 必须大于真实耗时（默认 `commandTimeoutMs=30000` 仍然生效）；超时后会按远端 PID 杀掉整个进程组（channel Signal 仅作补充），不会留下远端泄漏进程
+- 输出 ≥8KB（`outputSpillThreshold`，`-1` 关闭）会把完整输出落到本地 `.ssh-mcp-out/`（`outputSpillDir` 可改，保留最近 32 个，Unix 0600），结果只带通知+短预览；Agent 应该 Grep/Read 本地文件，不要远程重跑同一命令
+- exec 默认**不分配 PTY**（避免 docker/npm 等误以为有交互终端）；交互命令用连接配置 `"pty": true` 或 `execute-command` 的 `pty` 参数显式开启
 
 **Agent 安装 Skill**：仓库内 [`skills/2native-ssh-mcp-helper/SKILL.md`](../skills/2native-ssh-mcp-helper/SKILL.md) 可复制到 `.cursor/skills/` 后说「帮我配置 2native-ssh-mcp」。
 
@@ -282,12 +318,14 @@ Server options:
 | `hostKeyCheck` | `accept-new` | 主机密钥校验：`accept-new`（未知记录后接受）/ `strict`（未知拒绝）/ `none`（不校验）；`known_hosts` 文件及其目录（如 `~/.ssh`）不存在时自动创建 |
 | `knownHostsFile` | `~/.ssh/known_hosts` | 主机密钥校验用的 known_hosts 文件 |
 | `keepaliveIntervalMs` / `keepaliveCountMax` | 10000 / 3 | SSH 心跳 |
-| `commandTimeoutMs` / `connectionTimeoutMs` / `sftpTimeoutMs` | 30000 / 30000 / 300000 | 各类超时 |
+| `commandTimeoutMs` / `connectionTimeoutMs` / `sftpTimeoutMs` | 30000 / 30000 / 300000 | 各类超时（`sftpTimeoutMs` 为无进展超时，进度每刷新一次就重新计时） |
 | `maxOutputBytes` | 10485760 | 单命令 stdout+stderr 合计输出上限，0 为不限 |
 | `outputCompressLight` / `outputCompressThreshold` | true / 4096 | 大输出头尾压缩与阈值 |
+| `outputSpillThreshold` / `outputSpillDir` | 8192 / `.ssh-mcp-out` | 输出达到阈值落盘到本地目录（`-1` 关闭） |
 | `stripAnsi` | true | 输出剥离 ANSI 转义序列（false 保留颜色/进度条） |
 | `commandTemplate` | 空 | 命令包装模板（`<command>` / `<quotedCommand>`） |
-| `pty` | true | exec 模式分配伪终端 |
+| `pty` | false | exec 模式分配伪终端（默认关闭，交互命令按需开启） |
+| `redactSecrets` | false | 输出脱敏（password/token/Bearer/PEM），开启有扫描开销 |
 | `tryKeyboard` | false | 键盘交互认证（2FA 码用环境变量 `SSH_MCP_2FA_CODE`） |
 
 > 配置文件中的字符串支持 `${环境变量名}` 引用，凭据可放在环境变量里而不落盘。
@@ -314,8 +352,8 @@ Server options:
 ## 安全
 
 - 启动时检查 `--config-file` 权限（Unix：`chmod 600` 文件 / `chmod 700` 目录；Windows：限制 ACL 修改权限），可用 `--allow-insecure-config-perms` 或配置文件内 `$global.allowInsecureConfigPerms: true` 跳过（不推荐，仅开发用）
-- 命令输出自动脱敏（Bearer token、PEM 私钥块、`password=`/`token=` 等）
-- 超时或输出超限时向远端进程发送 SIGTERM/SIGKILL（exec）或 Ctrl-C（shell/会话）
+- 输出脱敏默认关闭（`redactSecrets: true` 按连接开启）：Bearer token、PEM 私钥块、`password=`/`token=` 等；开启后落盘的 spill 文件也是脱敏后的内容
+- 超时或输出超限时按远端 PID 向进程组发送 SIGTERM/SIGKILL（exec；channel Signal 仅作补充）或 Ctrl-C（shell/会话）
 - MCP 工具标注 `readOnlyHint` / `destructiveHint`，客户端可据此限制危险操作
 
 详见 [SECURITY.md](../SECURITY.md)。

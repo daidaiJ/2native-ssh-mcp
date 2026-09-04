@@ -58,13 +58,13 @@ Clients that honor MCP annotations may block or confirm destructive tools automa
 
 ## Output redaction
 
-Before returning command output, the server masks:
+Redaction is **opt-in** (connection config `"redactSecrets": true`; default off — scanning secret-bearing output costs ~200ms per MiB). When enabled, the server masks before output is returned to the client or spilled to a local file:
 
 - `Bearer <token>` headers and similar JWT fragments
 - PEM blocks (`-----BEGIN … PRIVATE KEY-----`)
 - Lines matching `password=` / `token=` / `secret=` / `api_key=` (case-insensitive)
 
-Redaction is best-effort. Do not rely on it as the only control for highly sensitive environments.
+Redaction is best-effort. Do not rely on it as the only control for highly sensitive environments: with redaction off, spilled files and MCP results contain raw output (spill files are mode 0600 in the process working directory).
 
 ## Config file permissions
 

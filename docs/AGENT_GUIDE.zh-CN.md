@@ -4,7 +4,7 @@
 
 SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools. stdio or streamable HTTP. **Credentials never belong in MCP client config args** — see Secure setup.
 
-> Human-readable version: [HUMAN_GUIDE.md](HUMAN_GUIDE.md)
+> Human-readable version: [HUMAN_GUIDE.zh-CN.md](HUMAN_GUIDE.zh-CN.md)
 
 ## Tools
 
@@ -52,11 +52,11 @@ One tool, `action` param. Exec-mode connections only.
 | action | Required | Notes |
 |---|---|---|
 | `open` | `sessionName`, `connectionName` (new) | Idempotent; `background=true` + `cmdString` starts long-running job |
-| `read` | `sessionName` | Poll background log; optional `maxBytes`, `offset` (negative/omitted = continue, `0` = re-read from start) |
+| `read` | `sessionName` | Poll background log; optional `maxBytes`, `offset` (negative/omitted = continue, `0` = re-read from start), `waitMs` (block up to 30s for new output or job exit) |
 | `close` | `sessionName` | Stop background job, release shell (**idempotent** — closing an already-closed session succeeds) |
 | `list` | — | All sessions; optional `connectionName` filter |
 
-**Long tasks / no-output tasks: use `session background=true` + `read` polling. Do NOT `nohup ... &` or `setsid` through `execute-command`** — those die with the exec channel. Background jobs are started detached (no PTY, new session) and **survive connection drops**; after a drop the session shows `disconnected=true` and `read`/`execute-command` reconnect automatically. Only `action=close` kills the remote job.
+**Long tasks: `execute-command` with `background: true`** detaches the command via a background session and returns `sessionName` + `logPath` immediately (a random `bg-*` session is created if none given). Poll with `session action=read` (`waitMs` blocks for new output instead of returning empty). Equivalent: `session action=open` with `background=true` + `cmdString`. Add `pty: true` for jobs that require a TTY (wrapped in `script`, exit code preserved). Do NOT `nohup ... &` or `setsid` through a foreground `execute-command` — those die with the exec channel. Background jobs are started detached (no PTY, new session) and **survive connection drops**; after a drop the session shows `disconnected=true` and `read`/`execute-command` reconnect automatically. Only `action=close` kills the remote job.
 
 **Finished background jobs keep their session** (and remote log) for 60 min — `close` it to release. `read` returns `logPath` (remote log) and `exitCode` once the job finished; `offset=0` re-reads from the start. Sessions live in memory only: a stdio process exit loses them (the remote log survives at `logPath`); a resident HTTP daemon keeps them across conversations. Re-opening `background=true` on a finished session is rejected with the `logPath` — `close` first, or read the old log. **If the connection is down, `close` cannot confirm the remote job stopped**: the session stays listed with `orphaned=true` and the close returns a retriable error — retry `close` after the connection is back. BG log/pid/exit files use a one-time random suffix (`/tmp/.2native-ssh-mcp-<name>-<id>.log`); always use the returned `logPath`, never guess a fixed path.
 
@@ -91,10 +91,10 @@ session(action=close, sessionName=deploy)
   "dev": {
     "host": "10.0.0.1", "port": 22, "username": "root",
     "password": "${SSH_MCP_PASSWORD}",
-    "description": "开发环境跳板机",
-    "business": "订单/支付联调",
-    "aliases": ["dev-box", "开发"],
-    "notes": "只读为主；高峰期勿跑重查询",
+    "description": "Development environment jump host",
+    "business": "Order/Payment integration testing",
+    "aliases": ["dev-box", "development"],
+    "notes": "Read-only primarily; avoid heavy queries during peak hours",
     "commandWhitelist": ["^ls ", "^cat "],
     "commandBlacklist": ["rm -rf"],
     "allowedLocalPaths": ["C:/data"],
@@ -111,9 +111,12 @@ session(action=close, sessionName=deploy)
     "maxOutputBytes": 10485760,
     "outputCompressLight": true,
     "outputCompressThreshold": 4096,
+    "outputSpillThreshold": 8192,          // full output at/above this goes to a local file; -1 disables
+    "outputSpillDir": ".ssh-mcp-out",      // local spill directory (~ is expanded)
     "stripAnsi": true,
+    "redactSecrets": false,                // opt-in: masks password=/token=/Bearer/PEM (~200ms per MiB of secret-bearing output)
     "commandTemplate": "sudo -n <quotedCommand>",
-    "pty": true, "tryKeyboard": false
+    "pty": false, "tryKeyboard": false
   }
 }
 ```
@@ -122,8 +125,8 @@ Auth: password | privateKey (+passphrase, `SSH_MCP_PASSPHRASE` env) | agent (`SS
 
 ## Usage rules
 
-- **Foreground `timeout` must exceed the real runtime** — the default `commandTimeoutMs=30000` still applies; a long build needs `timeout` ≥ its duration or it will be cut off with `COMMAND_TIMEOUT`.
-- **Build/CI hosts: set `"pty": false`** — a PTY makes tools like docker/npm behave as if interactive and can cause SIGHUP issues on long tasks. Background jobs never use a PTY regardless.
+- **Foreground `timeout` must exceed the real runtime** — the default `commandTimeoutMs=30000` still applies; a long build needs `timeout` ≥ its duration or it will be cut off with `COMMAND_TIMEOUT`. On timeout the remote process group is killed by PID (channel Signal is only a fallback — OpenSSH often ignores it), so timed-out commands do not leak remote processes.
+- **exec runs without a PTY by default** — a PTY makes tools like docker/npm behave as if interactive and can cause SIGHUP issues on long tasks, so it is opt-in: connection `"pty": true` or the `execute-command` `pty` parameter. Background jobs never use a PTY regardless.
 - **Non-zero exit is a normal result** — check `exitCode`; do not treat `[exit code] 1` as a transport failure.
 - **`SSH_CONNECTION_LOST` is not replay-safe** — the command may have partially executed; inspect the partial `stdout` before deciding to retry.
 
@@ -137,7 +140,11 @@ CLI-arg credentials (`--password` etc.) print a stderr warning — they're visib
 
 Config file permission check on startup (Unix `0600`/`0700`; Windows ACL). Override dev-only: `--allow-insecure-config-perms`, or `"$global": {"allowInsecureConfigPerms": true}` inside the config file (object format only).
 
-Command output is redacted (Bearer tokens, PEM blocks, password=/token= lines) before returning to the client. See [SECURITY.md](../SECURITY.md).
+`file-transfer` accepts **directories**: the tree transfers recursively (remote parents auto-created, per-file atomic upload, failures collected in `failed`), and single-file transfers are sha256-verified (`unverified` when the remote lacks sha256sum).
+
+Output is **spilled to a local file** when stdout+stderr reach `outputSpillThreshold` (default 8 KiB): the result then only carries a short notice, the absolute path, size/line counts and a ~12-line preview — Read/Grep **that local file**, do not re-run the command or `cat` it remotely. Below the threshold, output ≥4 KiB is light-compressed. See [SECURITY.md](../SECURITY.md).
+
+Secret redaction (Bearer tokens, PEM blocks, `password=`/`token=` lines) is **opt-in** via `"redactSecrets": true` — it is off by default because scanning secret-bearing output is expensive. When it is on, spilled files contain redacted content only.
 
 ## Deployment
 
@@ -175,6 +182,7 @@ git push origin v1.0.1
 
 ## Gotchas
 
+- **Local WSL**: treat as a normal Linux SSH target (sshd in the distro, `host: 127.0.0.1`). Do **not** launch this server via `"command": "wsl"`. `file-transfer` `localPath` is the MCP process OS — on Windows use `D:\\...`, never `/mnt/c/...` or `\\\\wsl$\\...`; keep Linux builds under `/home`, not `/mnt/c` (9P). If Windows already binds :22, put WSL sshd on another port. NAT: WSL `127.0.0.1` ≠ Windows loopback (HTTP daemon on one side is unreachable from the other). Full recipe: [HUMAN_GUIDE.md](HUMAN_GUIDE.zh-CN.md#连接本地-wsl).
 - Logs → **stderr** only (stdio protocol on stdout).
 - Host keys verified against `known_hosts` by default (`hostKeyCheck: accept-new`): first contact is recorded (file + `~/.ssh` created automatically), later key changes fail with `SSH_HOST_KEY_MISMATCH` (retriable=false). `strict` rejects unknown hosts (`SSH_HOST_KEY_UNKNOWN`); `none` disables verification. A rekeyed server needs its stale `known_hosts` line removed (or `hostKeyCheck: none`).
 - Shell mode serializes commands per connection; no SFTP in shell mode. **`transportMode: shell` requires a POSIX `sh`-compatible interactive shell** (relies on `PS1`, `stty`, `printf`, `export`) — csh/tcsh/fish bastions must use `exec` + `commandTemplate` instead.

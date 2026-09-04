@@ -159,6 +159,35 @@ Admin API (`/__admin/*`) does not use this token and still restricts access to l
 | `allowInsecureConfigPerms` | false | Skip permission checks for this configuration file (equivalent to `--allow-insecure-config-perms` on the command line, but declared inside the file; not recommended, for development only) |
 | `httpToken` | empty | Bearer token for `/mcp` (lower priority than `--http-token` and `SSH_MCP_HTTP_TOKEN`; supports `${VAR}` references) |
 
+## Connecting to local WSL
+
+This project has **no** separate `wsl` transport mode. Treat WSL as a normal Linux SSH target: MCP runs on Windows, sshd runs inside the distro, and you connect to `127.0.0.1` with a key. Do not launch this process via `"command": "wsl"` in the MCP config (`wsl.exe` non-interactive startups skip the login shell and mix in the Windows PATH).
+
+After enabling and starting sshd in the distro, a sample config:
+
+```json
+{
+  "wsl": {
+    "host": "127.0.0.1",
+    "port": 2222,
+    "username": "your-linux-user",
+    "privateKey": "~/.ssh/id_ed25519",
+    "hostKeyCheck": "accept-new",
+    "pty": false,
+    "description": "Local WSL",
+    "allowedRemotePaths": ["/home", "/tmp"]
+  }
+}
+```
+
+Notes:
+
+- **Port**: if Windows OpenSSH Server already binds port 22, put WSL sshd on another port (e.g. 2222). Under mirrored networking, Windows and WSL **cannot each listen on the same port**; inbound LAN access to WSL also needs a Hyper-V firewall allow rule.
+- **localhost**: Windows → WSL localhost forwarding works on most machines. Under default NAT, **`127.0.0.1` inside WSL is not the Windows loopback**. An MCP HTTP daemon bound to Windows `127.0.0.1:8338` is unreachable from a client inside WSL, and vice versa. For cross-side access use mirrored networking (`networkingMode=mirrored` in `.wslconfig`, and `hostAddressLoopback=true` if needed), or bind the daemon to an address the other side can route to and set `--http-token`.
+- **Paths**: `file-transfer` `localPath` is a path on **the OS running the MCP process**. On Windows use `D:\\proj\\a.tar`, not `/mnt/c/...` or `\\\\wsl$\\Ubuntu\\...`. `remotePath` remains a POSIX path inside the distro (e.g. `/home/you/a.tar`).
+- **Where files live**: SFTP onto Linux `/home` (ext4) is the fast path. Do not put build trees on `/mnt/c`, and do not scan the whole tree from Windows via `\\\\wsl$\\` (9P cross-filesystem I/O is slow).
+- **PTY**: for docker/npm/builds on WSL, set `"pty": false` on that connection (same as other Linux targets).
+
 ## Tool Documentation
 
 ### execute-command
@@ -168,8 +197,10 @@ Admin API (`/__admin/*`) does not use this token and still restricts access to l
 | `cmdString` | ✅ | The command to execute |
 | `directory` | | Working directory |
 | `connectionName` | | Connection name or alias from list-servers |
-| `timeout` | | Timeout in milliseconds, default 30000 |
-| `keepAlive` | | Whether to keep the connection alive after execution, default `true` |
+| `timeout` | | Timeout in milliseconds, default 30000; on timeout the remote process group is killed by PID |
+| `pty` | | Allocate a pseudo-terminal, default `false` (enable for interactive commands; with `background=true`, wraps the job in `script` when the program requires a TTY) |
+| `background` | | When `true`, the command is moved to a background session and immediately returns `sessionName`/`logPath`; poll with `session read` (use this for minute-scale jobs instead of raising timeout) |
+| `keepAlive` | | Whether to keep the connection alive after execution, default `true` (named sessions ignore `false`) |
 | `keepAliveDuration` | | Keep-alive duration in milliseconds, default 600000 (10 minutes) |
 
 ### file-transfer
@@ -182,11 +213,15 @@ Admin API (`/__admin/*`) does not use this token and still restricts access to l
 | `connectionName` | | Connection name or alias from list-servers |
 | `force` | | Skip deduplication/resumption and force full transfer |
 
-- When the client includes `_meta.progressToken` in the request, the server reports progress via `notifications/progress` (throttled to ~100ms, always reports 100% on completion)
+- When `localPath`/`remotePath` is a **directory**, the whole tree is transferred recursively (remote parent dirs are created automatically; empty dirs are not recreated); each file uses atomic upload / dedup / resume; a single-file failure is collected in `failed` without aborting the batch; the result includes a `files` count; directory mode does not compute an overall sha256
+- After a single-file transfer, both ends check sha256: match is `verified`; missing remote `sha256sum` is `unverified` (not a failure); mismatch is a hard error suggesting `force` retry
+- Progress notifications go only to the client that started the request (HTTP multi-client no longer cross-talks); throttled to ~100ms, always reports 100% on completion
 - If target file matches source in size and mtime → skipped (deduplication)
-- If partial data already exists at target → resumes from breakpoint; downloads use temporary file + atomic rename
+- Uploads **land atomically**: write same-dir `<target>.part`, posix-rename over the target after a byte-count check; failure does not touch an existing target, and `<target>.part` is kept for resume (if the server lacks posix-rename and the target already exists, the error asks you to `mv` manually)
+- If remote `<target>.part` already exists and the header matches → resume from breakpoint (a failed concurrent write truncates back to the confirmed prefix and keeps the part); downloads use a temporary file + atomic rename
+- Directory destinations are rejected before transfer (`IsDir` errors early)
 - If source file grows during transfer → automatically appends the tail
-- If local path is not within allowed range (determined by `localPathMode`) → `LOCAL_PATH_NOT_ALLOWED` with message "not within the allowed local paths for this connection"; path traversal attempts containing `..` are rejected with "Path traversal rejected"
+- If local path is not within allowed range (determined by `localPathMode`) → `LOCAL_PATH_NOT_ALLOWED` with message "not within the allowed local paths for this connection"; path traversal attempts containing `..` are rejected with "Path traversal rejected" 
 
 ### list-servers
 
@@ -198,8 +233,8 @@ Lists all connections and active sessions: server metadata, connection status, s
 
 | action | Description |
 |---|---|
-| `open` | Open a session; `background=true` + `cmdString` starts a background task |
-| `read` | Poll output from a background session (`offset` omitted/negative = continue reading, `0` = reread from beginning) |
+| `open` | Open a session; `background=true` + `cmdString` starts a background task (`pty=true` wraps the job in a TTY) |
+| `read` | Poll output from a background session (`offset` omitted/negative = continue reading, `0` = reread from beginning; `waitMs` blocks up to 30s for data or job exit when there is no new output) |
 | `close` | Close the session and stop the background process (**idempotent**, can be called repeatedly) |
 | `list` | List all sessions (optionally filtered by `connectionName`) |
 
@@ -211,15 +246,16 @@ Adds an optional `sessionName` parameter: executes in an already opened named se
 
 **Stateful operations**: `session open` → multiple `execute-command` (with sessionName) → `session close`
 
-**For long-running / silent tasks, use `session background=true` + `read` polling instead of running `nohup ... &` or `setsid` via `execute-command`** — the latter will be terminated when the exec channel closes. Background tasks start in an independent channel without a PTY (new session, detached from sshd process group), **survives connection interruptions**: after disconnection, the session shows `disconnected=true` in `list-servers`, and `read` or `execute-command` with `sessionName` will automatically reconnect; only `action=close` will kill the remote background process.
+**For long-running / silent tasks, use `execute-command` with `background: true`** (creates a `bg-*` session and returns `sessionName`/`logPath`), **or `session background=true` + `cmdString`; poll with `read` (`waitMs` blocks for new output — do not busy-loop). Do not run `nohup ... &` or `setsid` via a foreground `execute-command`** — those die when the exec channel closes. Background tasks start in an independent channel without a PTY (new session, detached from sshd process group), **survives connection interruptions**: after disconnection, the session shows `disconnected=true` in `list-servers`, and `read` or `execute-command` with `sessionName` will automatically reconnect; only `action=close` will kill the remote background process.
 
 **After a background job finishes, the session is still retained** (includes remote logs, 60-minute retention TTL), you must call `close` to release resources; `close` can be called repeatedly. `read` can use `offset=0` to reread from the beginning; the returned JSON includes `logPath` (remote log path) and `exitCode` (after job completion). Sessions only exist in memory: they are lost when the stdio process exits (remote logs still remain at `logPath` and can be read separately), only the persistent HTTP daemon can retain sessions across conversations. Repeating `open background=true` on an already finished session will be rejected with the `logPath` hint — close it first or read the old logs. **When the connection is unavailable, `close` cannot confirm the remote job has stopped**: the session remains in the list marked `orphaned=true` (`background` remains true), returns a retriable error, and you can just `close` it again once connectivity is restored. Background log/pid/exit file paths include a one-time random suffix (`/tmp/.2native-ssh-mcp-<session-name>-<id>.log`, etc.), and the `logPath` field always provides the actual path.
 
 **Command result notes**:
-- Non-zero exit codes are **normal results** (not errors), look for `[exit code] N` in the output; only validation failures, connection failures, timeouts, output limits exceeded, and connection interruptions are reported as errors
+- Non-zero exit codes are **normal results** (not errors): successful results are JSON — look at `exitCode` / `status` (`ok`/`exited`) / `stdout` / `stderr`; only validation failures, connection failures, timeouts, output limits exceeded, and connection interruptions are reported as error JSON (`code`/`message`/`retriable` plus partial `stdout`/`stderr`)
 - Connection interruptions report `SSH_CONNECTION_LOST` (`retriable=false`), the remote process may still be running, **do not blindly retry**; the error JSON includes partial `stdout`/`stderr` and `replaySafe: false`
-- The `timeout` for foreground commands must be greater than the actual execution time (the default `commandTimeoutMs=30000` still applies)
-- For connections running build/CI jobs, we recommend configuring `"pty": false` to prevent docker/npm from mistakenly believing they have an interactive terminal
+- The `timeout` for foreground commands must be greater than the actual execution time (the default `commandTimeoutMs=30000` still applies); on timeout the remote process group is killed by PID (channel Signal is only a fallback), so timed-out commands do not leak remote processes
+- Output ≥8KB (`outputSpillThreshold`, `-1` to disable) spills the full output to local `.ssh-mcp-out/` (`outputSpillDir` configurable, keeps the newest 32, Unix 0600); the result carries only a notice + short preview; Agent should Grep/Read that local file, not re-run the command remotely
+- exec **does not allocate a PTY by default** (avoids docker/npm treating the session as interactive); enable it with connection `"pty": true` or the `execute-command` `pty` parameter
 
 **Agent Skill Installation**: You can copy [`skills/2native-ssh-mcp-helper/SKILL.md`](../skills/2native-ssh-mcp-helper/SKILL.md) from this repository to `.cursor/skills/` and then ask "help me configure 2native-ssh-mcp".
 
@@ -282,12 +318,14 @@ Server options:
 | `hostKeyCheck` | `accept-new` | Host key verification: `accept-new` (accept after unknown record) / `strict` (reject unknown) / `none` (no verification); automatically creates `known_hosts` file and its directory (e.g., `~/.ssh`) if they don't exist |
 | `knownHostsFile` | `~/.ssh/known_hosts` | known_hosts file for host key verification |
 | `keepaliveIntervalMs` / `keepaliveCountMax` | 10000 / 3 | SSH keepalive |
-| `commandTimeoutMs` / `connectionTimeoutMs` / `sftpTimeoutMs` | 30000 / 30000 / 300000 | Various timeouts |
+| `commandTimeoutMs` / `connectionTimeoutMs` / `sftpTimeoutMs` | 30000 / 30000 / 300000 | Various timeouts (`sftpTimeoutMs` is a no-progress timeout; each progress refresh restarts the timer) |
 | `maxOutputBytes` | 10485760 | Maximum combined stdout+stderr output per single command, 0 means unlimited |
 | `outputCompressLight` / `outputCompressThreshold` | true / 4096 | Compress large output at head/tail and threshold |
+| `outputSpillThreshold` / `outputSpillDir` | 8192 / `.ssh-mcp-out` | Spill output to a local directory at this threshold (`-1` disables) |
 | `stripAnsi` | true | Strip ANSI escape sequences from output (false preserves colors/progress bars) |
 | `commandTemplate` | empty | Command wrapper template (`<command>` / `<quotedCommand>`) |
-| `pty` | true | Allocate pseudo-terminal in exec mode |
+| `pty` | false | Allocate a pseudo-terminal in exec mode (off by default; enable for interactive commands) |
+| `redactSecrets` | false | Output redaction (password/token/Bearer/PEM); enabling has scan cost |
 | `tryKeyboard` | false | Keyboard-interactive authentication (2FA code via environment variable `SSH_MCP_2FA_CODE`) |
 
 > Strings in the configuration file support `${environment-variable-name}` references, so credentials can be stored in environment variables without touching disk.
@@ -314,8 +352,8 @@ The number of remote command execution logs can be configured: after setting `co
 ## Security
 
 - On startup, checks `--config-file` permissions (Unix: `chmod 600` for file / `chmod 700` for directory; Windows: restricts ACL modification permissions), can be skipped with `--allow-insecure-config-perms` or `$global.allowInsecureConfigPerms: true` in the configuration file (not recommended, development only)
-- Automatically redacts sensitive information from command output (Bearer tokens, PEM private key blocks, `password=`/`token=` patterns, etc.)
-- Sends SIGTERM/SIGKILL to remote processes on timeout or output limit exceeded (exec) or Ctrl-C (shell/session)
+- Output redaction is off by default (`redactSecrets: true` enables it per connection): Bearer tokens, PEM private key blocks, `password=`/`token=` patterns, etc.; when on, spilled files also contain redacted content
+- On timeout or output limit exceeded, sends SIGTERM/SIGKILL to the remote process group by PID (exec; channel Signal is only a fallback) or Ctrl-C (shell/session)
 - MCP tools are annotated with `readOnlyHint` / `destructiveHint`, allowing clients to restrict dangerous operations accordingly
 
 See [SECURITY.md](../SECURITY.md) for details.
