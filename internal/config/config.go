@@ -220,7 +220,15 @@ func (c *SSHConfig) Normalize() error {
 	if c.OutputSpillDir == "" {
 		c.OutputSpillDir = DefaultOutputSpillDir
 	}
+	spillHadHome := strings.HasPrefix(c.OutputSpillDir, "~")
 	c.OutputSpillDir = ExpandHome(c.OutputSpillDir)
+	if spillHadHome {
+		abs, err := filepath.Abs(c.OutputSpillDir)
+		if err != nil {
+			return fmt.Errorf("outputSpillDir: %w", err)
+		}
+		c.OutputSpillDir = abs
+	}
 	if c.CommandTemplate != "" &&
 		!strings.Contains(c.CommandTemplate, "<command>") &&
 		!strings.Contains(c.CommandTemplate, "<quotedCommand>") {
@@ -303,15 +311,33 @@ func (c *SSHConfig) GetRedactSecrets() bool {
 
 // ExpandHome expands a leading ~ in a path.
 func ExpandHome(p string) string {
+	home := userHomeDir()
 	if p == "~" {
-		home, _ := os.UserHomeDir()
+		if home == "" {
+			return p
+		}
 		return home
 	}
 	if strings.HasPrefix(p, "~/") {
-		home, _ := os.UserHomeDir()
+		if home == "" {
+			return p
+		}
 		return filepath.Join(home, p[2:])
 	}
 	return p
+}
+
+func userHomeDir() string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return home
+	}
+	if home := os.Getenv("HOME"); home != "" {
+		return home
+	}
+	if home := os.Getenv("USERPROFILE"); home != "" {
+		return home
+	}
+	return ""
 }
 
 // ParsePort accepts a number or numeric string and returns an int.

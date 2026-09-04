@@ -403,6 +403,18 @@ func TestNormalizeOutputSpillDisableAndCustom(t *testing.T) {
 	if !filepath.IsAbs(conf.OutputSpillDir) {
 		t.Fatalf("~ in outputSpillDir must be expanded to an absolute path, got: %q", conf.OutputSpillDir)
 	}
+
+	t.Run("emptyHomeStillAbsolute", func(t *testing.T) {
+		t.Setenv("HOME", "")
+		t.Setenv("USERPROFILE", "")
+		conf := &SSHConfig{Host: "h", Username: "u", OutputSpillThreshold: 4096, OutputSpillDir: "~/spill"}
+		if err := conf.Normalize(); err != nil {
+			t.Fatal(err)
+		}
+		if !filepath.IsAbs(conf.OutputSpillDir) {
+			t.Fatalf("~/spill must normalize to an absolute path even without HOME, got: %q", conf.OutputSpillDir)
+		}
+	})
 }
 
 func TestRedactSecretsDefaultOff(t *testing.T) {
