@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -53,6 +54,20 @@ func errorResultFor(err error, res manager.CommandResult) *mcp.CallToolResult {
 		payload["status"] = res.Status
 		payload["partial"] = res.Partial
 		payload["replaySafe"] = res.ReplaySafe
+		if res.CWD != "" {
+			payload["cwd"] = res.CWD
+		}
+		if res.OutputFile != "" {
+			payload["outputFile"] = res.OutputFile
+			payload["outputFileBytes"] = res.OutputFileBytes
+			payload["outputFileLines"] = res.OutputFileLines
+		}
+		if res.Truncated {
+			payload["truncated"] = true
+			if res.ClippedBytes > 0 {
+				payload["clippedBytes"] = res.ClippedBytes
+			}
+		}
 	}
 	text, _ := json.MarshalIndent(payload, "", "  ")
 	return &mcp.CallToolResult{
@@ -62,16 +77,21 @@ func errorResultFor(err error, res manager.CommandResult) *mcp.CallToolResult {
 }
 
 // progressSender sends MCP progress notifications, throttled to at most one
-// per 100ms, with a final 100% notification.
+// per 100ms, with a final 100% notification. Safe for concurrent use: SFTP
+// copy workers call send from several goroutines. When a client session is
+// available from the request context, notifications go only to that session;
+// otherwise (e.g. unknown transport) they broadcast to all clients.
 type progressSender struct {
 	server      *server.MCPServer
+	session     server.ClientSession
 	token       mcp.ProgressToken
+	mu          sync.Mutex
 	lastSent    int64
 	lastPercent int
 }
 
-func newProgressSender(s *server.MCPServer, token mcp.ProgressToken) *progressSender {
-	return &progressSender{server: s, token: token}
+func newProgressSender(s *server.MCPServer, session server.ClientSession, token mcp.ProgressToken) *progressSender {
+	return &progressSender{server: s, session: session, token: token}
 }
 
 func (p *progressSender) send(done, total int64) {
@@ -83,14 +103,18 @@ func (p *progressSender) send(done, total int64) {
 	if total > 0 {
 		percent = int(float64(done) / float64(total) * 100)
 	}
+	p.mu.Lock()
 	if now-p.lastSent < 100 && percent < 100 {
+		p.mu.Unlock()
 		return
 	}
 	if percent == p.lastPercent && percent < 100 {
+		p.mu.Unlock()
 		return
 	}
 	p.lastSent = now
 	p.lastPercent = percent
+	p.mu.Unlock()
 
 	params := map[string]any{
 		"progressToken": p.token,
@@ -99,6 +123,21 @@ func (p *progressSender) send(done, total int64) {
 	}
 	if total > 0 {
 		params["total"] = float64(total)
+	}
+	notification := mcp.JSONRPCNotification{
+		JSONRPC: mcp.JSONRPC_VERSION,
+		Notification: mcp.Notification{
+			Method: "notifications/progress",
+			Params: mcp.NotificationParams{AdditionalFields: params},
+		},
+	}
+	if p.session != nil {
+		// Non-blocking: a stalled or slow reader must not stall the transfer.
+		select {
+		case p.session.NotificationChannel() <- notification:
+		default:
+		}
+		return
 	}
 	p.server.SendNotificationToAllClients("notifications/progress", params)
 }

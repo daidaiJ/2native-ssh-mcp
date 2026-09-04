@@ -122,7 +122,10 @@ type Manager struct {
 	inFlight map[string]int
 	// unhealthy marks a connection whose keepalives failed while an
 	// operation was in flight; it is disconnected once the operation ends.
-	unhealthy   map[string]bool
+	unhealthy map[string]bool
+	// sftpPool caches open SFTP clients per connection (key, plus a "#cw"
+	// suffix for the concurrent-writes client) with an idle TTL.
+	sftpPool    map[string]*sftpPoolEntry
 	defaultName string
 }
 
@@ -145,6 +148,7 @@ func New(configs map[string]*config.SSHConfig, defaultLogDir string) (*Manager, 
 		sessions:    map[string]*namedSession{},
 		inFlight:    map[string]int{},
 		unhealthy:   map[string]bool{},
+		sftpPool:    map[string]*sftpPoolEntry{},
 	}
 
 	names := make([]string, 0, len(configs))
@@ -424,8 +428,22 @@ func (m *Manager) Disconnect(name string) {
 		sh.close()
 		delete(m.shells, key)
 	}
+	// Pooled SFTP clients are attached to this connection and are now stale.
+	var pooled []*sftpPoolEntry
+	for k, e := range m.sftpPool {
+		if e.client != nil && (k == key || strings.HasPrefix(k, key+"#")) {
+			delete(m.sftpPool, k)
+			if e.timer != nil {
+				e.timer.Stop()
+			}
+			pooled = append(pooled, e)
+		}
+	}
 	m.mu.Unlock()
 	m.closeSessionsForConnection(key)
+	for _, e := range pooled {
+		_ = e.client.Close()
+	}
 	if client != nil {
 		client.Close()
 		logger.Info("SSH connection [%s] closed", key)
