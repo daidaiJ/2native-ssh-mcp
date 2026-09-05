@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/daidaiJ/2native-ssh-mcp)](https://github.com/daidaiJ/2native-ssh-mcp/releases/latest)
 [![Go](https://img.shields.io/github/go-mod/go-version/daidaiJ/2native-ssh-mcp)](go.mod)
 [![License](https://img.shields.io/github/license/daidaiJ/2native-ssh-mcp)](LICENSE)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/daidaiJ/2native-ssh-mcp/badge)](https://scorecard.dev/viewer/?uri=github.com/daidaiJ/2native-ssh-mcp)
+[![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/daidaiJ/2native-ssh-mcp)](https://scorecard.dev/viewer/?uri=github.com/daidaiJ/2native-ssh-mcp)
 [![SLSA](https://img.shields.io/badge/SLSA-provenance-brightgreen)](https://github.com/daidaiJ/2native-ssh-mcp/attestations)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-555)](https://registry.modelcontextprotocol.io/v0.1/servers?search=2native-ssh-mcp)
 
