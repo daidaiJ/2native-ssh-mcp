@@ -360,3 +360,25 @@ func TestGetAllServerInfosMetadata(t *testing.T) {
 		t.Fatalf("unexpected infos: %+v", infos)
 	}
 }
+func TestConfigForApprovalGate(t *testing.T) {
+	m, err := New(map[string]*config.SSHConfig{
+		"dev": {Host: "h", Username: "u", Port: 22, ApprovalMode: config.ApprovalModeAskDestructive},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := m.ConfigFor("", "dev")
+	if cfg == nil || cfg.ApprovalMode != config.ApprovalModeAskDestructive {
+		t.Fatalf("ConfigFor should resolve a connection by name, got %+v", cfg)
+	}
+	m.sessions["bg-01"] = &namedSession{name: "bg-01", connectionKey: "dev"}
+	if cfg := m.ConfigFor("bg-01", ""); cfg == nil || cfg.ApprovalMode != config.ApprovalModeAskDestructive {
+		t.Fatalf("ConfigFor should resolve through the session's connection, got %+v", cfg)
+	}
+	if cfg := m.ConfigFor("missing-session", ""); cfg != nil {
+		t.Fatalf("unknown session must resolve to nil, got %+v", cfg)
+	}
+	if cfg := m.ConfigFor("", "nope"); cfg != nil {
+		t.Fatalf("unknown connection must resolve to nil, got %+v", cfg)
+	}
+}

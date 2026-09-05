@@ -10,6 +10,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"2native-ssh-mcp/internal/approval"
 	"2native-ssh-mcp/internal/manager"
 )
 
@@ -23,8 +24,37 @@ func registerListServers(s *server.MCPServer, m *manager.Manager) {
 	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		servers := m.GetAllServerInfos()
 		sessions := m.ListSessions()
-		return mcp.NewToolResultText(formatInventory(servers, sessions)), nil
+		text := formatInventory(servers, sessions)
+		if note := elicitationNote(ctx, servers); note != "" {
+			text += "\n\n" + note
+		}
+		return mcp.NewToolResultText(text), nil
 	})
+}
+
+// elicitationNote tells the agent up front when a connection wants approval
+// and whether this client session can actually show the prompt. Without it
+// the agent would only learn about a fail-open advisory after running a
+// destructive command.
+func elicitationNote(ctx context.Context, servers []manager.ServerInfo) string {
+	ask := false
+	for _, s := range servers {
+		if s.ApprovalMode == string(approval.ModeAskDestructive) {
+			ask = true
+			break
+		}
+	}
+	if !ask {
+		return ""
+	}
+	supported := false
+	if session := server.ClientSessionFromContext(ctx); session != nil {
+		_, supported = session.(server.SessionWithElicitation)
+	}
+	if supported {
+		return "Client elicitation support: yes — destructive commands on ask-destructive connections will prompt the user."
+	}
+	return "Client elicitation support: no — ask-destructive connections run destructive commands without prompting (fail-open); ask the user for confirmation before destructive actions on those connections."
 }
 
 func formatInventory(servers []manager.ServerInfo, sessions []manager.SessionInfo) string {
@@ -61,6 +91,9 @@ func formatServerList(servers []manager.ServerInfo) string {
 		}
 		if server.Notes != "" {
 			parts = append(parts, "notes="+server.Notes)
+		}
+		if server.ApprovalMode == string(approval.ModeAskDestructive) {
+			parts = append(parts, "approval=ask-destructive")
 		}
 		if server.Status != nil {
 			if server.Status.Hostname != "" {

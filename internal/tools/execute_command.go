@@ -54,9 +54,18 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 			opts.KeepAliveDuration = time.Duration(v) * time.Millisecond
 		}
 
+		// Destructive-command approval gate (issue #5). Runs before both the
+		// background and foreground paths: a detached job is exactly the case
+		// where the human must be asked before the command starts.
+		proceed, note, decline := wrapWithGate(ctx, s, m, sessionName, connectionName, cmdString)
+		if !proceed {
+			return decline, nil
+		}
+
 		if background {
 			bgPty, _ := args["pty"].(bool)
-			return handleBackgroundCommand(m, cmdString, directory, sessionName, connectionName, bgPty)
+			res, err := handleBackgroundCommand(m, cmdString, directory, sessionName, connectionName, bgPty)
+			return appendNote(res, note), err
 		}
 
 		var result manager.CommandResult
@@ -67,9 +76,9 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 			result, err = m.ExecuteCommand(ctx, cmdString, directory, connectionName, opts)
 		}
 		if err != nil {
-			return errorResultFor(err, result), nil
+			return appendNote(errorResultFor(err, result), note), nil
 		}
-		return commandResultJSON(result), nil
+		return appendNote(commandResultJSON(result), note), nil
 	})
 }
 

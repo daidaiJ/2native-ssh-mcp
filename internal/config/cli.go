@@ -49,6 +49,14 @@ type GlobalConfig struct {
 	// HTTPToken authenticates the /mcp endpoint (Bearer). Falls back to
 	// --http-token / SSH_MCP_HTTP_TOKEN when those are set.
 	HTTPToken string `json:"httpToken,omitempty"`
+	// ApprovalMode is the global default for per-connection approvalMode.
+	ApprovalMode string `json:"approvalMode,omitempty"`
+	// ApprovalPatterns is the global default for per-connection
+	// approvalPatterns (extra destructive regexes).
+	ApprovalPatterns []string `json:"approvalPatterns,omitempty"`
+	// ApprovalExemptPatterns is the global default for per-connection
+	// approvalExemptPatterns.
+	ApprovalExemptPatterns []string `json:"approvalExemptPatterns,omitempty"`
 }
 
 // stringList is a repeatable flag value.
@@ -227,6 +235,10 @@ func ParseArgs(args []string) (*Options, error) {
 		CommandLogOnlySuccess:    commandLogOnly,
 	}
 
+	// fileGlobal holds the $global section of the config file, applied to
+	// connections below alongside the CLI-level defaults.
+	var fileGlobal GlobalConfig
+
 	// Priority 1: config file.
 	if configFile != "" {
 		configs, global, err := loadConfigFile(configFile)
@@ -241,6 +253,7 @@ func ParseArgs(args []string) (*Options, error) {
 		if opts.HTTPToken == "" {
 			opts.HTTPToken = expandEnvVars(global.HTTPToken)
 		}
+		fileGlobal = *global
 		opts.Configs = configs
 		opts.ConfigFile = configFile
 	}
@@ -288,6 +301,17 @@ func ParseArgs(args []string) (*Options, error) {
 		}
 		if commandLogOnly && !conf.CommandLogOnlySuccess {
 			conf.CommandLogOnlySuccess = true
+		}
+		// Apply the $global approval defaults; a connection that set its own
+		// approvalMode or patterns keeps them (connection-level wins).
+		if conf.ApprovalMode == "" && fileGlobal.ApprovalMode != "" {
+			conf.ApprovalMode = fileGlobal.ApprovalMode
+		}
+		if len(conf.ApprovalPatterns) == 0 {
+			conf.ApprovalPatterns = fileGlobal.ApprovalPatterns
+		}
+		if len(conf.ApprovalExemptPatterns) == 0 {
+			conf.ApprovalExemptPatterns = fileGlobal.ApprovalExemptPatterns
 		}
 		if err := conf.Normalize(); err != nil {
 			return nil, fmt.Errorf("invalid config for '%s': %w", conf.Name, err)
@@ -367,6 +391,19 @@ func parseGlobalConfig(raw any, global *GlobalConfig) error {
 		}
 		global.HTTPToken = s
 	}
+	if v, ok := m["approvalMode"]; ok {
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("%s.approvalMode must be a string", GlobalConfigKey)
+		}
+		global.ApprovalMode = s
+	}
+	if v, ok := m["approvalPatterns"]; ok {
+		global.ApprovalPatterns = StringSlice(v)
+	}
+	if v, ok := m["approvalExemptPatterns"]; ok {
+		global.ApprovalExemptPatterns = StringSlice(v)
+	}
 	return nil
 }
 
@@ -415,29 +452,32 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 	}
 
 	conf := &SSHConfig{
-		Name:               str(m["name"]),
-		Description:        str(firstAny(m["description"], m["desc"])),
-		Business:           str(firstAny(m["business"], m["role"])),
-		Aliases:            StringSlice(firstAny(m["aliases"], m["alias"])),
-		Notes:              str(firstAny(m["notes"], m["note"], m["caveats"])),
-		Host:               expandEnvVars(str(m["host"])),
-		Port:               port,
-		Username:           expandEnvVars(firstStr(m["username"], m["user"])),
-		Password:           expandEnvVars(str(m["password"])),
-		PrivateKey:         expandEnvVars(str(m["privateKey"])),
-		Passphrase:         expandEnvVars(firstStr(m["passphrase"], os.Getenv("SSH_MCP_PASSPHRASE"))),
-		Agent:              expandEnvVars(str(m["agent"])),
-		Proxy:              expandEnvVars(str(m["proxy"])),
-		SocksProxy:         expandEnvVars(str(m["socksProxy"])),
-		CommandWhitelist:   StringSlice(firstAny(m["commandWhitelist"], m["whitelist"])),
-		CommandBlacklist:   StringSlice(firstAny(m["commandBlacklist"], m["blacklist"])),
-		AllowedLocalPaths:  StringSlice(m["allowedLocalPaths"]),
-		AllowedRemotePaths: StringSlice(m["allowedRemotePaths"]),
-		LocalPathMode:      str(m["localPathMode"]),
-		TransportMode:      str(m["transportMode"]),
-		CommandTemplate:    str(m["commandTemplate"]),
-		CommandLogDir:      expandEnvVars(str(m["commandLogDir"])),
-		OutputSpillDir:     expandEnvVars(str(m["outputSpillDir"])),
+		Name:                   str(m["name"]),
+		Description:            str(firstAny(m["description"], m["desc"])),
+		Business:               str(firstAny(m["business"], m["role"])),
+		Aliases:                StringSlice(firstAny(m["aliases"], m["alias"])),
+		Notes:                  str(firstAny(m["notes"], m["note"], m["caveats"])),
+		Host:                   expandEnvVars(str(m["host"])),
+		Port:                   port,
+		Username:               expandEnvVars(firstStr(m["username"], m["user"])),
+		Password:               expandEnvVars(str(m["password"])),
+		PrivateKey:             expandEnvVars(str(m["privateKey"])),
+		Passphrase:             expandEnvVars(firstStr(m["passphrase"], os.Getenv("SSH_MCP_PASSPHRASE"))),
+		Agent:                  expandEnvVars(str(m["agent"])),
+		Proxy:                  expandEnvVars(str(m["proxy"])),
+		SocksProxy:             expandEnvVars(str(m["socksProxy"])),
+		CommandWhitelist:       StringSlice(firstAny(m["commandWhitelist"], m["whitelist"])),
+		CommandBlacklist:       StringSlice(firstAny(m["commandBlacklist"], m["blacklist"])),
+		AllowedLocalPaths:      StringSlice(m["allowedLocalPaths"]),
+		AllowedRemotePaths:     StringSlice(m["allowedRemotePaths"]),
+		LocalPathMode:          str(m["localPathMode"]),
+		TransportMode:          str(m["transportMode"]),
+		CommandTemplate:        str(m["commandTemplate"]),
+		CommandLogDir:          expandEnvVars(str(m["commandLogDir"])),
+		OutputSpillDir:         expandEnvVars(str(m["outputSpillDir"])),
+		ApprovalMode:           str(m["approvalMode"]),
+		ApprovalPatterns:       StringSlice(m["approvalPatterns"]),
+		ApprovalExemptPatterns: StringSlice(m["approvalExemptPatterns"]),
 	}
 
 	if v, ok := m["pty"]; ok {

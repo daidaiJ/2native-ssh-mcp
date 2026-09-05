@@ -98,6 +98,10 @@ type ServerInfo struct {
 	// RecentCommands holds the last few recorded commands (without output)
 	// so an agent calling list-servers can resume context across sessions.
 	RecentCommands []CommandLogEntry `json:"recentCommands,omitempty"`
+	// ApprovalMode is the connection's destructive-command approval mode
+	// ("auto" or "ask-destructive") so an agent knows before running
+	// anything whether the human wants to be asked.
+	ApprovalMode string `json:"approvalMode,omitempty"`
 }
 
 type connectState struct {
@@ -236,6 +240,30 @@ func (m *Manager) getConfig(name string) (*config.SSHConfig, error) {
 		return nil, fmt.Errorf("SSH configuration for '%s' not set", key)
 	}
 	return cfg, nil
+}
+
+// ConfigFor resolves the effective connection config for a tool request: the
+// named session's underlying connection when sessionName is set, else the
+// connection name (empty means the default connection). Returns nil when
+// neither resolves; callers treat nil as approval mode "auto".
+func (m *Manager) ConfigFor(sessionName, connectionName string) *config.SSHConfig {
+	key := connectionName
+	if sessionName != "" {
+		m.mu.Lock()
+		ns, ok := m.sessions[sessionName]
+		if ok {
+			key = ns.connectionKey
+		}
+		m.mu.Unlock()
+		if !ok {
+			return nil
+		}
+	}
+	cfg, err := m.getConfig(key)
+	if err != nil {
+		return nil
+	}
+	return cfg
 }
 
 // ConfigNames returns all configured connection names.
@@ -485,6 +513,7 @@ func (m *Manager) GetAllServerInfos() []ServerInfo {
 			Username:       cfg.Username,
 			Connected:      m.connected[name],
 			Status:         m.statuses[name],
+			ApprovalMode:   cfg.ApprovalMode,
 			RecentCommands: m.commandLogs[name].Recent(recentCommandsInList),
 		})
 	}

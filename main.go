@@ -236,9 +236,11 @@ func runHTTPServer(ctx context.Context, s *server.MCPServer, m *manager.Manager,
 	m.DisconnectAll()
 }
 
-// newMCPServer builds the MCP server with all tools registered.
+// newMCPServer builds the MCP server with all tools registered. WithElicitation
+// advertises the server side of the elicitation capability; whether a prompt
+// actually appears depends on the client declaring its side at initialize.
 func newMCPServer(m *manager.Manager) *server.MCPServer {
-	s := server.NewMCPServer("2native-ssh-mcp", version)
+	s := server.NewMCPServer("2native-ssh-mcp", version, server.WithElicitation())
 	tools.RegisterAll(s, m)
 	return s
 }

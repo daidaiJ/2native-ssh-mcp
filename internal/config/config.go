@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -48,6 +49,15 @@ const (
 	LocalPathModeList = "list"
 	// LocalPathModeAny disables the local path restriction entirely.
 	LocalPathModeAny = "any"
+)
+
+// Approval modes for destructive commands (execute-command only).
+const (
+	// ApprovalModeAuto runs everything without asking (default; YOLO).
+	ApprovalModeAuto = "auto"
+	// ApprovalModeAskDestructive asks the human via MCP elicitation before
+	// running a command classified as destructive.
+	ApprovalModeAskDestructive = "ask-destructive"
 )
 
 // SSHConfig is a single SSH connection configuration.
@@ -143,6 +153,21 @@ type SSHConfig struct {
 	SftpConcurrency int `json:"sftpConcurrency,omitempty"`
 	// SftpChunkSize is the SFTP transfer chunk size in bytes (default: 32768).
 	SftpChunkSize int `json:"sftpChunkSize,omitempty"`
+	// ApprovalMode controls the destructive-command approval gate on
+	// execute-command: "auto" (default) never asks, "ask-destructive" sends
+	// an MCP elicitation to the human before running a command classified as
+	// destructive. When the client does not support elicitation the command
+	// still runs (fail-open) with an advisory note in the result.
+	ApprovalMode string `json:"approvalMode,omitempty"`
+	// ApprovalPatterns are extra regexes that mark a command as destructive,
+	// extending the built-in classifier. Anchored matching is not implied;
+	// write patterns accordingly.
+	ApprovalPatterns []string `json:"approvalPatterns,omitempty"`
+	// ApprovalExemptPatterns are regexes that suppress the destructive
+	// classification for a connection: matching commands run without asking
+	// even when the built-in or extra patterns would flag them. Use to keep
+	// routine mutating commands prompt-free without going full "auto".
+	ApprovalExemptPatterns []string `json:"approvalExemptPatterns,omitempty"`
 }
 
 // Algorithms mirrors the ssh2 algorithms option of the reference
@@ -265,6 +290,24 @@ func (c *SSHConfig) Normalize() error {
 	}
 	if c.SocksProxy != "" && !strings.HasPrefix(c.SocksProxy, "socks://") && !strings.HasPrefix(c.SocksProxy, "socks5://") {
 		return fmt.Errorf("the legacy 'socksProxy' option only supports socks:// or socks5:// URLs")
+	}
+	if c.ApprovalMode == "" {
+		c.ApprovalMode = ApprovalModeAuto
+	}
+	if c.ApprovalMode != ApprovalModeAuto && c.ApprovalMode != ApprovalModeAskDestructive {
+		return fmt.Errorf("approvalMode must be 'auto' or 'ask-destructive', got: %s", c.ApprovalMode)
+	}
+	// Compile user approval patterns once here so a bad regex fails at load
+	// with the field name, not at classification time on every command.
+	for field, pats := range map[string][]string{
+		"approvalPatterns":       c.ApprovalPatterns,
+		"approvalExemptPatterns": c.ApprovalExemptPatterns,
+	} {
+		for _, p := range pats {
+			if _, err := regexp.Compile(p); err != nil {
+				return fmt.Errorf("%s: invalid regex %q: %w", field, p, err)
+			}
+		}
 	}
 	if c.PrivateKey != "" {
 		c.PrivateKey = ExpandHome(c.PrivateKey)
