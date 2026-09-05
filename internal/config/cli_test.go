@@ -72,7 +72,7 @@ func TestParseArgsConfigFile(t *testing.T) {
 		t.Fatalf("expected 2 configs, got %d", len(opts.Configs))
 	}
 	dev := opts.Configs["dev"]
-	if dev.CommandLogSize != 20 || !dev.CommandLogOnlySuccess || dev.SftpConcurrency != 8 {
+	if *dev.CommandLogSize != 20 || !dev.CommandLogOnlySuccess || dev.SftpConcurrency != 8 {
 		t.Fatalf("unexpected dev config: %+v", dev)
 	}
 	prod := opts.Configs["prod"]
@@ -119,7 +119,7 @@ func TestParseArgsCommandLogDefaults(t *testing.T) {
 		t.Fatalf("ParseArgs failed: %v", err)
 	}
 	conf := opts.Configs["default"]
-	if conf.CommandLogSize != 50 || conf.CommandLogDir != "logs" || !conf.CommandLogOnlySuccess {
+	if *conf.CommandLogSize != 50 || conf.CommandLogDir != "logs" || !conf.CommandLogOnlySuccess {
 		t.Fatalf("unexpected command log config: %+v", conf)
 	}
 }
@@ -426,5 +426,34 @@ func TestRedactSecretsDefaultOff(t *testing.T) {
 	conf.RedactSecrets = &yes
 	if !conf.GetRedactSecrets() {
 		t.Fatal("explicit redactSecrets=true must be kept")
+	}
+}
+
+func TestCommandLogSizeDefaultOn(t *testing.T) {
+	conf := &SSHConfig{Host: "h", Username: "u"}
+	if err := conf.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if conf.CommandLogSize == nil || *conf.CommandLogSize != DefaultCommandLogSize {
+		t.Fatalf("unset commandLogSize must default to %d, got: %v", DefaultCommandLogSize, conf.CommandLogSize)
+	}
+}
+
+func TestCommandLogSizeExplicitZeroDisables(t *testing.T) {
+	zero := 0
+	conf := &SSHConfig{Host: "h", Username: "u", CommandLogSize: &zero}
+	if err := conf.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if conf.CommandLogSize == nil || *conf.CommandLogSize != 0 {
+		t.Fatalf("explicit commandLogSize=0 must stay 0 (disabled), got: %v", conf.CommandLogSize)
+	}
+}
+
+func TestCommandLogSizeNegativeRejected(t *testing.T) {
+	neg := -1
+	conf := &SSHConfig{Host: "h", Username: "u", CommandLogSize: &neg}
+	if err := conf.Normalize(); err == nil {
+		t.Fatal("negative commandLogSize must be rejected")
 	}
 }

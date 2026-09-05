@@ -95,6 +95,9 @@ type ServerInfo struct {
 	Username    string        `json:"username"`
 	Connected   bool          `json:"connected"`
 	Status      *ServerStatus `json:"status,omitempty"`
+	// RecentCommands holds the last few recorded commands (without output)
+	// so an agent calling list-servers can resume context across sessions.
+	RecentCommands []CommandLogEntry `json:"recentCommands,omitempty"`
 }
 
 type connectState struct {
@@ -164,13 +167,13 @@ func New(configs map[string]*config.SSHConfig, defaultLogDir string) (*Manager, 
 		}
 		m.whitelist[name] = whitelist
 		m.blacklist[name] = blacklist
-		if cfg.CommandLogSize > 0 {
+		if cfg.CommandLogSize != nil && *cfg.CommandLogSize > 0 {
 			logDir := cfg.CommandLogDir
 			if logDir == "" {
 				logDir = defaultLogDir
 			}
 			if logDir != "" {
-				log, err := NewCommandLog(logDir, name, cfg.CommandLogSize, cfg.CommandLogOnlySuccess)
+				log, err := NewCommandLog(logDir, name, *cfg.CommandLogSize, cfg.CommandLogOnlySuccess)
 				if err != nil {
 					return nil, fmt.Errorf("failed to create command log for '%s': %w", name, err)
 				}
@@ -458,6 +461,13 @@ func (m *Manager) DisconnectAll() {
 }
 
 // GetAllServerInfos returns the summary for every configured connection.
+// recentCommandsInList is how many recent commands list-servers surfaces per
+// connection: enough to resume context after a session boundary without
+// bloating every inventory call.
+const recentCommandsInList = 3
+
+// GetAllServerInfos returns a snapshot of every configured connection,
+// including the last few recorded commands when the command log is enabled.
 func (m *Manager) GetAllServerInfos() []ServerInfo {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -465,16 +475,17 @@ func (m *Manager) GetAllServerInfos() []ServerInfo {
 	for name, cfg := range m.configs {
 		aliases := append([]string(nil), cfg.Aliases...)
 		infos = append(infos, ServerInfo{
-			Name:        name,
-			Aliases:     aliases,
-			Description: cfg.Description,
-			Business:    cfg.Business,
-			Notes:       cfg.Notes,
-			Host:        cfg.Host,
-			Port:        cfg.Port,
-			Username:    cfg.Username,
-			Connected:   m.connected[name],
-			Status:      m.statuses[name],
+			Name:           name,
+			Aliases:        aliases,
+			Description:    cfg.Description,
+			Business:       cfg.Business,
+			Notes:          cfg.Notes,
+			Host:           cfg.Host,
+			Port:           cfg.Port,
+			Username:       cfg.Username,
+			Connected:      m.connected[name],
+			Status:         m.statuses[name],
+			RecentCommands: m.commandLogs[name].Recent(recentCommandsInList),
 		})
 	}
 	sort.Slice(infos, func(i, j int) bool { return infos[i].Name < infos[j].Name })
@@ -550,6 +561,19 @@ func (m *Manager) RecordCommand(name, command string, exitCode int, success bool
 			Success:   success,
 		})
 	}
+}
+
+// RecentCommands returns the last n recorded commands for a connection, or
+// nil when the command log is disabled for it.
+func (m *Manager) RecentCommands(name string, n int) []CommandLogEntry {
+	key := m.resolveName(name)
+	m.mu.Lock()
+	log := m.commandLogs[key]
+	m.mu.Unlock()
+	if log == nil {
+		return nil
+	}
+	return log.Recent(n)
 }
 
 // --- path validation ---

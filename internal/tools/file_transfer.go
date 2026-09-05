@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -64,7 +65,28 @@ func registerFileTransfer(s *server.MCPServer, m *manager.Manager) {
 // transferResultJSON renders the transfer outcome as prose plus the full
 // structured TransferResult (bytes/elapsed/speed/skipped/resumed/checksum/
 // files/failed), so agents can read fields instead of parsing text.
+// elapsedSeconds converts the raw duration to seconds rounded to 3 decimals,
+// keeping millisecond precision for short transfers.
+func elapsedSeconds(d time.Duration) float64 {
+	return math.Round(d.Seconds()*1000) / 1000
+}
+
+// formatSeconds renders seconds compactly for the prose line: 0.02s, 1.23s,
+// 12.3s, 123s — always with the unit, no Go-style "1m2s" composites.
+func formatSeconds(s float64) string {
+	switch {
+	case s < 10:
+		return fmt.Sprintf("%.2fs", s)
+	case s < 100:
+		return fmt.Sprintf("%.1fs", s)
+	default:
+		return fmt.Sprintf("%.0fs", s)
+	}
+}
+
 func transferResultJSON(result *manager.TransferResult) *mcp.CallToolResult {
+	result.ElapsedS = elapsedSeconds(result.Elapsed)
+	result.SpeedBps = math.Round(result.SpeedBps)
 	var text string
 	switch {
 	case result.Skipped:
@@ -73,8 +95,14 @@ func transferResultJSON(result *manager.TransferResult) *mcp.CallToolResult {
 	case result.Files > 0:
 		text = fmt.Sprintf("%s completed: %s -> %s\n%d files, %d bytes in %s (%.2f MB/s, %.1f%%)",
 			result.Action, result.LocalPath, result.RemotePath, result.Files,
-			result.Bytes, result.Elapsed.Round(time.Millisecond),
+			result.Bytes, formatSeconds(result.ElapsedS),
 			result.SpeedBps/1024/1024, result.Percent)
+		if result.SkippedFiles > 0 {
+			text += fmt.Sprintf(", %d skipped (deduplicated)", result.SkippedFiles)
+		}
+		if result.ResumedFiles > 0 {
+			text += fmt.Sprintf(", %d resumed", result.ResumedFiles)
+		}
 		if len(result.Failed) > 0 {
 			text += fmt.Sprintf("\n%d failed:\n  %s", len(result.Failed), strings.Join(result.Failed, "\n  "))
 		}
@@ -82,14 +110,14 @@ func transferResultJSON(result *manager.TransferResult) *mcp.CallToolResult {
 		text = fmt.Sprintf(
 			"%s resumed from %d bytes: %s -> %s\n%d bytes transferred in %s (%.2f MB/s, %.1f%%)",
 			result.Action, result.ResumedFrom, result.LocalPath, result.RemotePath,
-			result.Bytes, result.Elapsed.Round(time.Millisecond),
+			result.Bytes, formatSeconds(result.ElapsedS),
 			result.SpeedBps/1024/1024, result.Percent,
 		)
 	default:
 		text = fmt.Sprintf(
 			"%s completed: %s -> %s\n%d bytes in %s (%.2f MB/s, %.1f%%)",
 			result.Action, result.LocalPath, result.RemotePath,
-			result.Bytes, result.Elapsed.Round(time.Millisecond),
+			result.Bytes, formatSeconds(result.ElapsedS),
 			result.SpeedBps/1024/1024, result.Percent,
 		)
 	}

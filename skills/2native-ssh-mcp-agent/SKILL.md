@@ -82,6 +82,13 @@ session(action=close, sessionName=logs)
 - Foreground `timeout` must exceed the real runtime (default `commandTimeoutMs=30000`). On timeout the remote process group is killed by PID, so nothing is left running remotely.
 - exec runs **without a PTY by default**; interactive commands need `"pty": true` (connection config) or the `pty` tool parameter.
 
+## Operational traps (verified on real hosts)
+
+- **Same-batch tool calls run concurrently — no ordering guarantee.** The server processes requests in parallel: a `list-servers` or `execute-command` issued in the same batch as a `file-transfer` may run *before* the transfer lands. Any sequence with dependencies (upload → verify → restart) must be **separate sequential tool calls**, waiting for each result.
+- **`pgrep -f` matches the invoking shell's own argv.** `pgrep -f runme` sees the SSH exec shell carrying that literal string and reports the check itself as a hit. Use the bracket trick `pgrep -f "[r]unme"` or `pgrep -x sleep` for exact process names.
+- **sudo over exec has no TTY.** Password prompts fail fast (~1s) with `sudo: a terminal is required...` — pipe the password via `sudo -S` (never a CLI argument), or set `"pty": true` for commands that insist on a terminal (e.g. some `systemctl` policy setups).
+- **Overwriting a running binary is safe.** Single-file uploads use remote `<target>.part` + rename, so in-place "Text file busy" never happens: the running process keeps the old inode, the disk gets the new version. Verify with the result's `checksumStatus: "verified"` sha256.
+
 ## Production checklist
 
 - [ ] Read server `notes` and `business` from list-servers

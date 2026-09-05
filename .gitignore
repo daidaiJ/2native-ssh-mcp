@@ -25,3 +25,7 @@ plan/README.md
 
 # Spilled command output
 .ssh-mcp-out/
+
+# Command logs (default dir)
+.ssh-mcp-logs/
+.codegraph/

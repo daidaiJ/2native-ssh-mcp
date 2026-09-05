@@ -25,7 +25,8 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 - **Light compress** (default): outputs ≥ `outputCompressThreshold` (4096 B) get head/tail lines + dedup; disable with `"outputCompressLight": false`. See `skills/2native-ssh-mcp-agent` for agent-side habits.
 - **ANSI stripped by default**: colors/progress escapes are removed from all output (exec, shell, background reads); disable per connection with `"stripAnsi": false`.
 - Connections **lazy**; after command kept alive per keepAlive policy, idle expiry closes. `keepAlive: false` closes immediately.
-- Executed commands appended to connection's command log file (if configured) — **without output**.
+- 每条执行的命令都会追加到连接的命令日志文件（默认保留最近 20 条；`list-servers` 展示每连接最近 3 条）——**不含输出**。
+- **同批次的工具调用是并发执行的——没有顺序保证。** 有依赖关系的操作（上传 → 验证 → 重启）必须拆成多次顺序调用。详见 `skills/2native-ssh-mcp-agent` 的 "Operational traps" 一节（pgrep 自匹配、sudo 无 TTY、覆盖运行中的二进制）。
 
 ### file-transfer
 One tool, `action` param. Progress via `notifications/progress` when client sends `_meta.progressToken` (throttled ~100 ms, final 100% always).
@@ -44,7 +45,7 @@ One tool, `action` param. Progress via `notifications/progress` when client send
 - Local path outside the `localPathMode` scope → `LOCAL_PATH_NOT_ALLOWED` with a scope message ("not within the allowed local paths for this connection"); a `..` escape is reported separately as "Path traversal rejected".
 
 ### list-servers
-No args. Returns **servers** (metadata, status) and **active sessions**. Call first to pick `connectionName` or `sessionName`. **readOnly**.
+无参数。返回**服务器**（元数据、状态、最近几条已记录命令）与**活动会话**。先调它来选 `connectionName` 或 `sessionName`——最近命令历史也有助于从上一个会话恢复上下文。**readOnly**。
 
 ### session
 One tool, `action` param. Exec-mode connections only.

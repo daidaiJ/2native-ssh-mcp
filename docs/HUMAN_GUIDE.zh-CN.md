@@ -310,8 +310,8 @@ Server options:
 | `commandWhitelist` / `commandBlacklist` | 空 | 命令正则白/黑名单 |
 | `allowedLocalPaths` / `allowedRemotePaths` | 空 | 文件传输路径白名单 |
 | `localPathMode` | `cwd` | 本地路径限制：`cwd`（进程工作目录 + `allowedLocalPaths`）/ `list`（仅 `allowedLocalPaths`）/ `any`（不限制） |
-| `commandLogSize` | 0（关闭） | 命令日志保留条数 |
-| `commandLogDir` | 空 | 命令日志目录（`<dir>/<连接名>.log`） |
+| `commandLogSize` | 20 | 命令日志保留条数（0 关闭） |
+| `commandLogDir` | `.ssh-mcp-logs` | 命令日志目录（`<dir>/<连接名>.log`） |
 | `commandLogOnlySuccess` | false | 只记录成功命令 |
 | `sftpConcurrency` / `sftpChunkSize` | 16 / 32768 | SFTP 并发数与分块大小 |
 | `algorithms` | 空 | kex/cipher/serverHostKey/hmac 协商 |
@@ -339,7 +339,7 @@ Server options:
 
 ## 命令日志（远程执行记录，保留最后 N 条）
 
-远程执行命令的日志条数可配置：设置 `commandLogSize`（>0）后，每个连接执行过的命令会追加写入 `<commandLogDir>/<连接名>.log`，JSON 行格式，只保留最近 N 条，重启不丢失：
+命令日志默认开启（每连接保留 20 条，`"commandLogSize": 0` 关闭）。每个连接执行过的命令会追加写入 `<commandLogDir>/<连接名>.log`，JSON 行格式，只保留最近 N 条，重启不丢失：
 
 ```json
 {"timestamp":"2026-08-22T10:00:00+08:00","command":"ls -la /tmp","exitCode":0,"success":true}

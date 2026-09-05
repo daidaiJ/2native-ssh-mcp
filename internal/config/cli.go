@@ -279,8 +279,9 @@ func ParseArgs(args []string) (*Options, error) {
 	// Apply the global command log defaults to connections that did not
 	// configure their own.
 	for _, conf := range opts.Configs {
-		if conf.CommandLogSize == 0 && commandLogSize > 0 {
-			conf.CommandLogSize = commandLogSize
+		if conf.CommandLogSize == nil && commandLogSize > 0 {
+			v := commandLogSize
+			conf.CommandLogSize = &v
 		}
 		if conf.CommandLogDir == "" && commandLogDir != "" {
 			conf.CommandLogDir = commandLogDir
@@ -460,6 +461,13 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 		}
 		conf.CommandLogOnlySuccess = b
 	}
+	if v, ok := m["commandLogSize"]; ok && v != nil && v != "" {
+		n, err := ParseInt(v, "commandLogSize")
+		if err != nil {
+			return nil, err
+		}
+		conf.CommandLogSize = &n
+	}
 	if v, ok := m["outputCompressLight"]; ok {
 		b, err := ParseBool(v)
 		if err != nil {
@@ -493,7 +501,6 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 		"outputSpillThreshold":    &conf.OutputSpillThreshold,
 		"keepaliveIntervalMs":     &conf.KeepaliveIntervalMs,
 		"keepaliveCountMax":       &conf.KeepaliveCountMax,
-		"commandLogSize":          &conf.CommandLogSize,
 		"sftpConcurrency":         &conf.SftpConcurrency,
 		"sftpChunkSize":           &conf.SftpChunkSize,
 	}

@@ -20,10 +20,14 @@ const (
 	DefaultMaxOutputBytes      = 10 * 1024 * 1024
 	DefaultKeepaliveIntervalMs = 10000
 	DefaultKeepaliveCountMax   = 3
-	DefaultCommandLogSize      = 0
-	DefaultHTTPAddr            = "127.0.0.1:8338"
-	DefaultSftpConcurrency     = 16
-	DefaultSftpChunkSize       = 32 * 1024
+	DefaultCommandLogSize      = 20
+	// DefaultCommandLogDir is the local directory for per-connection command
+	// logs, relative to the process working directory so a workspace agent
+	// can Grep it.
+	DefaultCommandLogDir   = ".ssh-mcp-logs"
+	DefaultHTTPAddr        = "127.0.0.1:8338"
+	DefaultSftpConcurrency = 16
+	DefaultSftpChunkSize   = 32 * 1024
 	// DefaultOutputSpillThreshold is the combined stdout+stderr size above
 	// which command output is spilled to a local file (one or two terminal
 	// screens of a normal command; below it, light compression still applies
@@ -110,13 +114,14 @@ type SSHConfig struct {
 	// Default is false: even with a cheap anchor pre-scan, redacting output
 	// that actually contains secrets costs ~200ms per MiB (regex passes), so
 	// it is opt-in for connections whose commands print credentials.
-	RedactSecrets *bool `json:"redactSecrets,omitempty"`
+	RedactSecrets       *bool  `json:"redactSecrets,omitempty"`
 	KeepaliveIntervalMs int    `json:"keepaliveIntervalMs,omitempty"`
 	KeepaliveCountMax   int    `json:"keepaliveCountMax,omitempty"`
 	CommandTemplate     string `json:"commandTemplate,omitempty"`
 	// CommandLogSize is how many recent commands to keep in the per-connection
-	// command log file (0 disables the log).
-	CommandLogSize int `json:"commandLogSize,omitempty"`
+	// command log file. Unset keeps DefaultCommandLogSize entries; an explicit
+	// 0 disables the log.
+	CommandLogSize *int `json:"commandLogSize,omitempty"`
 	// CommandLogDir overrides the global command log directory for this
 	// connection. The log file is <dir>/<name>.log.
 	CommandLogDir string `json:"commandLogDir,omitempty"`
@@ -196,8 +201,14 @@ func (c *SSHConfig) Normalize() error {
 	if c.KeepaliveCountMax <= 0 {
 		c.KeepaliveCountMax = DefaultKeepaliveCountMax
 	}
-	if c.CommandLogSize < 0 {
-		return fmt.Errorf("commandLogSize must be a non-negative integer, got: %d", c.CommandLogSize)
+	if c.CommandLogSize == nil {
+		v := DefaultCommandLogSize
+		c.CommandLogSize = &v
+	} else if *c.CommandLogSize < 0 {
+		return fmt.Errorf("commandLogSize must be a non-negative integer, got: %d", *c.CommandLogSize)
+	}
+	if c.CommandLogDir == "" {
+		c.CommandLogDir = DefaultCommandLogDir
 	}
 	if c.SftpConcurrency == 0 {
 		c.SftpConcurrency = DefaultSftpConcurrency

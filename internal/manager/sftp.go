@@ -42,7 +42,7 @@ type TransferResult struct {
 	LocalPath  string        `json:"localPath"`
 	RemotePath string        `json:"remotePath"`
 	Bytes      int64         `json:"bytes"`
-	Elapsed    time.Duration `json:"elapsedMs"`
+	Elapsed    time.Duration `json:"-"`
 	SpeedBps   float64       `json:"speedBps"`
 	Percent    float64       `json:"percent"`
 	// Skipped is true when the destination already matches the source
@@ -57,6 +57,14 @@ type TransferResult struct {
 	// no sha256sum). Directory transfers leave both empty.
 	Checksum       string `json:"checksum,omitempty"`
 	ChecksumStatus string `json:"checksumStatus,omitempty"`
+	// ElapsedS is the wall time in seconds (rounded to 3 decimals) — a
+	// universal unit that agents read without conversion. The raw duration
+	// stays available in-process via Elapsed.
+	ElapsedS float64 `json:"elapsedS"`
+	// Directory aggregates: how many per-file entries were deduplicated or
+	// resumed. Zero (omitted) means every file was freshly transferred.
+	SkippedFiles int `json:"skippedFiles,omitempty"`
+	ResumedFiles int `json:"resumedFiles,omitempty"`
 	// Files is the transferred file count in directory mode; Failed lists
 	// per-file errors as "<rel path>: <error>".
 	Files  int      `json:"files,omitempty"`
@@ -272,6 +280,7 @@ func (m *Manager) uploadDirectory(ctx context.Context, sftpClient *sftp.Client, 
 
 	var done, transferred int64
 	var failed []string
+	var skippedFiles, resumedFiles int
 	for _, t := range tasks {
 		if err := sftpClient.MkdirAll(posixDir(t.remote)); err != nil {
 			failed = append(failed, fmt.Sprintf("%s: create remote directory: %v", t.rel, err))
@@ -283,19 +292,27 @@ func (m *Manager) uploadDirectory(ctx context.Context, sftpClient *sftp.Client, 
 			continue
 		}
 		transferred += up.Bytes
+		if up.Skipped {
+			skippedFiles++
+		}
+		if up.Resumed {
+			resumedFiles++
+		}
 		done += t.size
 	}
 
 	elapsed := time.Since(start)
 	res := &TransferResult{
-		Action:     "upload",
-		LocalPath:  localRoot,
-		RemotePath: remoteRoot,
-		Bytes:      transferred,
-		Elapsed:    elapsed,
-		SpeedBps:   speed(transferred, elapsed),
-		Percent:    percent(done, total),
-		Files:      len(tasks) - len(failed),
+		Action:       "upload",
+		LocalPath:    localRoot,
+		RemotePath:   remoteRoot,
+		Bytes:        transferred,
+		Elapsed:      elapsed,
+		SpeedBps:     speed(transferred, elapsed),
+		Percent:      percent(done, total),
+		Files:        len(tasks) - len(failed),
+		SkippedFiles: skippedFiles,
+		ResumedFiles: resumedFiles,
 	}
 	if len(failed) > 0 {
 		res.Failed = failed
@@ -348,6 +365,7 @@ func (m *Manager) downloadDirectory(ctx context.Context, sftpClient *sftp.Client
 
 	var done, transferred int64
 	var failed []string
+	var skippedFiles, resumedFiles int
 	for _, t := range tasks {
 		if err := os.MkdirAll(filepath.Dir(t.local), 0o755); err != nil {
 			failed = append(failed, fmt.Sprintf("%s: create local directory: %v", t.rel, err))
@@ -359,19 +377,27 @@ func (m *Manager) downloadDirectory(ctx context.Context, sftpClient *sftp.Client
 			continue
 		}
 		transferred += down.Bytes
+		if down.Skipped {
+			skippedFiles++
+		}
+		if down.Resumed {
+			resumedFiles++
+		}
 		done += t.size
 	}
 
 	elapsed := time.Since(start)
 	res := &TransferResult{
-		Action:     "download",
-		LocalPath:  localRoot,
-		RemotePath: remoteRoot,
-		Bytes:      transferred,
-		Elapsed:    elapsed,
-		SpeedBps:   speed(transferred, elapsed),
-		Percent:    percent(done, total),
-		Files:      len(tasks) - len(failed),
+		Action:       "download",
+		LocalPath:    localRoot,
+		RemotePath:   remoteRoot,
+		Bytes:        transferred,
+		Elapsed:      elapsed,
+		SpeedBps:     speed(transferred, elapsed),
+		Percent:      percent(done, total),
+		Files:        len(tasks) - len(failed),
+		SkippedFiles: skippedFiles,
+		ResumedFiles: resumedFiles,
 	}
 	if len(failed) > 0 {
 		res.Failed = failed

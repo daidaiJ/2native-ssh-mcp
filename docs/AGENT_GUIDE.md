@@ -25,7 +25,8 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 - **Light compress** (default): outputs ≥ `outputCompressThreshold` (4096 B) get head/tail lines + dedup; disable with `"outputCompressLight": false`. See `skills/2native-ssh-mcp-agent` for agent-side habits.
 - **ANSI stripped by default**: colors/progress escapes are removed from all output (exec, shell, background reads); disable per connection with `"stripAnsi": false`.
 - Connections **lazy**; after command kept alive per keepAlive policy, idle expiry closes. `keepAlive: false` closes immediately.
-- Executed commands appended to connection's command log file (if configured) — **without output**.
+- Executed commands appended to connection's command log file (default: last 20; `list-servers` shows the last 3 per connection) — **without output**.
+- **Same-batch tool calls run concurrently — no ordering guarantee.** Dependent operations (upload → verify → restart) must be separate sequential tool calls. See `skills/2native-ssh-mcp-agent` → "Operational traps" (pgrep self-match, sudo without TTY, overwriting running binaries).
 
 ### file-transfer
 One tool, `action` param. Progress via `notifications/progress` when client sends `_meta.progressToken` (throttled ~100 ms, final 100% always).
@@ -44,7 +45,7 @@ One tool, `action` param. Progress via `notifications/progress` when client send
 - Local path outside the `localPathMode` scope → `LOCAL_PATH_NOT_ALLOWED` with a scope message ("not within the allowed local paths for this connection"); a `..` escape is reported separately as "Path traversal rejected".
 
 ### list-servers
-No args. Returns **servers** (metadata, status) and **active sessions**. Call first to pick `connectionName` or `sessionName`. **readOnly**.
+No args. Returns **servers** (metadata, status, last few recorded commands) and **active sessions**. Call first to pick `connectionName` or `sessionName` — the recent-command history also helps resume context from a previous session. **readOnly**.
 
 ### session
 One tool, `action` param. Exec-mode connections only.

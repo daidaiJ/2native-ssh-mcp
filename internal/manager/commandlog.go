@@ -75,6 +75,25 @@ func (cl *CommandLog) Add(e CommandLogEntry) {
 	cl.flush()
 }
 
+// Recent returns a copy of the last n entries (oldest first). Safe on a nil
+// log (disabled) and concurrently with Add.
+func (cl *CommandLog) Recent(n int) []CommandLogEntry {
+	if cl == nil {
+		return nil
+	}
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	if n <= 0 || len(cl.items) == 0 {
+		return nil
+	}
+	if n > len(cl.items) {
+		n = len(cl.items)
+	}
+	out := make([]CommandLogEntry, n)
+	copy(out, cl.items[len(cl.items)-n:])
+	return out
+}
+
 // flush atomically rewrites the log file.
 func (cl *CommandLog) flush() {
 	tmp := cl.path + ".tmp"

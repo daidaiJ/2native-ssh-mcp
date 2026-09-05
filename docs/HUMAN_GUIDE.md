@@ -225,7 +225,7 @@ Notes:
 
 ### list-servers
 
-Lists all connections and active sessions: server metadata, connection status, system summary + current session list.
+Lists all connections and active sessions: server metadata, connection status, system summary, the last 3 recorded commands per connection, + current session list.
 
 ### session
 
@@ -310,8 +310,8 @@ Server options:
 | `commandWhitelist` / `commandBlacklist` | empty | Regex whitelist/blacklist for commands |
 | `allowedLocalPaths` / `allowedRemotePaths` | empty | Path whitelist for file transfers |
 | `localPathMode` | `cwd` | Local path restriction: `cwd` (process working directory + `allowedLocalPaths`) / `list` (only `allowedLocalPaths`) / `any` (unrestricted) |
-| `commandLogSize` | 0 (disabled) | Number of command logs to retain |
-| `commandLogDir` | empty | Command log directory (`<dir>/<connection-name>.log`) |
+| `commandLogSize` | 20 | Number of command logs to retain (0 disables) |
+| `commandLogDir` | `.ssh-mcp-logs` | Command log directory (`<dir>/<connection-name>.log`) |
 | `commandLogOnlySuccess` | false | Only log successful commands |
 | `sftpConcurrency` / `sftpChunkSize` | 16 / 32768 | SFTP concurrency and chunk size |
 | `algorithms` | empty | kex/cipher/serverHostKey/hmac negotiation |
@@ -339,7 +339,7 @@ Server options:
 
 ## Command Logging (remote execution history, keeps last N entries)
 
-The number of remote command execution logs can be configured: after setting `commandLogSize` (>0), executed commands for each connection are appended to `<commandLogDir>/<connection-name>.log` in JSON lines format, keeping only the most recent N entries, and persists across restarts:
+Command logging is enabled by default, keeping 20 entries per connection (disable with `"commandLogSize": 0`). Executed commands are appended to `<commandLogDir>/<connection-name>.log` in JSON lines format, keeping only the most recent N entries, and persists across restarts:
 
 ```json
 {"timestamp":"2026-08-22T10:00:00+08:00","command":"ls -la /tmp","exitCode":0,"success":true}
