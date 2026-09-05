@@ -7,10 +7,15 @@ import (
 	"testing"
 )
 
-// writeApprovalConfig writes a config file and returns its path.
+// writeApprovalConfig writes a config file and returns its path. The temp
+// directory is chmod 0700 so CheckConfigFilePermissions accepts it on Unix.
 func writeApprovalConfig(t *testing.T, content string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "config.json")
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.json")
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
