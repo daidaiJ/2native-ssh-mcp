@@ -6,7 +6,6 @@
 [![Release](https://img.shields.io/github/v/release/daidaiJ/2native-ssh-mcp)](https://github.com/daidaiJ/2native-ssh-mcp/releases/latest)
 [![Go](https://img.shields.io/github/go-mod/go-version/daidaiJ/2native-ssh-mcp)](go.mod)
 [![License](https://img.shields.io/github/license/daidaiJ/2native-ssh-mcp)](LICENSE)
-[![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/daidaiJ/2native-ssh-mcp)](https://scorecard.dev/viewer/?uri=github.com/daidaiJ/2native-ssh-mcp)
 [![SLSA](https://img.shields.io/badge/SLSA-provenance-brightgreen)](https://github.com/daidaiJ/2native-ssh-mcp/attestations)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-555)](https://registry.modelcontextprotocol.io/v0.1/servers?search=2native-ssh-mcp)
 
@@ -122,7 +121,6 @@ curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=2native-ssh-m
 │   ├── HUMAN_GUIDE.md             # 👤 Human guide (readable)
 │   └── HUMAN_GUIDE.zh-CN.md       # 👤 中文版 Human guide
 ├── .github/workflows/ci.yml       # push/PR → ubuntu-latest go test -race ./...
-├── .github/workflows/scorecard.yml # weekly OpenSSF Scorecard (badge on README)
 ├── .github/workflows/release.yml  # tag push → 6-platform build + Release; "-registry" tag → publish to MCP Registry
 ├── plan/                          # Design specifications (HARDENING.md, etc., git-ignored)
 ├── todo/                          # Implementation task list T01–T10 (git-ignored)
