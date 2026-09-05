@@ -1,11 +1,13 @@
 module 2native-ssh-mcp
 
-go 1.25.5
+go 1.26.0
+
+toolchain go1.26.8
 
 require (
 	github.com/mark3labs/mcp-go v0.58.0
 	github.com/pkg/sftp v1.13.11
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 	golang.org/x/net v0.58.0
 	golang.org/x/sys v0.47.0
 )
