@@ -1,16 +1,16 @@
-> [中文版](HUMAN_GUIDE.zh-CN.md)
+> [English](HUMAN_GUIDE.en.md)
 
-# HUMAN_GUIDE — Configuration and Deployment Guide (Human-Readable Version)
+# HUMAN_GUIDE — 配置与部署指南（人类阅读版）
 
-This guide is intended for **human users** and provides detailed instructions on configuring, deploying, and using 2native-ssh-mcp. For the token-optimized version for AI Agents, see [AGENT_GUIDE.md](AGENT_GUIDE.md).
+本指南面向**人类用户**，详细讲解 2native-ssh-mcp 的配置、部署与使用。给 AI Agent 看的省 token 版见 [AGENT_GUIDE.md](AGENT_GUIDE.md)。
 
-## Security Configuration (Important)
+## 安全配置（重要）
 
-**Do NOT hardcode server addresses and passwords in your MCP client configuration parameters** — command-line arguments are visible in the process list, and MCP configurations are often shared or committed to repositories. We recommend one of the following three approaches (choose one):
+**不要把服务器地址和密码写进 MCP 客户端的配置参数里**——命令行参数在进程列表里可见，MCP 配置也容易被分享或提交到仓库。推荐以下三种方式（任选其一）：
 
-### Method 1: Configuration File + Environment Variable Reference (Recommended)
+### 方式一：配置文件 + 环境变量引用（推荐）
 
-Reference credentials using `${environment-variable-name}` in your configuration file, so passwords never touch disk:
+配置文件里用 `${环境变量名}` 引用凭据，密码不落盘：
 
 ```json
 {
@@ -24,11 +24,11 @@ Reference credentials using `${environment-variable-name}` in your configuration
 ```
 
 ```bash
-# Set environment variable (Windows: setx SSH_MCP_PASSWORD xxx)
-export SSH_MCP_PASSWORD='your-password'
+# 设置环境变量（Windows: setx SSH_MCP_PASSWORD xxx）
+export SSH_MCP_PASSWORD='你的密码'
 ```
 
-Only the configuration file path appears in your MCP client configuration:
+MCP 客户端配置里只出现配置文件路径：
 
 ```json
 {
@@ -41,13 +41,13 @@ Only the configuration file path appears in your MCP client configuration:
 }
 ```
 
-### Method 2: Configuration File + File Permission Locking
+### 方式二：配置文件 + 文件权限锁定
 
-Write the password in plaintext in `config.json`, but tighten file permissions (Linux/macOS: `chmod 600 config.json`; Windows: Right-click → Properties → Security → Allow only your user). The MCP configuration still only specifies `--config-file`.
+密码明文写在 `config.json` 里，但收紧文件权限（Linux/macOS：`chmod 600 config.json`；Windows：右键属性 → 安全 → 仅当前用户），MCP 配置同样只写 `--config-file`。
 
-### Method 3: Reuse `~/.ssh/config` Aliases
+### 方式三：复用 ~/.ssh/config 别名
 
-Keep all credentials in your existing SSH configuration/agent, leaving the MCP configuration completely free of sensitive information:
+凭据全部放在你已有的 SSH 配置/agent 里，MCP 配置零敏感信息：
 
 ```json
 {
@@ -60,13 +60,13 @@ Keep all credentials in your existing SSH configuration/agent, leaving the MCP c
 }
 ```
 
-> If you still pass credentials via `--password`/`--privateKey`, the program will print a security warning to stderr.
+> 如果仍通过 `--password`/`--privateKey` 传凭据，程序会在 stderr 打印安全警告。
 
-## Quick Start
+## 快速开始
 
-### stdio Mode (Directly launched by MCP client)
+### stdio 模式（MCP 客户端直接拉起）
 
-After preparing `config.json` using one of the secure configuration methods above:
+按上面的安全配置方式准备好 `config.json` 后：
 
 ```json
 {
@@ -79,25 +79,25 @@ After preparing `config.json` using one of the secure configuration methods abov
 }
 ```
 
-### HTTP Persistent Daemon
+### HTTP 常驻服务
 
 ```bash
-# Start (reference count +1; if already running, just +1)
+# 启动（引用计数 +1；已运行则直接 +1）
 2native-ssh-mcp.exe start --config-file config.json --http-addr 127.0.0.1:8338
 
-# Check status / Stop (exits only when reference count reaches zero) / Force stop
+# 查看状态 / 停止（引用计数归零才退出）/ 强制停止
 2native-ssh-mcp.exe status
 2native-ssh-mcp.exe stop
 2native-ssh-mcp.exe kill
 
-# Windows auto-start on boot (generates config.json template + shortcut in Startup folder)
+# Windows 开机自启（生成 config.json 模板 + 启动文件夹快捷方式）
 2native-ssh-mcp.exe install
 2native-ssh-mcp.exe uninstall
 ```
 
-**Reference Counting and Leases**: The first `start` creates an owner (lives as long as the daemon process, never expires); additional `start` commands create **guest leases** that are automatically reclaimed (count -1) after 15 minutes of idleness with no `/mcp` requests. Any authenticated `/mcp` request (regardless of client/credentials or MCP layer success) **refreshes the expiration time of ALL** guest leases — as long as the daemon is still in use, no guest will be reclaimed. `stop` decrements a guest first, and only decrements the owner if there are no guests left; the daemon exits when the count reaches zero. The daemon process itself never exits due to idleness (owner never expires). `kill` / Ctrl-C shuts down immediately, ignoring reference count.
+**引用计数与租约**：第一个 `start` 是 owner（与 daemon 进程同寿，永不过期）；额外的 `start` 是 **guest 租约**，空闲 **15 分钟**没有 `/mcp` 请求就会被回收（计数自动 -1）。任何通过鉴权的 `/mcp` 请求（无论来自哪个客户端/凭证、无论 MCP 层是否成功）都会**刷新全部** guest 租约的到期时间——只要 daemon 还在被用，任何 guest 都不会掉。`stop` 优先减一个 guest，没有 guest 才减 owner；计数归零 daemon 退出。daemon 进程本身不会因空闲退出（owner 不过期）。`kill` / Ctrl-C 直接关，不看计数。
 
-MCP client configuration:
+MCP 客户端配置：
 
 ```json
 {
@@ -109,7 +109,7 @@ MCP client configuration:
 }
 ```
 
-**/mcp Authentication (token)**: When listening on a loopback address (default `127.0.0.1`), no token is required, and local clients work with zero configuration. When listening on a non-loopback address (e.g., `0.0.0.0`), a token is **required**, otherwise startup will be rejected (fail closed). Token is sourced in priority order: `--http-token` → environment variable `SSH_MCP_HTTP_TOKEN` → configuration file `$global.httpToken` (supports `${VAR}` expansion). When using a token, add the request header on the client side:
+**/mcp 鉴权（token）**：监听地址是 loopback（默认 `127.0.0.1`）时不需要 token，本机客户端零配置。监听非 loopback 地址（如 `0.0.0.0`）时**必须**配置 token，否则拒绝启动（fail closed）。token 来源按优先级：`--http-token` → 环境变量 `SSH_MCP_HTTP_TOKEN` → 配置文件 `$global.httpToken`（支持 `${VAR}` 展开）。带 token 时客户端加请求头：
 
 ```json
 {
@@ -122,9 +122,9 @@ MCP client configuration:
 }
 ```
 
-Admin API (`/__admin/*`) does not use this token and still restricts access to localhost only (loopback source + loopback `Host` header); `/__admin/shutdown` additionally requires **POST + `Content-Type: application/json`** to prevent accidental shutdown via GET from a local webpage.
+Admin API（`/__admin/*`）不用这个 token，仍只限本机访问（loopback 来源 + loopback `Host` 头）；`/__admin/shutdown` 额外要求 **POST + `Content-Type: application/json`**，防止本地网页用 GET 触发关停。
 
-### Multiple Server Configuration (config.json)
+### 多服务器配置（config.json）
 
 ```json
 {
@@ -133,10 +133,10 @@ Admin API (`/__admin/*`) does not use this token and still restricts access to l
   },
   "dev": {
     "host": "10.0.0.1", "port": 22, "username": "root", "password": "${SSH_MCP_PASSWORD}",
-    "description": "Development jump host",
-    "business": "Order/Payment integration testing",
+    "description": "开发环境跳板机",
+    "business": "订单/支付联调",
     "aliases": ["dev-box", "开发"],
-    "notes": "Read-only mostly; avoid heavy queries during peak hours",
+    "notes": "只读为主；高峰期勿跑重查询",
     "commandWhitelist": ["^ls ", "^cat ", "^df "],
     "commandBlacklist": ["^rm -rf"],
     "allowedRemotePaths": ["/tmp", "/home"],
@@ -152,18 +152,18 @@ Admin API (`/__admin/*`) does not use this token and still restricts access to l
 }
 ```
 
-`$global` is a reserved top-level key (only supported for object format, not array format) and holds settings that apply to the entire configuration file:
+`$global` 是保留的顶层键（对象格式专属，数组格式不支持），存放作用于整个配置文件的设置：
 
-| Configuration | Default | Description |
+| 配置 | 默认 | 说明 |
 |---|---|---|
-| `allowInsecureConfigPerms` | false | Skip permission checks for this configuration file (equivalent to `--allow-insecure-config-perms` on the command line, but declared inside the file; not recommended, for development only) |
-| `httpToken` | empty | Bearer token for `/mcp` (lower priority than `--http-token` and `SSH_MCP_HTTP_TOKEN`; supports `${VAR}` references) |
+| `allowInsecureConfigPerms` | false | 跳过本配置文件的权限检查（等价于命令行 `--allow-insecure-config-perms`，但声明在文件内部；不推荐，仅开发用） |
+| `httpToken` | 空 | `/mcp` 的 Bearer token（优先级低于 `--http-token` 和 `SSH_MCP_HTTP_TOKEN`；支持 `${VAR}` 引用） |
 
-## Connecting to local WSL
+## 连接本地 WSL
 
-This project has **no** separate `wsl` transport mode. Treat WSL as a normal Linux SSH target: MCP runs on Windows, sshd runs inside the distro, and you connect to `127.0.0.1` with a key. Do not launch this process via `"command": "wsl"` in the MCP config (`wsl.exe` non-interactive startups skip the login shell and mix in the Windows PATH).
+本项目**没有**单独的 `wsl` 传输模式。把 WSL 当普通 Linux SSH 目标即可：MCP 跑在 Windows 上，发行版里开 sshd，用密钥连 `127.0.0.1`。不要用 MCP 配置里的 `"command": "wsl"` 把本进程塞进发行版（`wsl.exe` 非交互启动不读 login shell，还会混进 Windows PATH）。
 
-After enabling and starting sshd in the distro, a sample config:
+发行版内启用并启动 sshd 后，配置示例：
 
 ```json
 {
@@ -174,204 +174,207 @@ After enabling and starting sshd in the distro, a sample config:
     "privateKey": "~/.ssh/id_ed25519",
     "hostKeyCheck": "accept-new",
     "pty": false,
-    "description": "Local WSL",
+    "description": "本机 WSL",
     "allowedRemotePaths": ["/home", "/tmp"]
   }
 }
 ```
 
-Notes:
+注意：
 
-- **Port**: if Windows OpenSSH Server already binds port 22, put WSL sshd on another port (e.g. 2222). Under mirrored networking, Windows and WSL **cannot each listen on the same port**; inbound LAN access to WSL also needs a Hyper-V firewall allow rule.
-- **localhost**: Windows → WSL localhost forwarding works on most machines. Under default NAT, **`127.0.0.1` inside WSL is not the Windows loopback**. An MCP HTTP daemon bound to Windows `127.0.0.1:8338` is unreachable from a client inside WSL, and vice versa. For cross-side access use mirrored networking (`networkingMode=mirrored` in `.wslconfig`, and `hostAddressLoopback=true` if needed), or bind the daemon to an address the other side can route to and set `--http-token`.
-- **Paths**: `file-transfer` `localPath` is a path on **the OS running the MCP process**. On Windows use `D:\\proj\\a.tar`, not `/mnt/c/...` or `\\\\wsl$\\Ubuntu\\...`. `remotePath` remains a POSIX path inside the distro (e.g. `/home/you/a.tar`).
-- **Where files live**: SFTP onto Linux `/home` (ext4) is the fast path. Do not put build trees on `/mnt/c`, and do not scan the whole tree from Windows via `\\\\wsl$\\` (9P cross-filesystem I/O is slow).
-- **PTY**: for docker/npm/builds on WSL, set `"pty": false` on that connection (same as other Linux targets).
+- **端口**：Windows 若已开启 OpenSSH Server（占用 22），WSL sshd 换端口（如 2222）。mirrored networking 下 Windows 与 WSL **不能各听同一端口**；从局域网进 WSL 还要加 Hyper-V 防火墙入站规则。
+- **localhost**：Windows → WSL 的 localhost 转发在多数机器上可用。默认 NAT 下，**WSL 里的 `127.0.0.1` 不是 Windows 的 loopback**。MCP HTTP daemon 若绑在 Windows 的 `127.0.0.1:8338`，WSL 内的客户端打不通；反过来也一样。需要跨侧访问时用 mirrored networking（`.wslconfig` 里 `networkingMode=mirrored`，必要时 `hostAddressLoopback=true`），或把 daemon 绑在对方能路由到的地址并配 `--http-token`。
+- **路径**：`file-transfer` 的 `localPath` 是 **MCP 进程所在 OS** 的路径。Windows 上跑就用 `D:\\proj\\a.tar`，不要传 `/mnt/c/...` 或 `\\\\wsl$\\Ubuntu\\...`。`remotePath` 仍是发行版内的 POSIX 路径（如 `/home/you/a.tar`）。
+- **文件放哪**：SFTP 落到 Linux 的 `/home`（ext4）是快路径。不要把构建目录放在 `/mnt/c`，也不要从 Windows 经 `\\\\wsl$\\` 扫整棵树（9P 跨文件系统，I/O 很慢）。
+- **PTY**：WSL 上跑 docker/npm/构建时建议该连接 `"pty": false`（与其它 Linux 目标相同）。
 
-## Tool Documentation
+## 工具说明
 
 ### execute-command
 
-| Parameter | Required | Description |
+| 参数 | 必填 | 说明 |
 |---|---|---|
-| `cmdString` | ✅ | The command to execute |
-| `directory` | | Working directory |
-| `connectionName` | | Connection name or alias from list-servers |
-| `timeout` | | Timeout in milliseconds, default 30000; on timeout the remote process group is killed by PID |
-| `pty` | | Allocate a pseudo-terminal, default `false` (enable for interactive commands; with `background=true`, wraps the job in `script` when the program requires a TTY) |
-| `background` | | When `true`, the command is moved to a background session and immediately returns `sessionName`/`logPath`; poll with `session read` (use this for minute-scale jobs instead of raising timeout) |
-| `keepAlive` | | Whether to keep the connection alive after execution, default `true` (named sessions ignore `false`) |
-| `keepAliveDuration` | | Keep-alive duration in milliseconds, default 600000 (10 minutes) |
+| `cmdString` | ✅ | 要执行的命令 |
+| `directory` | | 工作目录 |
+| `connectionName` | | 连接名或 list-servers 中的别名 |
+| `timeout` | | 超时（毫秒），默认 30000；超时后按远端 PID 杀掉进程组 |
+| `pty` | | 分配伪终端，默认 `false`（交互命令按需开启；`background=true` 时用 `script` 包裹后台任务） |
+| `background` | | `true` 时命令转入后台会话立即返回 `sessionName`/`logPath`，用 `session read` 轮询（分钟级任务用它，别调大 timeout） |
+| `keepAlive` | | 执行后是否保活连接，默认 `true`（named session 忽略 `false`） |
+| `keepAliveDuration` | | 保活时长（毫秒），默认 600000（10 分钟） |
 
 ### file-transfer
 
-| Parameter | Required | Description |
+| 参数 | 必填 | 说明 |
 |---|---|---|
-| `action` | ✅ | `upload` or `download` |
-| `localPath` | ✅ | Local path (restricted by `localPathMode`, defaults to cwd + `allowedLocalPaths`) |
-| `remotePath` | ✅ | Remote absolute path (must be within `allowedRemotePaths` if configured) |
-| `connectionName` | | Connection name or alias from list-servers |
-| `force` | | Skip deduplication/resumption and force full transfer |
+| `action` | ✅ | `upload` 或 `download` |
+| `localPath` | ✅ | 本地路径（受 `localPathMode` 限制，默认 cwd + `allowedLocalPaths`） |
+| `remotePath` | ✅ | 远端绝对路径（配置了 `allowedRemotePaths` 时须在其内） |
+| `connectionName` | | 连接名或 list-servers 中的别名 |
+| `force` | | 跳过去重/续传，强制全量传输 |
 
-- When `localPath`/`remotePath` is a **directory**, the whole tree is transferred recursively (remote parent dirs are created automatically; empty dirs are not recreated); each file uses atomic upload / dedup / resume; a single-file failure is collected in `failed` without aborting the batch; the result includes a `files` count; directory mode does not compute an overall sha256
-- After a single-file transfer, both ends check sha256: match is `verified`; missing remote `sha256sum` is `unverified` (not a failure); mismatch is a hard error suggesting `force` retry
-- Progress notifications go only to the client that started the request (HTTP multi-client no longer cross-talks); throttled to ~100ms, always reports 100% on completion
-- If target file matches source in size and mtime → skipped (deduplication)
-- Uploads **land atomically**: write same-dir `<target>.part`, posix-rename over the target after a byte-count check; failure does not touch an existing target, and `<target>.part` is kept for resume (if the server lacks posix-rename and the target already exists, the error asks you to `mv` manually)
-- If remote `<target>.part` already exists and the header matches → resume from breakpoint (a failed concurrent write truncates back to the confirmed prefix and keeps the part); downloads use a temporary file + atomic rename
-- Directory destinations are rejected before transfer (`IsDir` errors early)
-- If source file grows during transfer → automatically appends the tail
-- If local path is not within allowed range (determined by `localPathMode`) → `LOCAL_PATH_NOT_ALLOWED` with message "not within the allowed local paths for this connection"; path traversal attempts containing `..` are rejected with "Path traversal rejected" 
+- `localPath`/`remotePath` 是**目录**时递归传输整棵树（自动建远端父目录，空目录不重建）；逐文件走原子上传/去重/续传，单文件失败收集进 `failed` 不中断整批，结果带 `files` 计数；目录模式不做整体 sha256
+- 单文件传输完成后 sha256 双端校验：一致标 `verified`，远端无 `sha256sum` 标 `unverified`（不算失败），mismatch 硬报错提示 `force` 重传
+- 进度通知只发给发起请求的客户端（HTTP 多客户端不再互相串扰）；约 100ms 节流，结束必报 100%
+- 目标文件与源文件大小、mtime 一致 → 直接跳过（去重）
+- 上传**原子落盘**：先写同目录 `<目标>.part`，字节数校验通过后 posix-rename 替换目标；失败不触碰已有目标，`<目标>.part` 保留供续传（服务端不支持 posix-rename 且目标已存在时报错提示手动 mv）
+- 远端已有 `<目标>.part` 且头部匹配 → 从断点续传（并发写失败会截回已确认前缀再保留）；下载走临时文件 + 原子改名
+- 传输前即拒绝目录目标（`IsDir` 提前报错）
+- 传输中源文件继续增长 → 自动补传尾部
+- 本地路径不在允许范围内（`localPathMode` 决定范围）→ `LOCAL_PATH_NOT_ALLOWED`，提示「not within the allowed local paths for this connection」；含 `..` 的路径逃逸单独报「Path traversal rejected」
 
 ### list-servers
 
-Lists all connections and active sessions: server metadata, connection status, system summary, the last 3 recorded commands per connection, + current session list.
+列出所有连接及活动会话：服务器元数据、连接状态、系统摘要 + 当前 session 列表。
 
 ### session
 
-`action` parameter: `open` | `read` | `close` | `list` (exec mode only).
+`action` 参数：`open` | `read` | `close` | `list`（仅 exec 模式）。
 
-| action | Description |
+| action | 说明 |
 |---|---|
-| `open` | Open a session; `background=true` + `cmdString` starts a background task (`pty=true` wraps the job in a TTY) |
-| `read` | Poll output from a background session (`offset` omitted/negative = continue reading, `0` = reread from beginning; `waitMs` blocks up to 30s for data or job exit when there is no new output) |
-| `close` | Close the session and stop the background process (**idempotent**, can be called repeatedly) |
-| `list` | List all sessions (optionally filtered by `connectionName`) |
+| `open` | 打开会话；`background=true` + `cmdString` 启动后台任务（`pty=true` 为后台任务包一层 TTY） |
+| `read` | 轮询后台会话输出（`offset` 省略/负值=续读，`0`=从头重读；`waitMs` 无新输出时最多阻塞 30s 等数据或作业结束） |
+| `close` | 关闭会话并停止后台进程（**幂等**，可重复调用） |
+| `list` | 列出所有会话（可选 `connectionName` 过滤） |
 
 ### execute-command
 
-Adds an optional `sessionName` parameter: executes in an already opened named session (CWD is preserved), `connectionName` is ignored in this case.
+增加可选 `sessionName`：在已打开的命名会话中执行（CWD 保持），此时忽略 `connectionName`。
 
-**Background tasks**: `session open` → multiple `session read` → `session close`
+**后台任务：** `session open` → 多次 `session read` → `session close`
 
-**Stateful operations**: `session open` → multiple `execute-command` (with sessionName) → `session close`
+**有状态操作：** `session open` → 多次 `execute-command`（带 sessionName）→ `session close`
 
-**For long-running / silent tasks, use `execute-command` with `background: true`** (creates a `bg-*` session and returns `sessionName`/`logPath`), **or `session background=true` + `cmdString`; poll with `read` (`waitMs` blocks for new output — do not busy-loop). Do not run `nohup ... &` or `setsid` via a foreground `execute-command`** — those die when the exec channel closes. Background tasks start in an independent channel without a PTY (new session, detached from sshd process group), **survives connection interruptions**: after disconnection, the session shows `disconnected=true` in `list-servers`, and `read` or `execute-command` with `sessionName` will automatically reconnect; only `action=close` will kill the remote background process.
+**长任务 / 无输出任务：用 `execute-command` 带 `background: true`（自动建 `bg-*` 会话并返回 `sessionName`/`logPath`），或 `session background=true` + `cmdString`；用 `read` 轮询（`waitMs` 阻塞等新输出，别空转）。不要在前台 `execute-command` 里跑 `nohup ... &` 或 `setsid`**——后者会随 exec 通道关闭而消亡。后台任务以无 PTY 的独立通道启动（新会话、脱离 sshd 进程组），**连接闪断后仍然存活**：断连后 `list-servers` 里会话显示 `disconnected=true`，`read` 或带 `sessionName` 的 `execute-command` 会自动重连；只有 `action=close` 才会杀掉远端后台进程。
 
-**After a background job finishes, the session is still retained** (includes remote logs, 60-minute retention TTL), you must call `close` to release resources; `close` can be called repeatedly. `read` can use `offset=0` to reread from the beginning; the returned JSON includes `logPath` (remote log path) and `exitCode` (after job completion). Sessions only exist in memory: they are lost when the stdio process exits (remote logs still remain at `logPath` and can be read separately), only the persistent HTTP daemon can retain sessions across conversations. Repeating `open background=true` on an already finished session will be rejected with the `logPath` hint — close it first or read the old logs. **When the connection is unavailable, `close` cannot confirm the remote job has stopped**: the session remains in the list marked `orphaned=true` (`background` remains true), returns a retriable error, and you can just `close` it again once connectivity is restored. Background log/pid/exit file paths include a one-time random suffix (`/tmp/.2native-ssh-mcp-<session-name>-<id>.log`, etc.), and the `logPath` field always provides the actual path.
+**后台作业结束后会话仍然保留**（含远端日志，60 分钟 retain TTL），必须 `close` 才释放；`close` 可重复调用。`read` 可带 `offset=0` 从头重读；返回 JSON 带 `logPath`（远端日志路径）和 `exitCode`（作业结束后）。会话只存在内存中：stdio 进程退出即丢失（远端日志仍在 `logPath`，可另行读取），常驻 HTTP daemon 才能跨对话保留。对已结束的会话重复 `open background=true` 会被拒绝并提示 `logPath`——先 `close` 或先读旧日志。**连接不可用时 `close` 无法确认远端作业已停**：会话会留在列表里并标记 `orphaned=true`（`background` 仍为 true），报可重试错误，等连接恢复后再 `close` 一次即可。后台日志/pid/exit 文件路径带一次性随机后缀（`/tmp/.2native-ssh-mcp-<会话名>-<id>.log` 等），`logPath` 字段始终给出实际路径。
 
-**Command result notes**:
-- Non-zero exit codes are **normal results** (not errors): successful results are JSON — look at `exitCode` / `status` (`ok`/`exited`) / `stdout` / `stderr`; only validation failures, connection failures, timeouts, output limits exceeded, and connection interruptions are reported as error JSON (`code`/`message`/`retriable` plus partial `stdout`/`stderr`)
-- Connection interruptions report `SSH_CONNECTION_LOST` (`retriable=false`), the remote process may still be running, **do not blindly retry**; the error JSON includes partial `stdout`/`stderr` and `replaySafe: false`
-- The `timeout` for foreground commands must be greater than the actual execution time (the default `commandTimeoutMs=30000` still applies); on timeout the remote process group is killed by PID (channel Signal is only a fallback), so timed-out commands do not leak remote processes
-- Output ≥8KB (`outputSpillThreshold`, `-1` to disable) spills the full output to local `.ssh-mcp-out/` (`outputSpillDir` configurable, keeps the newest 32, Unix 0600); the result carries only a notice + short preview; Agent should Grep/Read that local file, not re-run the command remotely
-- exec **does not allocate a PTY by default** (avoids docker/npm treating the session as interactive); enable it with connection `"pty": true` or the `execute-command` `pty` parameter
+**命令结果说明：**
+- 非 0 退出码是**正常结果**（不是错误）：成功结果是 JSON，看 `exitCode` / `status`（`ok`/`exited`）/ `stdout` / `stderr` 字段；只有校验失败、连不上、超时、输出超限、连接中断才报错误 JSON（带 `code`/`message`/`retriable` + 部分 `stdout`/`stderr`）
+- 连接中断报 `SSH_CONNECTION_LOST`（`retriable=false`），远端进程可能还在跑，**不要盲目重放**；错误 JSON 里带部分 `stdout`/`stderr` 和 `replaySafe: false`
+- 前台命令的 `timeout` 必须大于真实耗时（默认 `commandTimeoutMs=30000` 仍然生效）；超时后会按远端 PID 杀掉整个进程组（channel Signal 仅作补充），不会留下远端泄漏进程
+- 输出 ≥8KB（`outputSpillThreshold`，`-1` 关闭）会把完整输出落到本地 `.ssh-mcp-out/`（`outputSpillDir` 可改，保留最近 32 个，Unix 0600），结果只带通知+短预览；Agent 应该 Grep/Read 本地文件，不要远程重跑同一命令
+- exec 默认**不分配 PTY**（避免 docker/npm 等误以为有交互终端）；交互命令用连接配置 `"pty": true` 或 `execute-command` 的 `pty` 参数显式开启
 
-**Agent Skill Installation**: You can copy [`skills/2native-ssh-mcp-helper/SKILL.md`](../skills/2native-ssh-mcp-helper/SKILL.md) from this repository to `.cursor/skills/` and then ask "help me configure 2native-ssh-mcp".
+**Agent 安装 Skill**：仓库内 [`skills/2native-ssh-mcp-helper/SKILL.md`](../skills/2native-ssh-mcp-helper/SKILL.md) 可复制到 `.cursor/skills/` 后说「帮我配置 2native-ssh-mcp」。
 
-## Command-Line Arguments
+## 命令行参数
 
 ```
 2native-ssh-mcp [command] [options] [host port username password]
 
 Commands:
-  (none)      stdio mode (default, launched by MCP client)
-  start       Start HTTP daemon (reference counted)
-  stop        Stop (reference count -1, exits when zero)
-  kill        Force stop
-  status      Show status
-  install     Install Windows auto-start on boot
-  uninstall   Uninstall auto-start
-  version     Show version
-  help        Show help
+  (none)      stdio 模式（默认，供 MCP 客户端拉起）
+  start       启动 HTTP daemon（引用计数管理）
+  stop        停止（引用计数 -1，归零退出）
+  kill        强制停止
+  status      查看状态
+  install     安装 Windows 开机自启
+  uninstall   卸载开机自启
+  version     版本号
+  help        帮助
 
 Connection options:
-  --config-file <path>             Load server configuration from JSON file
-  --ssh-config-file <path>         Read SSH config aliases (default ~/.ssh/config)
-  --ssh <config>                   Append a configuration (JSON or key=value, repeatable)
+  --config-file <path>             从 JSON 文件加载服务器配置
+  --ssh-config-file <path>         读取 SSH config 别名（默认 ~/.ssh/config）
+  --ssh <config>                   追加一个配置（JSON 或 key=value，可重复）
   -h, --host / -p, --port / -u, --username / -w, --password
   -k, --privateKey / -P, --passphrase / -a, --agent
   -W, --whitelist / -B, --blacklist
   --proxy <url> / -s, --socksProxy <url>
   --allowed-local-paths / --allowed-remote-paths
-  --local-path-mode <cwd|list|any>  Local path restriction: cwd (default)/ list / any
+  --local-path-mode <cwd|list|any>  本地路径限制：cwd（默认）/ list / any
   --transport-mode <exec|shell>
   --command-template <template>
   --pty / --try-keyboard
   --command-log-size <n> / --command-log-dir <dir> / --command-log-only-success
-  --pre-connect                     Pre-connect all servers before startup (fail-fast if any fails)
+  --pre-connect                     启动前预连接所有服务器（任一失败即退出，fail-fast）
 
-  --allow-insecure-config-perms    Skip configuration file permission checks (not recommended, development only; can also be declared in $global of config file)
+  --allow-insecure-config-perms    跳过配置文件权限检查（不推荐，仅开发用；也可在配置文件的 $global 里声明）
 
 Server options:
-  --transport <stdio|http>         Default stdio; start implies http
-  --http-addr <host:port>          Default 127.0.0.1:8338
-  --http-token <token>             Bearer token for /mcp (required for non-loopback listening; also available via SSH_MCP_HTTP_TOKEN or $global.httpToken)
+  --transport <stdio|http>         默认 stdio；start 隐含 http
+  --http-addr <host:port>          默认 127.0.0.1:8338
+  --http-token <token>             /mcp 的 Bearer token（非 loopback 监听必填；也可用 SSH_MCP_HTTP_TOKEN 或 $global.httpToken）
   --version, -v / --help
 ```
 
-## Configuration Reference
+## 配置项速查
 
-| Configuration | Default | Description |
+| 配置 | 默认 | 说明 |
 |---|---|---|
-| `$global.allowInsecureConfigPerms` | false | Skip configuration file permission checks (equivalent to `--allow-insecure-config-perms`, development only) |
-| `description` / `business` / `aliases` / `notes` | empty | Metadata for list-servers: purpose, business area, aliases, notes |
-| `transportMode` | `exec` | `shell` is for jump host scenarios; **requires a remote POSIX `sh`-compatible interactive shell** (depends on `PS1`, `stty`, `printf`, `export`), for csh/tcsh/fish jump hosts use `exec` + `commandTemplate` |
-| `commandWhitelist` / `commandBlacklist` | empty | Regex whitelist/blacklist for commands |
-| `allowedLocalPaths` / `allowedRemotePaths` | empty | Path whitelist for file transfers |
-| `localPathMode` | `cwd` | Local path restriction: `cwd` (process working directory + `allowedLocalPaths`) / `list` (only `allowedLocalPaths`) / `any` (unrestricted) |
-| `commandLogSize` | 20 | Number of command logs to retain (0 disables) |
-| `commandLogDir` | `.ssh-mcp-logs` | Command log directory (`<dir>/<connection-name>.log`) |
-| `commandLogOnlySuccess` | false | Only log successful commands |
-| `sftpConcurrency` / `sftpChunkSize` | 16 / 32768 | SFTP concurrency and chunk size |
-| `algorithms` | empty | kex/cipher/serverHostKey/hmac negotiation |
-| `hostKeyCheck` | `accept-new` | Host key verification: `accept-new` (accept after unknown record) / `strict` (reject unknown) / `none` (no verification); automatically creates `known_hosts` file and its directory (e.g., `~/.ssh`) if they don't exist |
-| `knownHostsFile` | `~/.ssh/known_hosts` | known_hosts file for host key verification |
-| `keepaliveIntervalMs` / `keepaliveCountMax` | 10000 / 3 | SSH keepalive |
-| `commandTimeoutMs` / `connectionTimeoutMs` / `sftpTimeoutMs` | 30000 / 30000 / 300000 | Various timeouts (`sftpTimeoutMs` is a no-progress timeout; each progress refresh restarts the timer) |
-| `maxOutputBytes` | 10485760 | Maximum combined stdout+stderr output per single command, 0 means unlimited |
-| `outputCompressLight` / `outputCompressThreshold` | true / 4096 | Compress large output at head/tail and threshold |
-| `outputSpillThreshold` / `outputSpillDir` | 8192 / `.ssh-mcp-out` | Spill output to a local directory at this threshold (`-1` disables) |
-| `stripAnsi` | true | Strip ANSI escape sequences from output (false preserves colors/progress bars) |
-| `commandTemplate` | empty | Command wrapper template (`<command>` / `<quotedCommand>`) |
-| `pty` | false | Allocate a pseudo-terminal in exec mode (off by default; enable for interactive commands) |
-| `redactSecrets` | false | Output redaction (password/token/Bearer/PEM); enabling has scan cost |
-| `tryKeyboard` | false | Keyboard-interactive authentication (2FA code via environment variable `SSH_MCP_2FA_CODE`) |
+| `$global.allowInsecureConfigPerms` | false | 跳过本配置文件权限检查（等价 `--allow-insecure-config-perms`，仅开发用） |
+| `description` / `business` / `aliases` / `notes` | 空 | 给 list-servers 展示的元数据：用途、业务、别名、注意事项 |
+| `transportMode` | `exec` | `shell` 用于堡垒机/跳板机场景；**要求远端是 POSIX `sh` 兼容的交互式 shell**（依赖 `PS1`、`stty`、`printf`、`export`），csh/tcsh/fish 堡垒机请用 `exec` + `commandTemplate` |
+| `commandWhitelist` / `commandBlacklist` | 空 | 命令正则白/黑名单 |
+| `approvalMode` | `auto` | `ask-destructive`：execute-command 执行破坏性命令前弹 MCP elicitation 征询人类确认（拒绝则不执行）；客户端不支持弹窗时照常执行并在结果附提示（fail-open） |
+| `approvalPatterns` / `approvalExemptPatterns` | 空 | 用户追加"要问"的破坏性 regex / 用户豁免"不问"的 regex（优先级最高）；支持 `$global` 全局默认，连接级覆盖 |
+| `allowedLocalPaths` / `allowedRemotePaths` | 空 | 文件传输路径白名单 |
+| `localPathMode` | `cwd` | 本地路径限制：`cwd`（进程工作目录 + `allowedLocalPaths`）/ `list`（仅 `allowedLocalPaths`）/ `any`（不限制） |
+| `commandLogSize` | 20 | 命令日志保留条数（0 关闭） |
+| `commandLogDir` | `.ssh-mcp-logs` | 命令日志目录（`<dir>/<连接名>.log`） |
+| `commandLogOnlySuccess` | false | 只记录成功命令 |
+| `sftpConcurrency` / `sftpChunkSize` | 16 / 32768 | SFTP 并发数与分块大小 |
+| `algorithms` | 空 | kex/cipher/serverHostKey/hmac 协商 |
+| `hostKeyCheck` | `accept-new` | 主机密钥校验：`accept-new`（未知记录后接受）/ `strict`（未知拒绝）/ `none`（不校验）；`known_hosts` 文件及其目录（如 `~/.ssh`）不存在时自动创建 |
+| `knownHostsFile` | `~/.ssh/known_hosts` | 主机密钥校验用的 known_hosts 文件 |
+| `keepaliveIntervalMs` / `keepaliveCountMax` | 10000 / 3 | SSH 心跳 |
+| `commandTimeoutMs` / `connectionTimeoutMs` / `sftpTimeoutMs` | 30000 / 30000 / 300000 | 各类超时（`sftpTimeoutMs` 为无进展超时，进度每刷新一次就重新计时） |
+| `maxOutputBytes` | 10485760 | 单命令 stdout+stderr 合计输出上限，0 为不限 |
+| `outputCompressLight` / `outputCompressThreshold` | true / 4096 | 大输出头尾压缩与阈值 |
+| `outputSpillThreshold` / `outputSpillDir` | 8192 / `.ssh-mcp-out` | 输出达到阈值落盘到本地目录（`-1` 关闭） |
+| `stripAnsi` | true | 输出剥离 ANSI 转义序列（false 保留颜色/进度条） |
+| `commandTemplate` | 空 | 命令包装模板（`<command>` / `<quotedCommand>`） |
+| `pty` | false | exec 模式分配伪终端（默认关闭，交互命令按需开启） |
+| `redactSecrets` | false | 输出脱敏（password/token/Bearer/PEM），开启有扫描开销 |
+| `tryKeyboard` | false | 键盘交互认证（2FA 码用环境变量 `SSH_MCP_2FA_CODE`） |
 
-> Strings in the configuration file support `${environment-variable-name}` references, so credentials can be stored in environment variables without touching disk.
+> 配置文件中的字符串支持 `${环境变量名}` 引用，凭据可放在环境变量里而不落盘。
 
-## Authentication Methods
+## 认证方式
 
-- Password: `password`
-- Private Key: `privateKey` (may have `passphrase`, or use environment variable `SSH_MCP_PASSPHRASE`)
-- ssh-agent: `agent` (Unix socket path; on Windows use `pageant` for Pageant)
-- Keyboard-interactive: `tryKeyboard: true`, password prompt uses configured password, OTP prompt uses `SSH_MCP_2FA_CODE`
+- 密码：`password`
+- 私钥：`privateKey`（可带 `passphrase`，或环境变量 `SSH_MCP_PASSPHRASE`）
+- ssh-agent：`agent`（Unix socket 路径；Windows 填 `pageant` 使用 Pageant）
+- 键盘交互：`tryKeyboard: true`，密码提示用配置的密码，OTP 提示用 `SSH_MCP_2FA_CODE`
 
-## Command Logging (remote execution history, keeps last N entries)
+## 命令日志（远程执行记录，保留最后 N 条）
 
-Command logging is enabled by default, keeping 20 entries per connection (disable with `"commandLogSize": 0`). Executed commands are appended to `<commandLogDir>/<connection-name>.log` in JSON lines format, keeping only the most recent N entries, and persists across restarts:
+命令日志默认开启（每连接保留 20 条，`"commandLogSize": 0` 关闭）。每个连接执行过的命令会追加写入 `<commandLogDir>/<连接名>.log`，JSON 行格式，只保留最近 N 条，重启不丢失：
 
 ```json
 {"timestamp":"2026-08-22T10:00:00+08:00","command":"ls -la /tmp","exitCode":0,"success":true}
 ```
 
-- Global defaults: `--command-log-size <n>` / `--command-log-dir <dir>` (applies to connections without individual configuration)
-- Per-connection override: `commandLogSize` / `commandLogDir` / `commandLogOnlySuccess`
-- Use `commandLogOnlySuccess: true` to only log successful commands, avoiding noise from probe commands
+- 全局默认：`--command-log-size <n>` / `--command-log-dir <dir>`（对未单独配置的连接生效）
+- 单连接覆盖：`commandLogSize` / `commandLogDir` / `commandLogOnlySuccess`
+- 配合 `commandLogOnlySuccess: true` 可只记录成功命令，避免探测类命令产生噪声
 
-## Security
+## 安全
 
-- On startup, checks `--config-file` permissions (Unix: `chmod 600` for file / `chmod 700` for directory; Windows: restricts ACL modification permissions), can be skipped with `--allow-insecure-config-perms` or `$global.allowInsecureConfigPerms: true` in the configuration file (not recommended, development only)
-- Output redaction is off by default (`redactSecrets: true` enables it per connection): Bearer tokens, PEM private key blocks, `password=`/`token=` patterns, etc.; when on, spilled files also contain redacted content
-- On timeout or output limit exceeded, sends SIGTERM/SIGKILL to the remote process group by PID (exec; channel Signal is only a fallback) or Ctrl-C (shell/session)
-- MCP tools are annotated with `readOnlyHint` / `destructiveHint`, allowing clients to restrict dangerous operations accordingly
+- 启动时检查 `--config-file` 权限（Unix：`chmod 600` 文件 / `chmod 700` 目录；Windows：限制 ACL 修改权限），可用 `--allow-insecure-config-perms` 或配置文件内 `$global.allowInsecureConfigPerms: true` 跳过（不推荐，仅开发用）
+- 输出脱敏默认关闭（`redactSecrets: true` 按连接开启）：Bearer token、PEM 私钥块、`password=`/`token=` 等；开启后落盘的 spill 文件也是脱敏后的内容
+- 超时或输出超限时按远端 PID 向进程组发送 SIGTERM/SIGKILL（exec；channel Signal 仅作补充）或 Ctrl-C（shell/会话）
+- MCP 工具标注 `readOnlyHint` / `destructiveHint`，客户端可据此限制危险操作
+- 可选的破坏性命令审批闸门：`approvalMode: "ask-destructive"`（按连接或 `$global`），内置分类器判定 rm/重启/格式化等破坏性命令，执行前经 MCP elicitation 弹窗征询；`approvalPatterns` 追加你认为危险的、`approvalExemptPatterns` 豁免你认为安全的——灰色地带完全由用户决定，没有不可覆盖的内置黑名单
 
-See [SECURITY.md](../SECURITY.md) for details.
+详见 [SECURITY.md](../SECURITY.md)。
 
-## Automatic Release Publishing
+## 自动发布 Release
 
-Pushing a **tag with a message** triggers GitHub Actions (`.github/workflows/release.yml`):
+推送**带消息的 tag** 即触发 GitHub Actions（`.github/workflows/release.yml`）：
 
 ```bash
-git tag -a v1.0.1 -m "Fixed xxx issue"
+git tag -a v1.0.1 -m "修复了 xxx"
 git push origin v1.0.1
 ```
 
-The workflow will:
-1. Cross-compile binaries for 6 platforms: Windows / Linux / macOS × amd64 / arm64 (`CGO_ENABLED=0`, version number injected as the tag name)
-2. Generate an independent `.sha256` checksum file for each binary
-3. Create a GitHub Release with **release notes = tag message** (reads the annotated tag object via GitHub API, avoids the issue where lightweight tags on runners fall back to commit messages), with all binaries, checksums, `.mcpb` bundles, and one CycloneDX SBOM (`2native-ssh-mcp.cdx.json`) attached
-4. Publish SLSA provenance and SBOM attestations to the repo Attestations tab. Verify a downloaded file with:
+工作流会：
+1. 交叉编译 6 个平台二进制：Windows / Linux / macOS × amd64 / arm64（`CGO_ENABLED=0`，版本号注入为 tag 名）
+2. 每个二进制生成独立的 `.sha256` 校验和文件
+3. 创建 GitHub Release，**日志内容 = tag 的 message**（通过 GitHub API 读取 annotated tag 对象，避免 runner 本地 lightweight tag 回退成 commit message 的问题），附件为全部二进制 + 校验和 + `.mcpb` + 一份 CycloneDX SBOM（`2native-ssh-mcp.cdx.json`）
+4. 把 SLSA provenance 和 SBOM 证明发到仓库 Attestations 页。校验下载的文件：
 
 ```bash
 gh attestation verify --repo daidaiJ/2native-ssh-mcp 2native-ssh-mcp-linux-amd64

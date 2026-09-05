@@ -10,6 +10,7 @@
 
 - Keeps SSH credentials in local config / env / agent — never in MCP tool arguments exposed to the model
 - Validates commands against per-connection whitelist/blacklist regexes
+- Gates destructive commands behind human approval via MCP elicitation (`approvalMode: "ask-destructive"`, off by default)
 - Restricts file-transfer paths via `allowedLocalPaths` / `allowedRemotePaths` (local scope per connection: `localPathMode` — `cwd` default, `list`, or `any`)
 - Redacts common secret patterns (Bearer tokens, PEM blocks, `password=`/`token=` lines) from command output before returning to the client
 - Checks config file permissions at startup (Unix: mode `0600` file / `0700` dir; Windows: ACL modify access)
@@ -19,8 +20,8 @@
 
 **What this server does not do:**
 
-- Human-in-the-loop approval for destructive commands
-- Command tiering (read-only vs destructive) beyond whitelist/blacklist
+- Guarantee that the approval classifier catches every destructive command — classification is best-effort, and the gate **fails open** when the client cannot prompt (see below)
+- A full command-tier policy engine (read-only/safe/destructive/privileged × roles × host groups)
 - Guarantee that redaction catches every secret format
 
 ## Host key verification
@@ -44,6 +45,21 @@ The default changed from "accept any key" to `accept-new` deliberately: first co
 5. **Set `allowedRemotePaths` and `allowedLocalPaths`** to the smallest scope needed; use `"localPathMode": "list"` to exclude the process working directory from the local scope. `"localPathMode": "any"` disables the local restriction — only for trusted single-user machines.
 6. **Do not expose the HTTP daemon** (`start`) beyond `127.0.0.1` without a token: a non-loopback listen address requires `--http-token` / `SSH_MCP_HTTP_TOKEN` / `$global.httpToken` (fail closed), and every `/mcp` request must then carry `Authorization: Bearer <token>`.
 7. **Prefer exec mode + named sessions** for stateful work; reserve `transportMode: shell` for bastions that block exec.
+8. **Turn on `approvalMode: "ask-destructive"` for production connections.** It only prompts on commands the classifier flags as destructive; where the built-in classifier is wrong for your box, tune it with `approvalPatterns` / `approvalExemptPatterns` instead of falling back to full YOLO.
+
+## Approval gate (destructive commands)
+
+Opt-in per connection (`approvalMode`): `auto` (default — nothing changes) or `ask-destructive` — before `execute-command` runs a command classified as destructive, the server sends an MCP **elicitation** to the client and waits for the human to accept. Decline or cancel means the command is not executed; the agent is told the user refused. `$global.approvalMode` sets the default; a connection-level value overrides it.
+
+**What counts as destructive** — three layers, in order:
+
+1. `approvalExemptPatterns` (user regexes): a match **never** prompts, even if the built-in classifier flags the command. Exemptions win over everything — the operator owns that trade.
+2. Built-in classifier: invocations like `rm`, `reboot`, `mkfs`, `dd`-to-device, `systemctl stop/restart`, `kill`/`pkill`, recursive `chmod`/`chown`, plus patterns (fork bomb, `iptables -F`, redirects over disks or `/etc/passwd` / `authorized_keys`, `git push --force`, `DROP TABLE`…).
+3. `approvalPatterns` (user regexes): a match prompts, extending the built-in set with what is dangerous *on your box* (`terraform destroy`, `systemctl restart postgres`, …).
+
+**Gray areas are yours to decide.** The built-in classifier is a starter set, deliberately conservative in what it flags and deliberately free of un-overridable deny rules: anything it gets wrong on a given host can be exempted or extended per connection. The hard controls remain the ones you configure — `commandWhitelist` / `commandBlacklist` and path restrictions. The gate only changes *whether the human is asked first*; it never silently rewrites or blocks anything in `auto` mode.
+
+**Fail-open by design.** If the client did not declare elicitation support (or the request fails), the command still runs and the result carries an advisory note telling the agent to ask the user before destructive actions on that connection. A client capability gap must not lock the operator out; `list-servers` reports each connection's `approvalMode` and whether the current client can prompt, so the agent knows before running anything.
 
 ## Tool annotations
 

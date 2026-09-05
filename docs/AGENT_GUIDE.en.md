@@ -1,10 +1,10 @@
-> [English](AGENT_GUIDE.md)
+> [中文版](AGENT_GUIDE.md)
 
 # 2native-ssh-mcp — Agent Guide
 
 SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools. stdio or streamable HTTP. **Credentials never belong in MCP client config args** — see Secure setup.
 
-> Human-readable version: [HUMAN_GUIDE.zh-CN.md](HUMAN_GUIDE.zh-CN.md)
+> Human-readable version: [HUMAN_GUIDE.md](HUMAN_GUIDE.md)
 
 ## Tools
 
@@ -25,8 +25,8 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 - **Light compress** (default): outputs ≥ `outputCompressThreshold` (4096 B) get head/tail lines + dedup; disable with `"outputCompressLight": false`. See `skills/2native-ssh-mcp-agent` for agent-side habits.
 - **ANSI stripped by default**: colors/progress escapes are removed from all output (exec, shell, background reads); disable per connection with `"stripAnsi": false`.
 - Connections **lazy**; after command kept alive per keepAlive policy, idle expiry closes. `keepAlive: false` closes immediately.
-- 每条执行的命令都会追加到连接的命令日志文件（默认保留最近 20 条；`list-servers` 展示每连接最近 3 条）——**不含输出**。
-- **同批次的工具调用是并发执行的——没有顺序保证。** 有依赖关系的操作（上传 → 验证 → 重启）必须拆成多次顺序调用。详见 `skills/2native-ssh-mcp-agent` 的 "Operational traps" 一节（pgrep 自匹配、sudo 无 TTY、覆盖运行中的二进制）。
+- Executed commands appended to connection's command log file (default: last 20; `list-servers` shows the last 3 per connection) — **without output**.
+- **Same-batch tool calls run concurrently — no ordering guarantee.** Dependent operations (upload → verify → restart) must be separate sequential tool calls. See `skills/2native-ssh-mcp-agent` → "Operational traps" (pgrep self-match, sudo without TTY, overwriting running binaries).
 
 ### file-transfer
 One tool, `action` param. Progress via `notifications/progress` when client sends `_meta.progressToken` (throttled ~100 ms, final 100% always).
@@ -45,7 +45,7 @@ One tool, `action` param. Progress via `notifications/progress` when client send
 - Local path outside the `localPathMode` scope → `LOCAL_PATH_NOT_ALLOWED` with a scope message ("not within the allowed local paths for this connection"); a `..` escape is reported separately as "Path traversal rejected".
 
 ### list-servers
-无参数。返回**服务器**（元数据、状态、最近几条已记录命令）与**活动会话**。先调它来选 `connectionName` 或 `sessionName`——最近命令历史也有助于从上一个会话恢复上下文。**readOnly**。
+No args. Returns **servers** (metadata, status, last few recorded commands) and **active sessions**. Call first to pick `connectionName` or `sessionName` — the recent-command history also helps resume context from a previous session. **readOnly**.
 
 ### session
 One tool, `action` param. Exec-mode connections only.
@@ -98,6 +98,9 @@ session(action=close, sessionName=deploy)
     "notes": "Read-only primarily; avoid heavy queries during peak hours",
     "commandWhitelist": ["^ls ", "^cat "],
     "commandBlacklist": ["rm -rf"],
+    "approvalMode": "auto",                  // 或 "ask-destructive"：破坏性命令先经 MCP elicitation 征询人类
+    "approvalPatterns": ["terraform\s+destroy"],   // 用户追加"要问"的 regex
+    "approvalExemptPatterns": [],            // 用户豁免"不问"的 regex，优先级最高
     "allowedLocalPaths": ["C:/data"],
     "allowedRemotePaths": ["/tmp", "/home"],
     "localPathMode": "cwd",                    // or "list" / "any"
@@ -129,6 +132,7 @@ Auth: password | privateKey (+passphrase, `SSH_MCP_PASSPHRASE` env) | agent (`SS
 - **Foreground `timeout` must exceed the real runtime** — the default `commandTimeoutMs=30000` still applies; a long build needs `timeout` ≥ its duration or it will be cut off with `COMMAND_TIMEOUT`. On timeout the remote process group is killed by PID (channel Signal is only a fallback — OpenSSH often ignores it), so timed-out commands do not leak remote processes.
 - **exec runs without a PTY by default** — a PTY makes tools like docker/npm behave as if interactive and can cause SIGHUP issues on long tasks, so it is opt-in: connection `"pty": true` or the `execute-command` `pty` parameter. Background jobs never use a PTY regardless.
 - **Non-zero exit is a normal result** — check `exitCode`; do not treat `[exit code] 1` as a transport failure.
+- **`approvalMode: "ask-destructive"` 的连接**：`list-servers` 会标注 `approval=ask-destructive` 与本客户端是否支持 elicitation。命中破坏性分类器时会弹窗征询用户——拒绝/取消则命令不执行，返回 `"executed": false`，不要重试；客户端不支持 elicitation 时命令照常执行（fail-open），结果尾部带提示，此时应先征询用户再发破坏性命令。
 - **`SSH_CONNECTION_LOST` is not replay-safe** — the command may have partially executed; inspect the partial `stdout` before deciding to retry.
 
 ## Secure setup (pick one — do NOT put credentials in MCP client args)
@@ -183,7 +187,7 @@ git push origin v1.0.1
 
 ## Gotchas
 
-- **Local WSL**: treat as a normal Linux SSH target (sshd in the distro, `host: 127.0.0.1`). Do **not** launch this server via `"command": "wsl"`. `file-transfer` `localPath` is the MCP process OS — on Windows use `D:\\...`, never `/mnt/c/...` or `\\\\wsl$\\...`; keep Linux builds under `/home`, not `/mnt/c` (9P). If Windows already binds :22, put WSL sshd on another port. NAT: WSL `127.0.0.1` ≠ Windows loopback (HTTP daemon on one side is unreachable from the other). Full recipe: [HUMAN_GUIDE.md](HUMAN_GUIDE.zh-CN.md#连接本地-wsl).
+- **Local WSL**: treat as a normal Linux SSH target (sshd in the distro, `host: 127.0.0.1`). Do **not** launch this server via `"command": "wsl"`. `file-transfer` `localPath` is the MCP process OS — on Windows use `D:\\...`, never `/mnt/c/...` or `\\\\wsl$\\...`; keep Linux builds under `/home`, not `/mnt/c` (9P). If Windows already binds :22, put WSL sshd on another port. NAT: WSL `127.0.0.1` ≠ Windows loopback (HTTP daemon on one side is unreachable from the other). Full recipe: [HUMAN_GUIDE.md](HUMAN_GUIDE.en.md#connecting-to-local-wsl).
 - Logs → **stderr** only (stdio protocol on stdout).
 - Host keys verified against `known_hosts` by default (`hostKeyCheck: accept-new`): first contact is recorded (file + `~/.ssh` created automatically), later key changes fail with `SSH_HOST_KEY_MISMATCH` (retriable=false). `strict` rejects unknown hosts (`SSH_HOST_KEY_UNKNOWN`); `none` disables verification. A rekeyed server needs its stale `known_hosts` line removed (or `hostKeyCheck: none`).
 - Shell mode serializes commands per connection; no SFTP in shell mode. **`transportMode: shell` requires a POSIX `sh`-compatible interactive shell** (relies on `PS1`, `stty`, `printf`, `export`) — csh/tcsh/fish bastions must use `exec` + `commandTemplate` instead.
