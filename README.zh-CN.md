@@ -2,6 +2,14 @@
 
 # 2native-ssh-mcp
 
+[![CI](https://github.com/daidaiJ/2native-ssh-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/daidaiJ/2native-ssh-mcp/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/daidaiJ/2native-ssh-mcp)](https://github.com/daidaiJ/2native-ssh-mcp/releases/latest)
+[![Go](https://img.shields.io/github/go-mod/go-version/daidaiJ/2native-ssh-mcp)](go.mod)
+[![License](https://img.shields.io/github/license/daidaiJ/2native-ssh-mcp)](LICENSE)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/daidaiJ/2native-ssh-mcp/badge)](https://scorecard.dev/viewer/?uri=github.com/daidaiJ/2native-ssh-mcp)
+[![SLSA](https://img.shields.io/badge/SLSA-provenance-brightgreen)](https://github.com/daidaiJ/2native-ssh-mcp/attestations)
+[![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-555)](https://registry.modelcontextprotocol.io/v0.1/servers?search=2native-ssh-mcp)
+
 基于 SSH 的 MCP (Model Context Protocol) 服务器，Go 实现。让 AI 助手通过 MCP 协议远程执行命令、传输文件，SSH 凭据完全留在本地，不暴露给模型。
 
 > 本项目参考了 [classfang/ssh-mcp-server](https://github.com/classfang/ssh-mcp-server)（TypeScript 版）的设计与实现，在其基础上用 Go 重写，并将文件操作整合为**单个工具**、支持**进度通知**。感谢原作者的开源贡献。
@@ -63,6 +71,7 @@ git push origin v1.0.1
 - 构建 **6 个平台**的二进制：Windows / Linux / macOS × amd64 / arm64（`CGO_ENABLED=0`，版本号注入为 tag 名），产物命名 `2native-ssh-mcp-<os>-<arch>[.exe]`
 - 每个二进制附带独立的 `.sha256` 校验和文件
 - 每个二进制同时打包为 **`.mcpb` bundle**（MCP Bundle：zip + `manifest.json`，`server.type: "binary"`），附带独立 `.sha256`
+- 另附一份 CycloneDX SBOM（`2native-ssh-mcp.cdx.json`）；SLSA provenance 与 SBOM 证明发布在仓库 [Attestations](https://github.com/daidaiJ/2native-ssh-mcp/attestations) 页（不往 Release 里塞 `.intoto` 文件）。校验下载的二进制：`gh attestation verify --repo daidaiJ/2native-ssh-mcp <file>`
 - 用 `git tag -a -m` 打**带消息的 tag**；轻量 tag（`git tag v1.0.1`）没有消息，日志会退化为 tag 名
 
 ### 发布到官方 MCP Registry
@@ -111,6 +120,7 @@ curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=2native-ssh-m
 │   ├── AGENT_GUIDE.md             # 🤖 Agent 版指南（省 token，按需读取）
 │   └── HUMAN_GUIDE.md             # 👤 人类版指南（易读）
 ├── .github/workflows/ci.yml       # push/PR → ubuntu-latest go test -race ./...
+├── .github/workflows/scorecard.yml # 每周 OpenSSF Scorecard（README 徽章）
 ├── .github/workflows/release.yml  # tag 推送 → 6 平台构建 + Release（日志 = tag 消息）
 ├── plan/                          # 设计规格（HARDENING.md 等，git-ignored）
 ├── todo/                          # 实施任务清单 T01–T10（git-ignored）

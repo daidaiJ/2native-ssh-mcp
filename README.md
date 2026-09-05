@@ -2,6 +2,14 @@
 
 # 2native-ssh-mcp
 
+[![CI](https://github.com/daidaiJ/2native-ssh-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/daidaiJ/2native-ssh-mcp/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/daidaiJ/2native-ssh-mcp)](https://github.com/daidaiJ/2native-ssh-mcp/releases/latest)
+[![Go](https://img.shields.io/github/go-mod/go-version/daidaiJ/2native-ssh-mcp)](go.mod)
+[![License](https://img.shields.io/github/license/daidaiJ/2native-ssh-mcp)](LICENSE)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/daidaiJ/2native-ssh-mcp/badge)](https://scorecard.dev/viewer/?uri=github.com/daidaiJ/2native-ssh-mcp)
+[![SLSA](https://img.shields.io/badge/SLSA-provenance-brightgreen)](https://github.com/daidaiJ/2native-ssh-mcp/attestations)
+[![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-555)](https://registry.modelcontextprotocol.io/v0.1/servers?search=2native-ssh-mcp)
+
 SSH-based MCP (Model Context Protocol) server implemented in Go. Enables AI assistants to remotely execute commands and transfer files via the MCP protocol, while keeping SSH credentials **locally on your machine** — never exposed to the model.
 
 > This project references the design and implementation from [classfang/ssh-mcp-server](https://github.com/classfang/ssh-mcp-server) (TypeScript version). It's a complete rewrite in Go with consolidated file operations into a **single tool** and added **progress notifications**. Thanks to the original author for their open-source contribution.
@@ -63,6 +71,7 @@ git push origin v1.0.1
 - Builds **6 platforms**: Windows / Linux / macOS × amd64 / arm64 (`CGO_ENABLED=0`, version injected as tag name), outputs named `2native-ssh-mcp-<os>-<arch>[.exe]`
 - Each binary includes an independent `.sha256` checksum file
 - Each binary is also packaged as an **`.mcpb` bundle** (MCP Bundle: zip + `manifest.json`, `server.type: "binary"`) with its own `.sha256`
+- One CycloneDX SBOM (`2native-ssh-mcp.cdx.json`) is attached; SLSA provenance and SBOM attestations are published to the repo [Attestations](https://github.com/daidaiJ/2native-ssh-mcp/attestations) tab (not extra `.intoto` files on the release). Verify a downloaded binary with `gh attestation verify --repo daidaiJ/2native-ssh-mcp <file>`
 - Use `git tag -a -m` to create an **annotated tag with a message**; lightweight tags (`git tag v1.0.1`) have no message, so release notes will fall back to the tag name
 
 ### Publishing to the official MCP Registry
@@ -113,6 +122,7 @@ curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=2native-ssh-m
 │   ├── HUMAN_GUIDE.md             # 👤 Human guide (readable)
 │   └── HUMAN_GUIDE.zh-CN.md       # 👤 中文版 Human guide
 ├── .github/workflows/ci.yml       # push/PR → ubuntu-latest go test -race ./...
+├── .github/workflows/scorecard.yml # weekly OpenSSF Scorecard (badge on README)
 ├── .github/workflows/release.yml  # tag push → 6-platform build + Release; "-registry" tag → publish to MCP Registry
 ├── plan/                          # Design specifications (HARDENING.md, etc., git-ignored)
 ├── todo/                          # Implementation task list T01–T10 (git-ignored)

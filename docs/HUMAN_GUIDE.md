@@ -370,4 +370,9 @@ git push origin v1.0.1
 The workflow will:
 1. Cross-compile binaries for 6 platforms: Windows / Linux / macOS × amd64 / arm64 (`CGO_ENABLED=0`, version number injected as the tag name)
 2. Generate an independent `.sha256` checksum file for each binary
-3. Create a GitHub Release with **release notes = tag message** (reads the annotated tag object via GitHub API, avoids the issue where lightweight tags on runners fall back to commit messages), with all binaries and checksums attached
+3. Create a GitHub Release with **release notes = tag message** (reads the annotated tag object via GitHub API, avoids the issue where lightweight tags on runners fall back to commit messages), with all binaries, checksums, `.mcpb` bundles, and one CycloneDX SBOM (`2native-ssh-mcp.cdx.json`) attached
+4. Publish SLSA provenance and SBOM attestations to the repo Attestations tab. Verify a downloaded file with:
+
+```bash
+gh attestation verify --repo daidaiJ/2native-ssh-mcp 2native-ssh-mcp-linux-amd64
+```

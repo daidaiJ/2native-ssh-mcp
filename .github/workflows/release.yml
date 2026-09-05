@@ -5,6 +5,8 @@
 #   - injects the tag name as the binary version (-X main.version=<tag>)
 #   - release notes = the annotated tag message (read via GitHub API)
 #   - attaches every binary with its own .sha256 checksum
+#   - one CycloneDX SBOM (2native-ssh-mcp.cdx.json); SLSA provenance + SBOM
+#     attestations go to the repo Attestations tab (not extra release files)
 #   - packages each binary as an .mcpb bundle (MCP Bundle, zip + manifest.json)
 #   - a tag with the "-registry" suffix (e.g. v1.0.0-registry) additionally
 #     publishes the matching stable release (v1.0.0) to the official MCP
@@ -60,10 +62,10 @@ jobs:
             mcpbPlatform: darwin
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
 
@@ -114,7 +116,7 @@ jobs:
             > dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}.mcpb.sha256
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: 2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}
           path: |
@@ -128,9 +130,13 @@ jobs:
     needs: build
     if: ${{ !endsWith(github.ref_name, '-registry') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # Release notes come from the annotated tag message, read via the
       # GitHub API. The local checkout may only hold a lightweight tag ref,
@@ -151,7 +157,7 @@ jobs:
           fi
 
       - name: Download binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
@@ -164,6 +170,50 @@ jobs:
             case "$f" in *.sha256) continue ;; esac
             sha256sum "$f" > "$f.sha256"
           done
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: dist/2native-ssh-mcp.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: |
+            dist/2native-ssh-mcp-windows-amd64.exe
+            dist/2native-ssh-mcp-windows-arm64.exe
+            dist/2native-ssh-mcp-linux-amd64
+            dist/2native-ssh-mcp-linux-arm64
+            dist/2native-ssh-mcp-darwin-amd64
+            dist/2native-ssh-mcp-darwin-arm64
+            dist/2native-ssh-mcp-windows-amd64.mcpb
+            dist/2native-ssh-mcp-windows-arm64.mcpb
+            dist/2native-ssh-mcp-linux-amd64.mcpb
+            dist/2native-ssh-mcp-linux-arm64.mcpb
+            dist/2native-ssh-mcp-darwin-amd64.mcpb
+            dist/2native-ssh-mcp-darwin-arm64.mcpb
+
+      - name: Attest SBOM
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        with:
+          subject-path: |
+            dist/2native-ssh-mcp-windows-amd64.exe
+            dist/2native-ssh-mcp-windows-arm64.exe
+            dist/2native-ssh-mcp-linux-amd64
+            dist/2native-ssh-mcp-linux-arm64
+            dist/2native-ssh-mcp-darwin-amd64
+            dist/2native-ssh-mcp-darwin-arm64
+            dist/2native-ssh-mcp-windows-amd64.mcpb
+            dist/2native-ssh-mcp-windows-arm64.mcpb
+            dist/2native-ssh-mcp-linux-amd64.mcpb
+            dist/2native-ssh-mcp-linux-arm64.mcpb
+            dist/2native-ssh-mcp-darwin-amd64.mcpb
+            dist/2native-ssh-mcp-darwin-arm64.mcpb
+          sbom-path: dist/2native-ssh-mcp.cdx.json
 
       - name: Create release
         env:
@@ -186,7 +236,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Download MCPB bundles
         env:
