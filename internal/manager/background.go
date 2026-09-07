@@ -370,6 +370,7 @@ func (m *Manager) readSessionOutputOnce(sessionName string, maxBytes, offset int
 	if cfg == nil || cfg.GetStripAnsi() {
 		chunk = stripANSI(chunk)
 	}
+	chunk = normalizeCR(chunk)
 	// Redaction is opt-in (redactSecrets), matching the command result path.
 	if cfg != nil && cfg.GetRedactSecrets() {
 		chunk = redactCombinedOutput(chunk)

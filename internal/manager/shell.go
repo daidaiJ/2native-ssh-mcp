@@ -276,7 +276,16 @@ func stripANSI(s string) string {
 
 // cleanShellOutput strips ANSI escape sequences and normalizes line endings.
 func cleanShellOutput(output string) string {
-	output = stripANSI(output)
-	output = strings.ReplaceAll(output, "\r\n", "\n")
-	return strings.ReplaceAll(output, "\r", "\n")
+	return normalizeCR(stripANSI(output))
+}
+
+// normalizeCR rewrites carriage returns so output renders predictably in
+// agent transcripts and terminals: CRLF becomes LF and a lone CR (progress-
+// bar overwrites) becomes LF instead of collapsing lines into one.
+func normalizeCR(s string) string {
+	if !strings.Contains(s, "\r") {
+		return s
+	}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.ReplaceAll(s, "\r", "\n")
 }

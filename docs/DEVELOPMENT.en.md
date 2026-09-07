@@ -77,3 +77,9 @@ The `v1.0.1-registry` tag triggers the `publish-registry` job, which downloads t
 ```bash
 curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=2native-ssh-mcp"
 ```
+
+## Design decision: command results render as text by default (2026-09-07)
+
+- **Background**: e4888a6 (2026-09-04, just before v1.5.0) switched the execute-command success path from `result.Text()` sectioned text to `commandResultJSON`. MCP clients render text content verbatim, and the `stdout` value inside that JSON is a single escaped string (newlines are literal `\n`), so long output gets soft-wrapped into an unreadable block in terminals; the sectioned text from v1.4.1 and earlier is the readable form for both humans and agents.
+- **Decision**: the success path defaults back to `result.Text()`; a per-connection `resultFormat` config was added (`text` default / `json` opt-in, see `SSHConfig.GetResultFormat`). Error paths stay JSON (agents branch on `code`/`message`/`retriable`/`partial`/`replaySafe`); background/session-open info JSON and list-servers are unchanged.
+- **Compatibility**: this is a default behavior change — consumers that depend on the JSON shape can set `"resultFormat": "json"` per connection to restore it.

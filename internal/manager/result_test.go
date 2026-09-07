@@ -7,6 +7,18 @@ import (
 	"2native-ssh-mcp/internal/config"
 )
 
+func TestBuildCommandResultNormalizesCR(t *testing.T) {
+	res := buildCommandResult("a\r\nb\rc\n", "err\r\nline", 0, StatusOK, nil)
+	for name, out := range map[string]string{"stdout": res.Stdout, "stderr": res.Stderr} {
+		if strings.Contains(out, "\r") {
+			t.Fatalf("%s must not contain carriage returns, got %q", name, out)
+		}
+	}
+	if res.Stdout != "a\nb\nc\n" {
+		t.Fatalf("stdout = %q, want %q", res.Stdout, "a\nb\nc\n")
+	}
+}
+
 func TestCommandResultText(t *testing.T) {
 	res := CommandResult{
 		Stdout:   "BUILD_RUNNING",

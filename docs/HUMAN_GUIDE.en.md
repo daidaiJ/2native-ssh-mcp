@@ -328,6 +328,7 @@ Server options:
 | `commandTemplate` | empty | Command wrapper template (`<command>` / `<quotedCommand>`) |
 | `pty` | false | Allocate a pseudo-terminal in exec mode (off by default; enable for interactive commands) |
 | `redactSecrets` | false | Output redaction (password/token/Bearer/PEM); enabling has scan cost |
+| `resultFormat` | text | Successful command result rendering: text = sectioned plain text (real newlines), json = structured JSON |
 | `tryKeyboard` | false | Keyboard-interactive authentication (2FA code via environment variable `SSH_MCP_2FA_CODE`) |
 
 > Strings in the configuration file support `${environment-variable-name}` references, so credentials can be stored in environment variables without touching disk.

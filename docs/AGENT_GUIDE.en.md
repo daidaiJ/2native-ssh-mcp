@@ -20,6 +20,7 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 
 - Whitelist/blacklist regexes per connection; rejected → `COMMAND_VALIDATION_FAILED`.
 - **Non-zero exit is a normal result, not an error** — read `exitCode` from the text (`[exit code] N`). Errors are reserved for validation/connect failures, `COMMAND_TIMEOUT`, `OUTPUT_LIMIT_EXCEEDED`, and `SSH_CONNECTION_LOST`.
+- **Successful results render as sectioned text by default** — real newlines: `stdout`, then `[stderr]`, `[exit code] N`, and a spill notice when output was persisted. Set `"resultFormat": "json"` on a connection to switch successful results to the structured CommandResult JSON; error paths always stay JSON.
 - `SSH_CONNECTION_LOST` (retriable=false): the connection dropped mid-command; the remote process may still be running. **Do not replay blindly** — the error JSON carries partial `stdout`/`stderr` and `replaySafe: false`.
 - Output cap `maxOutputBytes` (default 10 MB, **stdout+stderr combined**) → `OUTPUT_LIMIT_EXCEEDED`; timeout → `COMMAND_TIMEOUT`. For timeout/lost/limit the error message stays short; partial output is in the same result's `stdout`/`stderr` fields.
 - **Light compress** (default): outputs ≥ `outputCompressThreshold` (4096 B) get head/tail lines + dedup; disable with `"outputCompressLight": false`. See `skills/2native-ssh-mcp-agent` for agent-side habits.
@@ -176,6 +177,32 @@ MCP client: `{"mcpServers": {"2native-ssh-mcp": {"url": "http://127.0.0.1:8338/m
 **/mcp auth**: loopback listen (default) needs no token. Non-loopback listen **requires** a Bearer token or the server refuses to start — sources in order: `--http-token`, env `SSH_MCP_HTTP_TOKEN`, `$global.httpToken` (config file). With a token, the client must send `Authorization: Bearer <token>` on every `/mcp` request (401 otherwise). Admin API is exempt (loopback + Host check only).
 
 Daemon semantics: refcount (first `start` = owner lease, never expires; extra `start` = guest lease with a **15 min TTL** refreshed by any authenticated `/mcp` request — all guest leases at once, regardless of which `start` created them; `stop` −1 removes a guest first, then the owner; exits at 0), PID file, admin API `/__admin/{health,status,refcount,shutdown}` (loopback client + loopback `Host` header required, `"name":"2native-ssh-mcp"` verified; `shutdown` additionally requires POST + `Content-Type: application/json`). The daemon never exits from idling — only count 0, `kill`, or a signal.
+
+### Hot update (upgrade the binary without losing config)
+
+**HTTP daemon** — clients auto-reconnect after the restart:
+```bash
+# 1. build the new binary (version stamped)
+go build -o 2native-ssh-mcp.new.exe -ldflags "-X main.version=vX.Y.Z" .
+# 2. graceful stop — refcount drains, server exits
+2native-ssh-mcp stop
+# 3. swap binaries (keep the old one as .exe~)
+mv 2native-ssh-mcp.exe 2native-ssh-mcp.exe~ && mv 2native-ssh-mcp.new.exe 2native-ssh-mcp.exe
+# 4. restart hidden — `start` is a blocking owner-lease command, never foreground it
+cscript //nologo autostart.vbs        # Windows; elsewhere: nohup 2native-ssh-mcp start ... &
+# 5. verify
+2native-ssh-mcp status && curl -s http://127.0.0.1:8338/__admin/health
+```
+
+**stdio** — the client owns the process, so the swap takes effect when the client respawns it:
+```bash
+go build -o 2native-ssh-mcp.new.exe -ldflags "-X main.version=vX.Y.Z" .
+mv 2native-ssh-mcp.exe 2native-ssh-mcp.exe~ && mv 2native-ssh-mcp.new.exe 2native-ssh-mcp.exe
+# Windows: a running exe cannot be deleted but CAN be renamed — the swap above works while running
+```
+Then restart the MCP server from the client (restart the session / reconnect the MCP server); each client process runs its own server. Verify with a test tool call through the client.
+
+Gotchas: `install` rewrites `autostart.vbs` and **drops a manually added `--http-addr`** — re-add it after running install. `config.json` lives in the deploy dir and is never touched by an upgrade. If `stop` hangs on guest leases, `kill` is the hard fallback.
 
 ## Release workflow
 

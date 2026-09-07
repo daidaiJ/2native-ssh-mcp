@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -27,7 +26,23 @@ func registerSession(s *server.MCPServer, m *manager.Manager) {
 		mutatingAnnotation("Manage SSH session", false),
 	)
 	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return handleSessionTool(m, request.GetArguments())
+		args := request.GetArguments()
+		if action, _ := args["action"].(string); action == "open" {
+			// action=open with cmdString executes a command just like
+			// execute-command (background or not), so it must pass the same
+			// destructive-command approval gate.
+			if cmdString, _ := args["cmdString"].(string); cmdString != "" {
+				sessionName, _ := args["sessionName"].(string)
+				connectionName, _ := args["connectionName"].(string)
+				proceed, note, decline := wrapWithGate(ctx, s, m, sessionName, connectionName, cmdString)
+				if !proceed {
+					return decline, nil
+				}
+				res, err := handleSessionTool(m, args)
+				return appendNote(res, note), err
+			}
+		}
+		return handleSessionTool(m, args)
 	})
 }
 
@@ -58,12 +73,12 @@ func handleSessionTool(m *manager.Manager, args map[string]any) (*mcp.CallToolRe
 		if err != nil {
 			return errorResult(err), nil
 		}
-		raw, _ := json.Marshal(info)
+		raw, _ := marshalCompactJSON(info)
 		msg := fmt.Sprintf("Session %q on connection %q", info.Name, info.ConnectionName)
 		if info.Background {
 			msg += " (background)"
 		}
-		return mcp.NewToolResultText(msg + "\n\n" + string(raw)), nil
+		return mcp.NewToolResultText(msg + "\n\n" + raw), nil
 
 	case "read":
 		if sessionName == "" {
@@ -84,10 +99,10 @@ func handleSessionTool(m *manager.Manager, args map[string]any) (*mcp.CallToolRe
 		if err != nil {
 			return errorResult(err), nil
 		}
-		raw, _ := json.Marshal(out)
+		raw, _ := marshalCompactJSON(out)
 		text := fmt.Sprintf("session=%s running=%v totalBytes=%d offset=%d\n\n%s",
 			out.SessionName, out.Running, out.TotalBytes, out.Offset, out.Output)
-		return mcp.NewToolResultText(text + "\n\nRaw JSON:\n" + string(raw)), nil
+		return mcp.NewToolResultText(text + "\n\nRaw JSON:\n" + raw), nil
 
 	case "close":
 		if sessionName == "" {
@@ -111,8 +126,8 @@ func handleSessionTool(m *manager.Manager, args map[string]any) (*mcp.CallToolRe
 			}
 			sessions = filtered
 		}
-		raw, _ := json.Marshal(sessions)
-		return mcp.NewToolResultText(formatSessionList(sessions) + "\n\nSessions JSON:\n" + string(raw)), nil
+		raw, _ := marshalCompactJSON(sessions)
+		return mcp.NewToolResultText(formatSessionList(sessions) + "\n\nSessions JSON:\n" + raw), nil
 
 	default:
 		return errorResult(manager.NewToolError(manager.CodeCommandValidationFailed,

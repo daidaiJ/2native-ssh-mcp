@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"2native-ssh-mcp/internal/config"
 	"2native-ssh-mcp/internal/manager"
 )
 
@@ -78,7 +78,7 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 		if err != nil {
 			return appendNote(errorResultFor(err, result), note), nil
 		}
-		return appendNote(commandResultJSON(result), note), nil
+		return appendNote(commandResult(result, m.ConfigFor(sessionName, connectionName)), note), nil
 	})
 }
 
@@ -103,7 +103,7 @@ func handleBackgroundCommand(m *manager.Manager, cmdString, directory, sessionNa
 	if err != nil {
 		return errorResult(err), nil
 	}
-	raw, _ := json.MarshalIndent(info, "", "  ")
+	raw, _ := marshalResultJSON(info)
 	text := fmt.Sprintf(
 		"Background job started: session=%q logPath=%s\nPoll with session action=read (sessionName=%q, waitMs blocks for new output); stop with session action=close.\n\n%s",
 		info.Name, info.LogPath, info.Name, raw)
@@ -118,12 +118,23 @@ func randomSessionName() string {
 	return "bg-" + hex.EncodeToString(b[:])
 }
 
+// commandResult renders a successful command result in the connection's
+// configured format: "text" (default) keeps the human-readable sectioned
+// layout with real newlines; "json" emits the structured CommandResult JSON.
+// Error paths always stay JSON so agents can branch on code/retriable.
+func commandResult(res manager.CommandResult, cfg *config.SSHConfig) *mcp.CallToolResult {
+	if cfg.GetResultFormat() == config.ResultFormatJSON {
+		return commandResultJSON(res)
+	}
+	return mcp.NewToolResultText(res.Text())
+}
+
 // commandResultJSON renders a successful command result as structured JSON,
 // matching the error-path shape (code/message plus stdout/stderr/exitCode/
 // status/partial/replaySafe).
 func commandResultJSON(res manager.CommandResult) *mcp.CallToolResult {
-	text, _ := json.MarshalIndent(res, "", "  ")
+	text, _ := marshalResultJSON(res)
 	return &mcp.CallToolResult{
-		Content: []mcp.Content{mcp.NewTextContent(string(text))},
+		Content: []mcp.Content{mcp.NewTextContent(text)},
 	}
 }

@@ -77,3 +77,9 @@ git push origin v1.0.1-registry
 ```bash
 curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=2native-ssh-mcp"
 ```
+
+## 设计决策：命令结果默认 text 渲染（2026-09-07）
+
+- **背景**：e4888a6（2026-09-04，v1.5.0 发布前夜）把 execute-command 成功路径从 `result.Text()` 分节文本改为 `commandResultJSON`。MCP 客户端把 text content 原样渲染，而 JSON 里的 `stdout` 是单行转义字符串（换行是字面 `\n`），长输出在终端里被软换行成一整块，可读性差；v1.4.1 及之前的分节文本才是用户与 agent 都易读的形态。
+- **决策**：成功路径默认恢复 `result.Text()`；新增按连接配置 `resultFormat`（`text` 默认 / `json` 可选，见 `SSHConfig.GetResultFormat`）。错误路径保持 JSON（agent 依赖 `code`/`message`/`retriable`/`partial`/`replaySafe` 分支）；background/session-open 的 info JSON 与 list-servers 不变。
+- **兼容性**：默认行为变化——依赖 JSON 形状的消费方在连接配置里显式加 `"resultFormat": "json"` 即可恢复旧行为。

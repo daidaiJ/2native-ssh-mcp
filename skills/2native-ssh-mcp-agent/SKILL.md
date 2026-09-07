@@ -33,6 +33,8 @@ Defensive playbook for agents using **2native-ssh-mcp**. Read this before execut
 
 ANSI escape sequences (colors, progress bars) are stripped from all output by default; disable per connection: `"stripAnsi": false`.
 
+Successful execute-command results render as sectioned text by default (real newlines + `[exit code] N` + spill notice); set `"resultFormat": "json"` per connection for the structured CommandResult JSON (error paths always JSON).
+
 ### Agent-side habits (before running)
 
 | Bad | Better |

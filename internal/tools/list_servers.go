@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -112,8 +111,8 @@ func formatServerList(servers []manager.ServerInfo) string {
 		lines = append(lines, strings.Join(parts, " | "))
 	}
 
-	raw, _ := json.Marshal(servers)
-	return "Configured SSH servers:\n" + strings.Join(lines, "\n") + "\n\nServers JSON:\n" + string(raw)
+	raw, _ := marshalCompactJSON(servers)
+	return "Configured SSH servers:\n" + strings.Join(lines, "\n") + "\n\nServers JSON:\n" + raw
 }
 
 // recentCommandMaxRunes caps each command preview so one long command cannot
@@ -198,6 +197,6 @@ func formatSessionList(sessions []manager.SessionInfo) string {
 		}
 		lines = append(lines, strings.Join(parts, " | "))
 	}
-	raw, _ := json.Marshal(sessions)
-	return "Active sessions:\n" + strings.Join(lines, "\n") + "\n\nSessions JSON:\n" + string(raw)
+	raw, _ := marshalCompactJSON(sessions)
+	return "Active sessions:\n" + strings.Join(lines, "\n") + "\n\nSessions JSON:\n" + raw
 }

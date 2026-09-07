@@ -220,6 +220,20 @@ func TestCleanShellOutput(t *testing.T) {
 	}
 }
 
+func TestNormalizeCR(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"a\r\nb\r\nc\n", "a\nb\nc\n"},
+		{"10%\r50%\r100%\n", "10%\n50%\n100%\n"},
+		{"lonely\rcr", "lonely\ncr"},
+		{"no carriage", "no carriage"},
+	}
+	for _, c := range cases {
+		if got := normalizeCR(c.in); got != c.want {
+			t.Fatalf("normalizeCR(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestStripANSI(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"\x1b[32mgreen\x1b[0m", "green"},

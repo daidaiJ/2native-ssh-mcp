@@ -2,10 +2,10 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -14,6 +14,11 @@ import (
 	"2native-ssh-mcp/internal/config"
 	"2native-ssh-mcp/internal/manager"
 )
+
+// elicitationTimeout bounds the approval prompt: a client that advertised
+// elicitation but never answers must not wedge the tool call forever. Var so
+// tests can shorten it.
+var elicitationTimeout = 5 * time.Minute
 
 // approvalGate sits between the tool arguments and the SSH execution for
 // destructive commands. It is a server-side best-effort second gate on top of
@@ -46,13 +51,30 @@ func approvalGate(
 		return true, "", nil
 	}
 
-	result, err := srv.RequestElicitation(ctx, confirmationRequest(cfg.Name, cmdString, reason))
+	elicitationCtx, cancel := context.WithTimeout(ctx, elicitationTimeout)
+	defer cancel()
+	result, err := srv.RequestElicitation(elicitationCtx, confirmationRequest(cfg.Name, cmdString, reason))
 	switch {
 	case err == nil:
 		if result.Action != mcp.ElicitationResponseActionAccept || confirmDeclined(result) {
-			return false, "", declinedResult(result.Action)
+			verb, ok := map[mcp.ElicitationResponseAction]string{
+				mcp.ElicitationResponseActionDecline: "declined",
+				mcp.ElicitationResponseActionCancel:  "cancelled",
+			}[result.Action]
+			if !ok {
+				verb = "did not approve"
+			}
+			return false, "", declinedResult(verb)
 		}
 		return true, "", nil
+	case ctx.Err() != nil:
+		// The caller's context is gone (client disconnected): fail-open like
+		// any other transport failure.
+		return true, advisoryNote(cfg.Name, "elicitation aborted: client disconnected"), nil
+	case elicitationCtx.Err() == context.DeadlineExceeded:
+		// The user did not answer in time: fail closed. A silent timeout must
+		// never green-light a destructive command.
+		return false, "", declinedResult(fmt.Sprintf("did not respond within %s to", elicitationTimeout))
 	case errors.Is(err, server.ErrNoActiveSession), errors.Is(err, server.ErrElicitationNotSupported):
 		// The client never advertised elicitation: fail-open with advice.
 		return true, advisoryNote(cfg.Name, "the client does not support MCP elicitation"), nil
@@ -100,24 +122,17 @@ func confirmDeclined(result *mcp.ElicitationResult) bool {
 	return ok && !confirm
 }
 
-// declinedResult tells the agent the human refused, as data rather than an
-// error so the agent adapts instead of retrying.
-func declinedResult(action mcp.ElicitationResponseAction) *mcp.CallToolResult {
-	verb, ok := map[mcp.ElicitationResponseAction]string{
-		mcp.ElicitationResponseActionDecline: "declined",
-		mcp.ElicitationResponseActionCancel:  "cancelled",
-	}[action]
-	if !ok {
-		verb = "did not approve"
-	}
+// declinedResult tells the agent the human refused (or did not answer in
+// time), as data rather than an error so the agent adapts instead of retrying.
+func declinedResult(verb string) *mcp.CallToolResult {
 	payload := map[string]any{
 		"executed": false,
 		"reason": fmt.Sprintf(
 			"the user %s the request to run this destructive command; do not retry it without asking them what to do instead",
 			verb),
 	}
-	text, _ := json.MarshalIndent(payload, "", "  ")
-	return mcp.NewToolResultText(string(text))
+	text, _ := marshalResultJSON(payload)
+	return mcp.NewToolResultText(text)
 }
 
 // advisoryNote is the fail-open message appended to a result that ran without

@@ -83,6 +83,8 @@ func buildCommandResult(stdout, stderr string, exitCode int, status string, cfg 
 		stdout = stripANSI(stdout)
 		stderr = stripANSI(stderr)
 	}
+	stdout = normalizeCR(stdout)
+	stderr = normalizeCR(stderr)
 	// Redaction is opt-in (redactSecrets): scanning secret-bearing output is
 	// too expensive to run on every result by default.
 	if cfg != nil && cfg.GetRedactSecrets() {

@@ -18,6 +18,7 @@
 - **可靠性**：TCP keepalive + 应用层心跳（OpenSSH 语义：任意回复即存活，单 in-flight 发送）；前台超时按远端 PID 杀掉整个进程组（channel Signal 仅作补充，OpenSSH 经常忽略它）；exec 默认不分配 PTY（连接配置 `pty: true` 或工具参数 `pty` 按需开启；后台任务可用 `pty: true` 经 `script` 包一层 TTY）；后台任务以无 PTY 独立通道启动（setsid 脱离会话），**连接闪断后仍存活**，会话可自动重连重附着；非 0 退出码是正常结果（看 `exitCode`），连接中断报 `SSH_CONNECTION_LOST`（`retriable=false`，带部分输出，不可盲目重放）
 - **会话保留**：后台作业结束后会话与远端日志保留 60 分钟，`read` 可 `offset=0` 重读（JSON 带 `logPath`/`exitCode`），`close` 幂等可重复调用
 - **输出处理**：默认剥离 ANSI 转义序列（颜色/进度条，`stripAnsi: false` 可关）；大输出分层处理——≥4KB 头尾摘要压缩（`outputCompressLight`/`outputCompressThreshold`），≥8KB（`outputSpillThreshold`，`-1` 关闭）把完整输出落盘到本地目录（默认 `.ssh-mcp-out/`，`outputSpillDir` 可改，保留最近 32 个），MCP 结果只留通知+短预览，Agent 用本地 Read/Grep 查看全文，不必远程重跑
+- **结果渲染**：execute-command 成功结果默认为分节文本（真实换行：stdout → `[stderr]` → `[exit code] N` → 落盘提示），人和模型都可直接读；按连接配置 `resultFormat: "json"` 切换为结构化 CommandResult JSON；错误路径始终为 JSON（`code`/`message`/`retriable`/`partial`/`replaySafe`）
 - **命令日志**：按连接记录最近 N 条执行过的命令（不含输出），可只记成功命令，落盘为 JSON 行文件（配置：`commandLogSize` / `commandLogDir` / `commandLogOnlySuccess`，或全局 `--command-log-size` 等 CLI 参数）
 - **安全**：命令白/黑名单、路径白名单（本地/远端，本地范围可配 `localPathMode`：cwd / list / any）、凭据隔离（SSH 凭据留在本地，不暴露给模型）、输出脱敏（`redactSecrets`，默认关闭——脱敏扫描对含密钥的大输出有明显开销，需要时按连接开启）、配置权限检查（Unix `0600`/`0700`，Windows ACL；可用 `--allow-insecure-config-perms` 或配置文件 `$global.allowInsecureConfigPerms` 跳过）
 - **认证与兼容性**：密码/私钥/ssh-agent/Pageant/键盘交互认证（2FA）、代理（SOCKS5/HTTP/HTTPS）、算法协商配置（兼容老服务器）

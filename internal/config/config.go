@@ -125,7 +125,12 @@ type SSHConfig struct {
 	// that actually contains secrets costs ~200ms per MiB (regex passes), so
 	// it is opt-in for connections whose commands print credentials.
 	RedactSecrets       *bool  `json:"redactSecrets,omitempty"`
-	KeepaliveIntervalMs int    `json:"keepaliveIntervalMs,omitempty"`
+	// ResultFormat controls how successful execute-command results are
+	// rendered in the MCP text content: "text" (default when unset) emits
+	// the human-readable sectioned format with real newlines; "json" emits
+	// the structured CommandResult JSON (pre-1.5 behavior).
+	ResultFormat         string `json:"resultFormat,omitempty"`
+	KeepaliveIntervalMs  int    `json:"keepaliveIntervalMs,omitempty"`
 	KeepaliveCountMax   int    `json:"keepaliveCountMax,omitempty"`
 	CommandTemplate     string `json:"commandTemplate,omitempty"`
 	// CommandLogSize is how many recent commands to keep in the per-connection
@@ -361,6 +366,31 @@ func (c *SSHConfig) GetRedactSecrets() bool {
 		return *c.RedactSecrets
 	}
 	return false
+}
+
+// Result format values for SSHConfig.ResultFormat.
+const (
+	// ResultFormatText renders successful command results as the
+	// human-readable sectioned format with real newlines (default).
+	ResultFormatText = "text"
+	// ResultFormatJSON renders them as structured CommandResult JSON.
+	ResultFormatJSON = "json"
+)
+
+// GetResultFormat normalizes the configured rendering format for successful
+// execute-command results. Accepted values are "text" (default when unset)
+// and "json"; unknown values fall back to "text". Nil-safe: a nil config
+// yields the default.
+func (c *SSHConfig) GetResultFormat() string {
+	if c == nil {
+		return ResultFormatText
+	}
+	switch strings.ToLower(strings.TrimSpace(c.ResultFormat)) {
+	case ResultFormatJSON:
+		return ResultFormatJSON
+	default:
+		return ResultFormatText
+	}
 }
 
 // ExpandHome expands a leading ~ in a path.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -153,6 +154,32 @@ func TestAppendNote(t *testing.T) {
 	}
 	if same := appendNote(mcp.NewToolResultText("x"), ""); same == nil {
 		t.Fatal("empty note must return the original result")
+	}
+}
+
+// blockingApprovalSession waits for its context to finish, simulating a
+// client that advertised elicitation but never answers.
+type blockingApprovalSession struct {
+	mockApprovalSession
+}
+
+func (s *blockingApprovalSession) RequestElicitation(ctx context.Context, _ mcp.ElicitationRequest) (*mcp.ElicitationResult, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestGateTimeoutFailsClosed(t *testing.T) {
+	old := elicitationTimeout
+	elicitationTimeout = 50 * time.Millisecond
+	defer func() { elicitationTimeout = old }()
+
+	s := &blockingApprovalSession{mockApprovalSession{sessionID: "s1"}}
+	proceed, note, decline := approvalGate(ctxWithSession(s), server.NewMCPServer("test", "1.0.0", server.WithElicitation()), askConfig(), "rm -rf /tmp/build")
+	if proceed || note != "" || decline == nil {
+		t.Fatalf("timeout must fail closed, got proceed=%v note=%q decline=%v", proceed, note, decline)
+	}
+	if text := resultText(t, decline); !contains(text, "did not respond within") {
+		t.Fatalf("decline reason must mention the timeout, got %s", text)
 	}
 }
 

@@ -328,6 +328,7 @@ Server options:
 | `commandTemplate` | 空 | 命令包装模板（`<command>` / `<quotedCommand>`） |
 | `pty` | false | exec 模式分配伪终端（默认关闭，交互命令按需开启） |
 | `redactSecrets` | false | 输出脱敏（password/token/Bearer/PEM），开启有扫描开销 |
+| `resultFormat` | text | execute-command 成功结果渲染：text=分节纯文本（真实换行），json=结构化 JSON |
 | `tryKeyboard` | false | 键盘交互认证（2FA 码用环境变量 `SSH_MCP_2FA_CODE`） |
 
 > 配置文件中的字符串支持 `${环境变量名}` 引用，凭据可放在环境变量里而不落盘。

@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -87,6 +86,12 @@ func formatSeconds(s float64) string {
 func transferResultJSON(result *manager.TransferResult) *mcp.CallToolResult {
 	result.ElapsedS = elapsedSeconds(result.Elapsed)
 	result.SpeedBps = math.Round(result.SpeedBps)
+	// The arrow in the prose follows the actual transfer direction; JSON
+	// fields stay localPath/remotePath regardless.
+	src, dst := result.LocalPath, result.RemotePath
+	if result.Action == "download" {
+		src, dst = result.RemotePath, result.LocalPath
+	}
 	var text string
 	switch {
 	case result.Skipped:
@@ -94,7 +99,7 @@ func transferResultJSON(result *manager.TransferResult) *mcp.CallToolResult {
 			result.Action, result.RemotePath, result.LocalPath)
 	case result.Files > 0:
 		text = fmt.Sprintf("%s completed: %s -> %s\n%d files, %d bytes in %s (%.2f MB/s, %.1f%%)",
-			result.Action, result.LocalPath, result.RemotePath, result.Files,
+			result.Action, src, dst, result.Files,
 			result.Bytes, formatSeconds(result.ElapsedS),
 			result.SpeedBps/1024/1024, result.Percent)
 		if result.SkippedFiles > 0 {
@@ -109,14 +114,14 @@ func transferResultJSON(result *manager.TransferResult) *mcp.CallToolResult {
 	case result.Resumed:
 		text = fmt.Sprintf(
 			"%s resumed from %d bytes: %s -> %s\n%d bytes transferred in %s (%.2f MB/s, %.1f%%)",
-			result.Action, result.ResumedFrom, result.LocalPath, result.RemotePath,
+			result.Action, result.ResumedFrom, src, dst,
 			result.Bytes, formatSeconds(result.ElapsedS),
 			result.SpeedBps/1024/1024, result.Percent,
 		)
 	default:
 		text = fmt.Sprintf(
 			"%s completed: %s -> %s\n%d bytes in %s (%.2f MB/s, %.1f%%)",
-			result.Action, result.LocalPath, result.RemotePath,
+			result.Action, src, dst,
 			result.Bytes, formatSeconds(result.ElapsedS),
 			result.SpeedBps/1024/1024, result.Percent,
 		)
@@ -128,6 +133,6 @@ func transferResultJSON(result *manager.TransferResult) *mcp.CallToolResult {
 		text += "\nsha256 unverified (no sha256sum on the remote)"
 	}
 
-	raw, _ := json.MarshalIndent(result, "", "  ")
-	return mcp.NewToolResultText(text + "\n\nJSON:\n" + string(raw))
+	raw, _ := marshalResultJSON(result)
+	return mcp.NewToolResultText(text + "\n\nJSON:\n" + raw)
 }

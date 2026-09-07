@@ -2,9 +2,11 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,17 +24,44 @@ func RegisterAll(s *server.MCPServer, m *manager.Manager) {
 	registerSession(s, m)
 }
 
+// marshalJSONNoEscape renders v as JSON with HTML escaping disabled.
+// encoding/json escapes <, > and & to \u003c-style sequences by default;
+// that only matters when JSON is embedded in HTML, while MCP result text is
+// displayed verbatim, where the escapes are pure noise for agents and humans.
+func marshalJSONNoEscape(v any, indent string) (string, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if indent != "" {
+		enc.SetIndent("", indent)
+	}
+	if err := enc.Encode(v); err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(buf.String(), "\n"), nil
+}
+
+// marshalResultJSON renders v as indented result JSON (no HTML escaping).
+func marshalResultJSON(v any) (string, error) {
+	return marshalJSONNoEscape(v, "  ")
+}
+
+// marshalCompactJSON renders v as single-line JSON (no HTML escaping).
+func marshalCompactJSON(v any) (string, error) {
+	return marshalJSONNoEscape(v, "")
+}
+
 // errorResult formats a ToolError the same way the reference implementation
 // does: a JSON object with code, message and retriable.
 func errorResult(err error) *mcp.CallToolResult {
 	te := manager.AsToolError(err)
-	text, _ := json.MarshalIndent(map[string]any{
+	text, _ := marshalResultJSON(map[string]any{
 		"code":      te.Code,
 		"message":   te.Message,
 		"retriable": te.Retriable,
-	}, "", "  ")
+	})
 	return &mcp.CallToolResult{
-		Content: []mcp.Content{mcp.NewTextContent(string(text))},
+		Content: []mcp.Content{mcp.NewTextContent(text)},
 		IsError: true,
 	}
 }
@@ -69,9 +98,9 @@ func errorResultFor(err error, res manager.CommandResult) *mcp.CallToolResult {
 			}
 		}
 	}
-	text, _ := json.MarshalIndent(payload, "", "  ")
+	text, _ := marshalResultJSON(payload)
 	return &mcp.CallToolResult{
-		Content: []mcp.Content{mcp.NewTextContent(string(text))},
+		Content: []mcp.Content{mcp.NewTextContent(text)},
 		IsError: true,
 	}
 }
