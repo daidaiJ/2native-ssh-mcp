@@ -9,9 +9,21 @@
 [![SLSA](https://img.shields.io/badge/SLSA-provenance-brightgreen)](https://github.com/daidaiJ/2native-ssh-mcp/attestations)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-555)](https://registry.modelcontextprotocol.io/v0.1/servers?search=2native-ssh-mcp)
 
+<p align="center">
+  <img src="docs/images/hero.png" alt="2native-ssh-mcp — Native Go SSH MCP, credentials stay local" />
+</p>
+
 基于 SSH 的 MCP (Model Context Protocol) 服务器，Go 实现。让 AI 助手通过 MCP 协议远程执行命令、传输文件，SSH 凭据完全留在本地，不暴露给模型。
 
 > 本项目参考了 [classfang/ssh-mcp-server](https://github.com/classfang/ssh-mcp-server)（TypeScript 版）的设计与实现，在其基础上用 Go 重写，并将文件操作整合为**单个工具**、支持**进度通知**。感谢原作者的开源贡献。
+
+## 架构
+
+<p align="center">
+  <img src="docs/images/architecture.png" alt="架构：AI Agent 经 MCP 调用本机 2native-ssh-mcp，再经 SSH 到达远端主机" />
+</p>
+
+AI 助手只看到四个 MCP 工具；本机进程负责 SSH，凭据不会进入模型上下文。
 
 ## 📖 文档
 
@@ -35,6 +47,10 @@
 - **安全**：命令白/黑名单、路径白名单、凭据隔离、配置权限检查
 - **双传输**：stdio / streamable HTTP daemon（引用计数、健康检查、Windows 一键自启）
 - **认证兼容**：密码/私钥/ssh-agent/Pageant/2FA、代理、算法协商（兼容老服务器）
+
+<p align="center">
+  <img src="docs/images/isolation.png" alt="凭据隔离：SSH 密钥与密码留在本机进程，不会到达模型" />
+</p>
 
 完整特性列表见 [docs/FEATURES.md](docs/FEATURES.md)。
 

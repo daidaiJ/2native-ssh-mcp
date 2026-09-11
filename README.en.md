@@ -9,9 +9,21 @@
 [![SLSA](https://img.shields.io/badge/SLSA-provenance-brightgreen)](https://github.com/daidaiJ/2native-ssh-mcp/attestations)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-555)](https://registry.modelcontextprotocol.io/v0.1/servers?search=2native-ssh-mcp)
 
+<p align="center">
+  <img src="docs/images/hero.png" alt="2native-ssh-mcp — Native Go SSH MCP, credentials stay local" />
+</p>
+
 An SSH-based MCP (Model Context Protocol) server in Go. Lets AI assistants run remote commands and transfer files over MCP while SSH credentials stay entirely local, never exposed to the model.
 
 > This project draws on the design of [classfang/ssh-mcp-server](https://github.com/classfang/ssh-mcp-server) (TypeScript), rewritten in Go with file operations consolidated into a **single tool** and **progress notifications**. Thanks to the original author for open-sourcing it.
+
+## Architecture
+
+<p align="center">
+  <img src="docs/images/architecture.png" alt="Architecture: AI agents talk MCP to a local 2native-ssh-mcp process, which SSHs to remote hosts" />
+</p>
+
+The agent only sees four MCP tools. SSH credentials stay in the local process and never enter the model context.
 
 ## 📖 Docs
 
@@ -35,6 +47,10 @@ Docs are Chinese by default; the same-name `.en.md` files are the English versio
 - **Security**: command whitelist/blacklist, path whitelisting, credential isolation, config permission checks
 - **Dual transport**: stdio / streamable HTTP daemon (refcounting, health check, one-click Windows autostart)
 - **Auth & compatibility**: password/private key/ssh-agent/Pageant/2FA, proxies, algorithm negotiation (legacy servers)
+
+<p align="center">
+  <img src="docs/images/isolation.png" alt="Credential isolation: SSH keys and passwords stay in the local process and never reach the model" />
+</p>
 
 Full feature list: [docs/FEATURES.en.md](docs/FEATURES.en.md).
 
