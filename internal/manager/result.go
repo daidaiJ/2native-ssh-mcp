@@ -48,6 +48,13 @@ type CommandResult struct {
 	// after the cap (0/absent when unknown, e.g. shell-transport paths).
 	Truncated    bool  `json:"truncated,omitempty"`
 	ClippedBytes int64 `json:"clippedBytes,omitempty"`
+	// NonUTF8 is true when stdout or stderr contained invalid UTF-8, which
+	// sanitizeInvalidUTF8 replaced with \xNN byte escapes (utf8Sanitize,
+	// default on). The remote output encoding is never assumed.
+	NonUTF8 bool `json:"nonUtf8,omitempty"`
+	// HistorySupplemented counts command-log entries appended to sparse
+	// remote `history` output (historyFromLog, default off).
+	HistorySupplemented int `json:"historySupplemented,omitempty"`
 }
 
 // Text renders the human-readable body for a normal (ok/exited) result.
@@ -79,6 +86,16 @@ func (r CommandResult) Text() string {
 // CommandResult. Interrupted statuses (timeout, output limit, connection
 // lost, cancelled) are marked partial and not replay-safe.
 func buildCommandResult(stdout, stderr string, exitCode int, status string, cfg *config.SSHConfig) CommandResult {
+	// The remote output encoding is never assumed: invalid UTF-8 becomes
+	// \xNN byte escapes (default) so it survives JSON transport intact
+	// instead of degrading into U+FFFD.
+	nonUtf8 := false
+	if cfg == nil || cfg.GetUtf8Sanitize() {
+		var s1, s2 bool
+		stdout, s1 = sanitizeInvalidUTF8(stdout)
+		stderr, s2 = sanitizeInvalidUTF8(stderr)
+		nonUtf8 = s1 || s2
+	}
 	if cfg == nil || cfg.GetStripAnsi() {
 		stdout = stripANSI(stdout)
 		stderr = stripANSI(stderr)
@@ -98,17 +115,19 @@ func buildCommandResult(stdout, stderr string, exitCode int, status string, cfg 
 			Status:          status,
 			Partial:         !replaySafe,
 			ReplaySafe:      replaySafe,
+			NonUTF8:         nonUtf8,
 			OutputFile:      info.path,
 			OutputFileBytes: info.bytes,
 			OutputFileLines: info.lines,
 		}
 	}
 	return CommandResult{
-		Stdout:     FinalizeCommandOutput(stdout, compressOpts(cfg)),
-		Stderr:     FinalizeCommandOutput(stderr, compressOpts(cfg)),
-		ExitCode:   exitCode,
-		Status:     status,
-		Partial:    !replaySafe,
-		ReplaySafe: replaySafe,
+		Stdout:              FinalizeCommandOutput(stdout, compressOpts(cfg)),
+		Stderr:              FinalizeCommandOutput(stderr, compressOpts(cfg)),
+		ExitCode:            exitCode,
+		Status:              status,
+		Partial:             !replaySafe,
+		ReplaySafe:          replaySafe,
+		NonUTF8:             nonUtf8,
 	}
 }

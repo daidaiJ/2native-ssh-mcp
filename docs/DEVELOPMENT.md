@@ -45,6 +45,32 @@ go build ./...
 go test -race ./...
 ```
 
+### 基准测试
+
+```bash
+# 输出管线（stripANSI / redact / compress，纯本地，无需 SSH）
+go test ./internal/manager/ -bench BenchmarkOutput -benchmem
+
+# SFTP 传输吞吐（走 integration 标签，需要 config.json 里有可达连接，如 WSL sshd）
+go test -tags integration ./internal/manager/ -bench BenchmarkTransfer -benchmem
+```
+
+**实测数据**（2026-09-11，Ryzen 5 4600H，WSL2 Ubuntu-22.04 localhost sshd；输出基准 1 MiB 文本，传输基准 16 MiB 文件，固定 5 轮取中位）：
+
+| 基准 | 结果 |
+|---|---|
+| stripANSI，纯文本 1 MiB | ~15 µs（~70000 MB/s，0 alloc） |
+| stripANSI，ANSI 密集 1 MiB | ~1.9 ms（~550 MB/s，1.9 MB alloc） |
+| RedactSensitiveOutput，含密 1 MiB | ~4.7 ms（~220 MB/s） |
+| SFTP 上传 16 MiB（32KB 分块） | ~52 MB/s |
+| SFTP 下载 16 MiB（32KB 分块） | ~95 MB/s |
+
+说明：
+
+- localhost 下 SFTP 吞吐由 pkg/sftp 的协议行为主导；`sftpConcurrency`/`sftpChunkSize` 的收益要在高延迟链路上才明显
+- `UseConcurrentReads` 实测在低延迟链路无收益（下载 -7%），故未启用
+- `sftpChunkSize` 上限 32KB（SSH session channel 单条数据消息的上限，pkg/sftp 硬拒绝更大值），超配自动钳制
+
 ## 自动发布 Release
 
 推送**带消息的 tag**（annotated tag）即触发 GitHub Actions（`.github/workflows/release.yml`）：

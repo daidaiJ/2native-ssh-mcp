@@ -166,6 +166,17 @@ type SSHConfig struct {
 	// over the reused session can be discarded when it ends; a separate
 	// connection sidesteps that. Default: false.
 	SftpDedicatedConn *bool `json:"sftpDedicatedConn,omitempty"`
+	// HistoryFromLog supplements sparse remote `history` output with entries
+	// from this server's MCP command log (tail-deduped) when a bare
+	// "history" or "history <n>" is executed. Exec-mode commands run in a
+	// fresh non-interactive shell where the history builtin prints nothing.
+	// Default: false.
+	HistoryFromLog *bool `json:"historyFromLog,omitempty"`
+	// Utf8Sanitize replaces invalid UTF-8 sequences in command output with
+	// \xNN byte escapes and flags the result nonUtf8, instead of letting
+	// JSON marshalling silently mangle them into U+FFFD. The remote output
+	// is never assumed to be UTF-8. Default: true.
+	Utf8Sanitize *bool `json:"utf8Sanitize,omitempty"`
 	// ApprovalMode controls the destructive-command approval gate on
 	// execute-command: "auto" (default) never asks, "ask-destructive" sends
 	// an MCP elicitation to the human before running a command classified as
@@ -409,6 +420,24 @@ func (c *SSHConfig) GetSftpDedicatedConn() bool {
 		return *c.SftpDedicatedConn
 	}
 	return false
+}
+
+// GetHistoryFromLog returns whether sparse remote `history` output should be
+// supplemented from the MCP command log (default: false).
+func (c *SSHConfig) GetHistoryFromLog() bool {
+	if c.HistoryFromLog != nil {
+		return *c.HistoryFromLog
+	}
+	return false
+}
+
+// GetUtf8Sanitize returns whether invalid UTF-8 sequences in command output
+// are replaced with \xNN byte escapes (default: true).
+func (c *SSHConfig) GetUtf8Sanitize() bool {
+	if c.Utf8Sanitize != nil {
+		return *c.Utf8Sanitize
+	}
+	return true
 }
 
 // ExpandHome expands a leading ~ in a path.

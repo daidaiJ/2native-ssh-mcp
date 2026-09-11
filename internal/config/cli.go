@@ -60,6 +60,12 @@ type GlobalConfig struct {
 	// SftpDedicatedConn is the global default for per-connection
 	// sftpDedicatedConn (SFTP over a dedicated SSH connection).
 	SftpDedicatedConn *bool `json:"sftpDedicatedConn,omitempty"`
+	// HistoryFromLog is the global default for per-connection
+	// historyFromLog (supplement sparse remote history from the MCP log).
+	HistoryFromLog *bool `json:"historyFromLog,omitempty"`
+	// Utf8Sanitize is the global default for per-connection utf8Sanitize
+	// (replace invalid UTF-8 in output with \xNN escapes).
+	Utf8Sanitize *bool `json:"utf8Sanitize,omitempty"`
 }
 
 // stringList is a repeatable flag value.
@@ -320,6 +326,12 @@ func ParseArgs(args []string) (*Options, error) {
 		if conf.SftpDedicatedConn == nil {
 			conf.SftpDedicatedConn = fileGlobal.SftpDedicatedConn
 		}
+		if conf.HistoryFromLog == nil {
+			conf.HistoryFromLog = fileGlobal.HistoryFromLog
+		}
+		if conf.Utf8Sanitize == nil {
+			conf.Utf8Sanitize = fileGlobal.Utf8Sanitize
+		}
 		if err := conf.Normalize(); err != nil {
 			return nil, fmt.Errorf("invalid config for '%s': %w", conf.Name, err)
 		}
@@ -417,6 +429,20 @@ func parseGlobalConfig(raw any, global *GlobalConfig) error {
 			return fmt.Errorf("%s.sftpDedicatedConn: %w", GlobalConfigKey, err)
 		}
 		global.SftpDedicatedConn = &b
+	}
+	if v, ok := m["historyFromLog"]; ok {
+		b, err := ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("%s.historyFromLog: %w", GlobalConfigKey, err)
+		}
+		global.HistoryFromLog = &b
+	}
+	if v, ok := m["utf8Sanitize"]; ok {
+		b, err := ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("%s.utf8Sanitize: %w", GlobalConfigKey, err)
+		}
+		global.Utf8Sanitize = &b
 	}
 	return nil
 }
@@ -549,6 +575,20 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 			return nil, err
 		}
 		conf.SftpDedicatedConn = &b
+	}
+	if v, ok := m["historyFromLog"]; ok {
+		b, err := ParseBool(v)
+		if err != nil {
+			return nil, err
+		}
+		conf.HistoryFromLog = &b
+	}
+	if v, ok := m["utf8Sanitize"]; ok {
+		b, err := ParseBool(v)
+		if err != nil {
+			return nil, err
+		}
+		conf.Utf8Sanitize = &b
 	}
 
 	intFields := map[string]*int{

@@ -1,6 +1,36 @@
 package manager
 
-import "unicode/utf8"
+import (
+	"fmt"
+	"strings"
+	"unicode/utf8"
+)
+
+// sanitizeInvalidUTF8 replaces invalid UTF-8 sequences with \xNN escapes of
+// the original bytes, keeping the output valid UTF-8 for JSON transport while
+// preserving the raw bytes for later decoding. Remote output is never assumed
+// to be UTF-8: GBK/Big5/latin-1 text arrives as invalid sequences and becomes
+// visible escapes instead of silently degrading into U+FFFD when marshalled.
+// Returns the string (unchanged when already valid) and whether any bytes
+// were replaced.
+func sanitizeInvalidUTF8(s string) (string, bool) {
+	if utf8.ValidString(s) {
+		return s, false
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 16)
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size <= 1 {
+			fmt.Fprintf(&b, "\\x%02x", s[i])
+			i++
+			continue
+		}
+		b.WriteString(s[i : i+size])
+		i += size
+	}
+	return b.String(), true
+}
 
 // utf8SafeTruncate cuts s to at most max bytes without splitting a multi-byte
 // rune at the boundary. Bytes that are not part of a valid sequence are left

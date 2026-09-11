@@ -27,6 +27,41 @@
 - **HTTP daemon**：`start/stop/status/kill` 子命令 + 引用计数 + PID 文件 + 健康检查端点；`install` 一键注册 Windows 开机自启
 - **自动发布**：推送带消息的 tag 即触发 GitHub Actions 构建 6 平台二进制并创建 Release（日志用 tag 消息），详见 [DEVELOPMENT.md](DEVELOPMENT.md#自动发布-release)
 
+## 机制详解
+
+三个针对特殊环境的机制，默认行为不变，按连接（或 `$global`）开启。
+
+### 1. SFTP 独立连接 — `sftpDedicatedConn`（默认关）
+
+**问题**：部分网关在 sshd 前挂了一层影子容器/会话级 overlay——通过复用的 shell/exec 会话写入的文件，会话一结束就被丢弃，表现为"上传成功但文件消失"。
+
+**机制**：开启后文件传输不复用执行命令的 SSH 连接，单独拨一条连接跑 SFTP：
+
+| 环节 | 行为 |
+|---|---|
+| 建立 | **懒创建**：首次传输才拨号，不随主连接预建 |
+| 保活 | 用完归还专用池，每次使用重置 5 分钟空闲 TTL，到期自动关闭（含 SSH 连接） |
+| 探活 | 池中复用前先 keepalive 探测，被网关掐断就自动重拨 |
+| 校验 | 传输后 sha256 校验跑在同一条专用连接上，验的就是刚写入的字节 |
+
+配置：`"sftpDedicatedConn": true`（每连接或 `$global`）。
+
+### 2. history 日志补充 — `historyFromLog`（默认关）
+
+**问题**：exec 模式的命令跑在一次性非交互 shell 里，`history` 什么都拿不到；交互会话又常被 HISTSIZE 截断——agent 重接会话时没有上下文可恢复。
+
+**机制**：开启后，执行**裸 `history` / `history <n>`**（不带管道、不带 `-c` 等参数）且远程返回条目 **< 10 条**时，自动把本 MCP 的命令日志（exec 与会话执行的命令都在其中）按时间序补到输出尾部：
+
+- **尾部去重**：远程已列出的命令不重复；重复命令只保留最近一次
+- 补充块带 `# --- supplemented ... ---` 标头、逐条 `  -  <command>`，结果 JSON 带 `historySupplemented: N`
+- 输出被落盘（spill）、截断或中断时不补充，避免污染预览
+
+配置：`"historyFromLog": true`（每连接或 `$global`）。
+
+### 3. 输出编码 — `utf8Sanitize`（默认开）
+
+远程输出**从不假设是 UTF-8**（GBK/Big5/latin-1 服务器很常见）。输出先经有效性检查：无效序列逐字节转成 `\xNN` 转义——JSON 传输安全、原始字节可恢复，结果 JSON 带 `nonUtf8: true` 标记。需要可读文本时在远程 `iconv -f gbk` 转换；设 `false` 则原样返回原始字节（由调用方承担 JSON 兼容风险）。
+
 ## 已知限制
 
 - Go 的 `x/crypto/ssh` 不支持 SSH zlib 压缩（[golang/go#22795](https://github.com/golang/go/issues/22795)）；高延迟/低带宽场景建议依赖 TCP keepalive 与 SFTP 并发传输（`sftpConcurrency`）缓解

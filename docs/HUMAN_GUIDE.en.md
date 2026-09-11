@@ -317,6 +317,8 @@ Server options:
 | `commandLogOnlySuccess` | false | Only log successful commands |
 | `sftpConcurrency` / `sftpChunkSize` | 16 / 32768 | SFTP concurrency and chunk size |
 | `sftpDedicatedConn` | false | Run SFTP over a dedicated SSH connection (lazy, 5 min idle recycle, liveness-probed before reuse); enable when a shadow container / session-scoped overlay in front of sshd loses transferred files; `$global` sets the default |
+| `historyFromLog` | false | Supplements sparse remote `history` output (<10 entries) from the MCP command log (tail-deduped); mechanism in [FEATURES](FEATURES.en.md#mechanism-notes) |
+| `utf8Sanitize` | true | Output encoding is never assumed UTF-8: invalid sequences become `\xNN` byte escapes flagged `nonUtf8`; set false to keep raw bytes |
 | `algorithms` | empty | kex/cipher/serverHostKey/hmac negotiation |
 | `hostKeyCheck` | `accept-new` | Host key verification: `accept-new` (accept after unknown record) / `strict` (reject unknown) / `none` (no verification); automatically creates `known_hosts` file and its directory (e.g., `~/.ssh`) if they don't exist |
 | `knownHostsFile` | `~/.ssh/known_hosts` | known_hosts file for host key verification |

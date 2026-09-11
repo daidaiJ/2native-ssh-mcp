@@ -56,3 +56,22 @@ func TestSftpDedicatedConnGlobalInvalid(t *testing.T) {
 		t.Fatal("expected an error for a non-boolean $global.sftpDedicatedConn")
 	}
 }
+
+func TestHistoryAndUtf8GlobalDefaults(t *testing.T) {
+	path := writeSftpDedicatedConfig(t, `{
+		"$global": {"historyFromLog": true, "utf8Sanitize": false},
+		"srv": {"host": "10.0.0.1", "port": 22, "username": "root", "password": "x"},
+		"over": {"host": "10.0.0.2", "port": 22, "username": "root", "password": "x",
+			"historyFromLog": false, "utf8Sanitize": true}
+	}`)
+	opts, err := ParseArgs([]string{"--config-file", path})
+	if err != nil {
+		t.Fatalf("ParseArgs failed: %v", err)
+	}
+	if !opts.Configs["srv"].GetHistoryFromLog() || opts.Configs["srv"].GetUtf8Sanitize() {
+		t.Fatal("expected $global historyFromLog=true and utf8Sanitize=false to apply")
+	}
+	if opts.Configs["over"].GetHistoryFromLog() || !opts.Configs["over"].GetUtf8Sanitize() {
+		t.Fatal("expected connection-level overrides to win over $global")
+	}
+}

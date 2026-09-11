@@ -44,6 +44,8 @@ One tool, `action` param. Progress via `notifications/progress` when client send
 - Growing source: tail appended after main copy.
 - Concurrent SFTP (16×32 KB default; `sftpConcurrency`/`sftpChunkSize` per connection).
 - `sftpDedicatedConn: true`（每连接或 `$global`）：SFTP 单开一条 SSH 连接。sshd 前有影子容器/会话级 overlay 的网关会丢弃复用 shell 会话写入的文件，传输后文件消失时开这个；连接懒创建、空闲 5 分钟回收、复用前探活。
+- 重接会话恢复上下文时优先跑 `history`：连接开了 `historyFromLog` 的话，远程历史过少（<10 条，exec 模式通常为 0）会自动从 MCP 命令日志补齐（尾部去重，`historySupplemented` 字段计数）。
+- 输出里的 `\xNN` 转义和 `nonUtf8: true` 标记表示远程输出不是有效 UTF-8（如 GBK）；需要可读文本时远程 `iconv -f gbk` 转换。
 - Local path outside the `localPathMode` scope → `LOCAL_PATH_NOT_ALLOWED` with a scope message ("not within the allowed local paths for this connection"); a `..` escape is reported separately as "Path traversal rejected".
 
 ### list-servers

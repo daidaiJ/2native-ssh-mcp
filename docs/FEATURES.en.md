@@ -27,6 +27,41 @@ Full field semantics live in the [AGENT_GUIDE](AGENT_GUIDE.en.md) (token-efficie
 - **HTTP daemon**: `start/stop/status/kill` subcommands + reference counting + PID file + health check endpoint; `install` registers Windows auto-startup with one click
 - **Automated releases**: Pushing a tagged commit with a message triggers GitHub Actions to build 6-platform binaries and create a Release (uses tag message for release notes), see [DEVELOPMENT.md](DEVELOPMENT.en.md#automated-release)
 
+## Mechanism Notes
+
+Three mechanisms for special environments. Defaults are unchanged; enable per connection (or via `$global`).
+
+### 1. Dedicated SFTP connection — `sftpDedicatedConn` (default off)
+
+**Problem**: some gateways put a shadow container / session-scoped overlay in front of sshd — files written over the reused shell/exec session are discarded when it ends, showing up as "upload succeeded but the file is gone".
+
+**Mechanism**: when enabled, file transfers stop reusing the SSH connection that runs commands and dial their own connection for SFTP:
+
+| Stage | Behavior |
+|---|---|
+| Setup | **Lazy**: dialed on the first transfer, never pre-connected with the main connection |
+| Keep-warm | Returned to a dedicated pool after each transfer; every use resets the 5-minute idle TTL, after which it closes (SSH connection included) |
+| Liveness | Keepalive-probed before pool reuse; auto-redials if the gateway dropped it |
+| Verify | The post-transfer sha256 check runs over that same dedicated connection, verifying exactly the bytes written |
+
+Config: `"sftpDedicatedConn": true` (per connection or `$global`).
+
+### 2. history log supplement — `historyFromLog` (default off)
+
+**Problem**: exec-mode commands run in a throwaway non-interactive shell where the `history` builtin prints nothing; interactive sessions get truncated by HISTSIZE — an agent reconnecting to a session has no context to resume from.
+
+**Mechanism**: when enabled, executing a **bare `history` / `history <n>`** (no pipes, no `-c`-style flags) that returns **fewer than 10 remote entries** appends this MCP's command log (which covers both exec and session executions) to the output in chronological order:
+
+- **Tail-deduped**: commands already listed remotely are not repeated; duplicates keep only the most recent occurrence
+- The supplement block carries a `# --- supplemented ... ---` header, one `  -  <command>` per line, and the result JSON gains `historySupplemented: N`
+- No supplement when the output was spilled, truncated or interrupted, keeping previews honest
+
+Config: `"historyFromLog": true` (per connection or `$global`).
+
+### 3. Output encoding — `utf8Sanitize` (default on)
+
+Remote output is **never assumed to be UTF-8** (GBK/Big5/latin-1 servers are common). Output passes a validity check first: invalid sequences become per-byte `\xNN` escapes — safe for JSON transport, original bytes recoverable — and the result JSON carries `nonUtf8: true`. For readable text, convert remotely with `iconv -f gbk`; set `false` to get raw bytes back (caller accepts the JSON-compatibility risk).
+
 ## Known Limitations
 
 - Go's `x/crypto/ssh` does not support SSH zlib compression ([golang/go#22795](https://github.com/golang/go/issues/22795)); for high-latency/low-bandwidth scenarios, rely on TCP keepalive and SFTP concurrent transfers (`sftpConcurrency`) to mitigate

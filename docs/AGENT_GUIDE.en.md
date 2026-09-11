@@ -44,6 +44,8 @@ One tool, `action` param. Progress via `notifications/progress` when client send
 - Growing source: tail appended after main copy.
 - Concurrent SFTP (16×32 KB default; `sftpConcurrency`/`sftpChunkSize` per connection).
 - `sftpDedicatedConn: true` (per connection or `$global`): SFTP runs over its own SSH connection. Gateways with a shadow container / session-scoped overlay in front of sshd discard files written over the reused shell session — enable this when transferred files vanish; lazy creation, 5 min idle recycle, liveness-probed before reuse.
+- When resuming context on a reconnect, run `history` first: with `historyFromLog` enabled on the connection, a sparse remote listing (<10 entries; usually 0 in exec mode) is automatically supplemented from the MCP command log (tail-deduped, counted in the `historySupplemented` field).
+- `\xNN` escapes and a `nonUtf8: true` flag in the output mean the remote output was not valid UTF-8 (e.g. GBK); convert remotely with `iconv -f gbk` for readable text.
 - Local path outside the `localPathMode` scope → `LOCAL_PATH_NOT_ALLOWED` with a scope message ("not within the allowed local paths for this connection"); a `..` escape is reported separately as "Path traversal rejected".
 
 ### list-servers

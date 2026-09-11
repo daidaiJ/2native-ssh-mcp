@@ -76,16 +76,22 @@ func errorResultFor(err error, res manager.CommandResult) *mcp.CallToolResult {
 		"message":   te.Message,
 		"retriable": te.Retriable,
 	}
-	if res.Status != "" {
-		payload["stdout"] = res.Stdout
-		payload["stderr"] = res.Stderr
-		payload["exitCode"] = res.ExitCode
-		payload["status"] = res.Status
-		payload["partial"] = res.Partial
-		payload["replaySafe"] = res.ReplaySafe
-		if res.CWD != "" {
-			payload["cwd"] = res.CWD
-		}
+		if res.Status != "" {
+			payload["stdout"] = res.Stdout
+			payload["stderr"] = res.Stderr
+			payload["exitCode"] = res.ExitCode
+			payload["status"] = res.Status
+			payload["partial"] = res.Partial
+			payload["replaySafe"] = res.ReplaySafe
+			if res.NonUTF8 {
+				payload["nonUtf8"] = true
+			}
+			if res.HistorySupplemented > 0 {
+				payload["historySupplemented"] = res.HistorySupplemented
+			}
+			if res.CWD != "" {
+				payload["cwd"] = res.CWD
+			}
 		if res.OutputFile != "" {
 			payload["outputFile"] = res.OutputFile
 			payload["outputFileBytes"] = res.OutputFileBytes

@@ -45,6 +45,33 @@ go build ./...
 go test -race ./...
 ```
 
+### Benchmarks
+
+```bash
+# Output pipeline (stripANSI / redact / compress, pure local, no SSH needed)
+go test ./internal/manager/ -bench BenchmarkOutput -benchmem
+
+# SFTP transfer throughput (integration tag; needs a reachable connection in
+# config.json, e.g. a WSL sshd)
+go test -tags integration ./internal/manager/ -bench BenchmarkTransfer -benchmem
+```
+
+**Measured data** (2026-09-11, Ryzen 5 4600H, WSL2 Ubuntu-22.04 localhost sshd; 1 MiB text for output benchmarks, 16 MiB file for transfers, median of 5 fixed rounds):
+
+| Benchmark | Result |
+|---|---|
+| stripANSI, plain 1 MiB | ~15 µs (~70000 MB/s, 0 allocs) |
+| stripANSI, ANSI-dense 1 MiB | ~1.9 ms (~550 MB/s, 1.9 MB allocs) |
+| RedactSensitiveOutput, with secrets 1 MiB | ~4.7 ms (~220 MB/s) |
+| SFTP upload 16 MiB (32KB chunks) | ~52 MB/s |
+| SFTP download 16 MiB (32KB chunks) | ~95 MB/s |
+
+Notes:
+
+- On localhost, SFTP throughput is dominated by pkg/sftp protocol behavior; `sftpConcurrency`/`sftpChunkSize` pay off on high-latency links
+- `UseConcurrentReads` showed no benefit on low-latency links (downloads -7%) and is not enabled
+- `sftpChunkSize` caps at 32KB (the SSH session channel single-data-message limit, hard-rejected by pkg/sftp beyond it); larger configured values clamp
+
 ## Automated Release
 
 Pushing an **annotated tag with a message** triggers GitHub Actions (`.github/workflows/release.yml`):

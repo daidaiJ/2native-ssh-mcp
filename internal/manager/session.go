@@ -158,7 +158,7 @@ func (m *Manager) RunInSession(ctx context.Context, sessionName, cmdString, dire
 	}
 
 	result, err := m.runNamedShellCommand(ctx, ns, cmdString, directory, cfg.CommandTemplate, timeout)
-	m.RecordCommand(ns.connectionKey, cmdString, result.ExitCode, result.ExitCode == 0)
+	result, err = m.finalizeCommand(ns.connectionKey, cfg, cmdString, result, err)
 
 	ns.resetIdleTimer(m)
 

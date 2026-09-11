@@ -79,7 +79,7 @@ func (m *Manager) ExecuteCommand(ctx context.Context, cmdString, directory, name
 		result, err = m.runExecCommand(ctx, client, cfg, cmdString, directory, timeout, key, opts)
 	}
 
-	m.RecordCommand(key, cmdString, result.ExitCode, result.ExitCode == 0)
+	result, err = m.finalizeCommand(key, cfg, cmdString, result, err)
 
 	// Keepalive policy: keep the connection alive (default 10 minutes) or
 	// close it right away.
