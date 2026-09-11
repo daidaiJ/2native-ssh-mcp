@@ -21,16 +21,16 @@ import (
 
 // newSftpTestManager loads the repo config, relaxes the local path scope so
 // t.TempDir files are allowed, and returns a manager.
-func newSftpTestManager(t *testing.T) *Manager {
-	t.Helper()
+func newSftpTestManager(tb testing.TB) *Manager {
+	tb.Helper()
 	wd, err := os.Getwd()
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	cfgPath := filepath.Join(wd, "..", "..", "config.json")
 	opts, err := config.ParseArgs([]string{"--config-file", cfgPath})
 	if err != nil {
-		t.Fatalf("load config: %v", err)
+		tb.Fatalf("load config: %v", err)
 	}
 	ubuntu, ok := opts.Configs["ubuntu"]
 	if !ok {
@@ -45,57 +45,57 @@ func newSftpTestManager(t *testing.T) *Manager {
 		}
 	}
 	if ubuntu == nil {
-		t.Fatal("config.json must define an 'ubuntu' connection for integration tests")
+		tb.Fatal("config.json must define an 'ubuntu' connection for integration tests")
 	}
 	ubuntu.LocalPathMode = config.LocalPathModeAny
 	m, err := New(opts.Configs, "")
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	return m
 }
 
 // sftpTestDir creates a fresh remote directory for one test.
-func sftpTestDir(t *testing.T, m *Manager) string {
-	t.Helper()
+func sftpTestDir(tb testing.TB, m *Manager) string {
+	tb.Helper()
 	dir := fmt.Sprintf("/tmp/2native-ssh-mcp-sftp-test-%s", strings.ReplaceAll(strings.ToLower(randomID("d")), "_", ""))
 	res, err := m.ExecuteCommand(nil, "mkdir -p "+dir, "", "ubuntu", RunOptions{Prevalidated: true})
 	if err != nil {
-		t.Fatalf("mkdir remote test dir: %v (%s)", err, res.Stdout)
+		tb.Fatalf("mkdir remote test dir: %v (%s)", err, res.Stdout)
 	}
-	t.Cleanup(func() {
+	tb.Cleanup(func() {
 		_, _ = m.ExecuteCommand(nil, "rm -rf "+dir, "", "ubuntu", RunOptions{Prevalidated: true})
 	})
 	return dir
 }
 
-func writeFile(t *testing.T, dir string, size int, seed byte) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), fmt.Sprintf("src-%d-%d.bin", size, seed))
+func writeFile(tb testing.TB, dir string, size int, seed byte) string {
+	tb.Helper()
+	path := filepath.Join(tb.TempDir(), fmt.Sprintf("src-%d-%d.bin", size, seed))
 	data := make([]byte, size)
 	for i := range data {
 		data[i] = seed + byte(i%251)
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	return path
 }
 
-func remoteMD5(t *testing.T, m *Manager, remotePath string) string {
-	t.Helper()
+func remoteMD5(tb testing.TB, m *Manager, remotePath string) string {
+	tb.Helper()
 	res, err := m.ExecuteCommand(nil, "md5sum "+remotePath+" | awk '{print $1}'", "", "ubuntu", RunOptions{Prevalidated: true})
 	if err != nil {
-		t.Fatalf("md5sum %s: %v", remotePath, err)
+		tb.Fatalf("md5sum %s: %v", remotePath, err)
 	}
 	return strings.TrimSpace(res.Stdout)
 }
 
-func localMD5(t *testing.T, path string) string {
-	t.Helper()
+func localMD5(tb testing.TB, path string) string {
+	tb.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	return fmt.Sprintf("%x", md5.Sum(data))
 }
@@ -323,4 +323,45 @@ func TestTransferDedicatedConn(t *testing.T) {
 	if localMD5(t, down) != localMD5(t, local) {
 		t.Fatalf("downloaded content mismatch")
 	}
+}
+
+// BenchmarkTransfer measures SFTP throughput against the configured test
+// host (WSL for local runs) across chunk sizes. Run with:
+//
+//	go test -tags integration ./internal/manager/ -bench BenchmarkTransfer -benchmem
+//
+// force=true disables dedup so every iteration moves real bytes.
+func BenchmarkTransfer(b *testing.B) {
+	m := newSftpTestManager(b)
+	dir := sftpTestDir(b, m)
+	local := writeFile(b, b.TempDir(), 16<<20, 9)
+
+	for _, chunk := range []int{32 * 1024} {
+		m.mu.Lock()
+		m.configs["ubuntu"].SftpChunkSize = chunk
+		m.mu.Unlock()
+		// Pooled clients ignore later chunk-size changes, so drop the
+		// connection to force fresh clients per chunk setting.
+		m.Disconnect("ubuntu")
+		remote := dir + "/bench-" + fmt.Sprint(chunk) + ".bin"
+		b.Run("upload/chunk"+fmt.Sprint(chunk), func(b *testing.B) {
+			b.SetBytes(16 << 20)
+			for i := 0; i < b.N; i++ {
+				if _, err := m.TransferFile(nil, "upload", local, remote, "ubuntu", true, nil); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run("download/chunk"+fmt.Sprint(chunk), func(b *testing.B) {
+			b.SetBytes(16 << 20)
+			for i := 0; i < b.N; i++ {
+				if _, err := m.TransferFile(nil, "download", filepath.Join(b.TempDir(), "down.bin"), remote, "ubuntu", true, nil); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+	m.mu.Lock()
+	m.configs["ubuntu"].SftpChunkSize = 0
+	m.mu.Unlock()
 }

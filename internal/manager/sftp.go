@@ -40,9 +40,11 @@ const dedicatedPoolTag = "#ded"
 // connection before reuse.
 const sftpAliveProbeTimeout = 5 * time.Second
 
-// maxSftpPacket is the practical SFTP packet ceiling (OpenSSH accepts up to
-// 256 KiB); larger configured chunks stop paying off beyond it.
-const maxSftpPacket = 256 * 1024
+// maxSftpPacket is the practical SFTP packet ceiling: an SFTP request must
+// fit in one SSH session-channel data message, and OpenSSH advertises 32 KiB
+// there, so pkg/sftp rejects larger packets outright. Larger configured
+// sftpChunkSize values clamp to this.
+const maxSftpPacket = 32 * 1024
 
 // TransferResult summarizes a completed file transfer.
 type TransferResult struct {

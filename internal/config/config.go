@@ -157,6 +157,8 @@ type SSHConfig struct {
 	// file transfer (default: 16; 1 disables concurrency).
 	SftpConcurrency int `json:"sftpConcurrency,omitempty"`
 	// SftpChunkSize is the SFTP transfer chunk size in bytes (default: 32768).
+	// Values above 32 KiB are clamped: an SFTP request must fit in one SSH
+	// session-channel data message, which OpenSSH caps at 32 KiB.
 	SftpChunkSize int `json:"sftpChunkSize,omitempty"`
 	// SftpDedicatedConn runs file transfers over a dedicated SSH connection
 	// instead of reusing the shell/exec connection. For gateways that front

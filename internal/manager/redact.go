@@ -55,6 +55,18 @@ var anchorFirstMask = func() [256]byte {
 	return t
 }()
 
+// kvByFirst groups the kv keywords by their folded first byte, so a candidate
+// position only compares against the 1-3 keywords it could actually start
+// instead of all eight.
+var kvByFirst = func() [256][]string {
+	var t [256][]string
+	for _, kw := range kvKeywords {
+		f := asciiFold(kw[0])
+		t[f] = append(t[f], kw)
+	}
+	return t
+}()
+
 func asciiFold(b byte) byte {
 	if b >= 'A' && b <= 'Z' {
 		return b | 0x20
@@ -83,9 +95,26 @@ func asciiHasAnyFold(s string, i int, anchors []string) bool {
 	return false
 }
 
+// kvKeywordLen returns the length of the kv keyword starting at s (already
+// positioned on a candidate first byte), matching ASCII-case-insensitively in
+// kvKeywords alternation order; 0 when none matches.
+func kvKeywordLen(s string) int {
+	if s == "" {
+		return 0
+	}
+	for _, kw := range kvByFirst[asciiFold(s[0])] {
+		if len(s) >= len(kw) && asciiEqualFold(s[:len(kw)], kw) {
+			return len(kw)
+		}
+	}
+	return 0
+}
+
 // scanSecretAnchors reports which redaction anchor classes occur in s with a
 // single linear pass. It is a superset check: a clear class guarantees its
 // regex cannot match, so the expensive scan is skipped for that pattern.
+// Classes already found are not re-checked, so anchor-dense output does not
+// pay repeated keyword comparisons.
 func scanSecretAnchors(s string) int {
 	mask := 0
 	for i := 0; i < len(s); i++ {
@@ -93,13 +122,13 @@ func scanSecretAnchors(s string) int {
 		if m == 0 {
 			continue
 		}
-		if m&anchorBearer != 0 && asciiHasAnyFold(s, i, bearerAnchors) {
+		if m&anchorBearer != 0 && mask&anchorBearer == 0 && asciiHasAnyFold(s, i, bearerAnchors) {
 			mask |= anchorBearer
 		}
-		if m&anchorPEM != 0 && asciiHasAnyFold(s, i, pemAnchors) {
+		if m&anchorPEM != 0 && mask&anchorPEM == 0 && asciiHasAnyFold(s, i, pemAnchors) {
 			mask |= anchorPEM
 		}
-		if m&anchorKV != 0 && asciiHasAnyFold(s, i, kvAnchors) {
+		if m&anchorKV != 0 && mask&anchorKV == 0 && kvKeywordLen(s[i:]) != 0 {
 			mask |= anchorKV
 		}
 		if mask == anchorAny {
@@ -158,18 +187,11 @@ func redactKV(s string) string {
 	var b strings.Builder
 	wrote := 0
 	for i := 0; i < len(s); {
-		if anchorFirstMask[asciiFold(s[i])]&anchorKV == 0 || !asciiHasAnyFold(s, i, kvAnchors) {
+		if anchorFirstMask[asciiFold(s[i])]&anchorKV == 0 {
 			i++
 			continue
 		}
-		klen := 0
-		rest := s[i:]
-		for _, kw := range kvKeywords {
-			if len(rest) >= len(kw) && asciiEqualFold(rest[:len(kw)], kw) {
-				klen = len(kw)
-				break
-			}
-		}
+		klen := kvKeywordLen(s[i:])
 		if klen == 0 {
 			i++
 			continue
