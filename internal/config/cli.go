@@ -57,6 +57,9 @@ type GlobalConfig struct {
 	// ApprovalExemptPatterns is the global default for per-connection
 	// approvalExemptPatterns.
 	ApprovalExemptPatterns []string `json:"approvalExemptPatterns,omitempty"`
+	// SftpDedicatedConn is the global default for per-connection
+	// sftpDedicatedConn (SFTP over a dedicated SSH connection).
+	SftpDedicatedConn *bool `json:"sftpDedicatedConn,omitempty"`
 }
 
 // stringList is a repeatable flag value.
@@ -313,6 +316,10 @@ func ParseArgs(args []string) (*Options, error) {
 		if len(conf.ApprovalExemptPatterns) == 0 {
 			conf.ApprovalExemptPatterns = fileGlobal.ApprovalExemptPatterns
 		}
+		// A connection that set its own sftpDedicatedConn keeps it.
+		if conf.SftpDedicatedConn == nil {
+			conf.SftpDedicatedConn = fileGlobal.SftpDedicatedConn
+		}
 		if err := conf.Normalize(); err != nil {
 			return nil, fmt.Errorf("invalid config for '%s': %w", conf.Name, err)
 		}
@@ -403,6 +410,13 @@ func parseGlobalConfig(raw any, global *GlobalConfig) error {
 	}
 	if v, ok := m["approvalExemptPatterns"]; ok {
 		global.ApprovalExemptPatterns = StringSlice(v)
+	}
+	if v, ok := m["sftpDedicatedConn"]; ok {
+		b, err := ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("%s.sftpDedicatedConn: %w", GlobalConfigKey, err)
+		}
+		global.SftpDedicatedConn = &b
 	}
 	return nil
 }
@@ -528,6 +542,13 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 			return nil, err
 		}
 		conf.RedactSecrets = &b
+	}
+	if v, ok := m["sftpDedicatedConn"]; ok {
+		b, err := ParseBool(v)
+		if err != nil {
+			return nil, err
+		}
+		conf.SftpDedicatedConn = &b
 	}
 
 	intFields := map[string]*int{

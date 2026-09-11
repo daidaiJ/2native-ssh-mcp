@@ -460,6 +460,8 @@ func (m *Manager) Disconnect(name string) {
 		delete(m.shells, key)
 	}
 	// Pooled SFTP clients are attached to this connection and are now stale.
+	// Entries tagged dedicatedPoolTag also carry a dedicated SSH connection
+	// (sftpDedicatedConn) that must be closed with them.
 	var pooled []*sftpPoolEntry
 	for k, e := range m.sftpPool {
 		if e.client != nil && (k == key || strings.HasPrefix(k, key+"#")) {
@@ -474,6 +476,9 @@ func (m *Manager) Disconnect(name string) {
 	m.closeSessionsForConnection(key)
 	for _, e := range pooled {
 		_ = e.client.Close()
+		if e.ssh != nil {
+			_ = e.ssh.Close()
+		}
 	}
 	if client != nil {
 		client.Close()

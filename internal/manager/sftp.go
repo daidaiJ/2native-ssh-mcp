@@ -32,6 +32,14 @@ const uploadPartSuffix = ".part"
 // sftpPoolIdleTTL bounds how long an unused pooled SFTP client stays open.
 const sftpPoolIdleTTL = 5 * time.Minute
 
+// dedicatedPoolTag marks SFTP pool keys whose client runs over a dedicated
+// SSH connection (sftpDedicatedConn) instead of the shared one.
+const dedicatedPoolTag = "#ded"
+
+// sftpAliveProbeTimeout bounds the keepalive probe on a pooled dedicated
+// connection before reuse.
+const sftpAliveProbeTimeout = 5 * time.Second
+
 // maxSftpPacket is the practical SFTP packet ceiling (OpenSSH accepts up to
 // 256 KiB); larger configured chunks stop paying off beyond it.
 const maxSftpPacket = 256 * 1024
@@ -126,7 +134,7 @@ func (m *Manager) TransferFile(ctx context.Context, action, localPath, remotePat
 	defer watchdog.Stop()
 	progress = idleProgress(progress, watchdog, sftpTimeout)
 
-	sftpClient, err := m.acquireSftp(tctx, client, key, cfg, false)
+	sftpClient, backing, err := m.acquireSftp(tctx, client, key, cfg, false)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +144,7 @@ func (m *Manager) TransferFile(ctx context.Context, action, localPath, remotePat
 			_ = sftpClient.Close()
 			return
 		}
-		m.releaseSftp(key, false, sftpClient)
+		m.releaseSftp(key, cfg, false, sftpClient, backing)
 	}()
 	stop := context.AfterFunc(tctx, func() { _ = sftpClient.Close() })
 	defer stop()
@@ -144,7 +152,7 @@ func (m *Manager) TransferFile(ctx context.Context, action, localPath, remotePat
 	var result *TransferResult
 	switch {
 	case action == "upload" && isLocalDir(validatedLocal):
-		result, err = m.uploadDirectory(tctx, sftpClient, client, key, validatedLocal, validatedRemote, cfg, force, progress)
+		result, err = m.uploadDirectory(tctx, sftpClient, backing, key, validatedLocal, validatedRemote, cfg, force, progress)
 	case action == "download":
 		if fi, statErr := sftpClient.Stat(validatedRemote); statErr == nil && fi.IsDir() {
 			result, err = m.downloadDirectory(tctx, sftpClient, validatedRemote, validatedLocal, cfg, force, progress)
@@ -152,7 +160,7 @@ func (m *Manager) TransferFile(ctx context.Context, action, localPath, remotePat
 			result, err = m.download(tctx, sftpClient, validatedRemote, validatedLocal, cfg, force, progress)
 		}
 	default:
-		result, err = m.upload(tctx, sftpClient, client, key, validatedLocal, validatedRemote, cfg, force, progress)
+		result, err = m.upload(tctx, sftpClient, backing, key, validatedLocal, validatedRemote, cfg, force, progress)
 	}
 	if err != nil {
 		if ctx.Err() != nil {
@@ -168,9 +176,11 @@ func (m *Manager) TransferFile(ctx context.Context, action, localPath, remotePat
 
 	// Content integrity for single-file transfers: sha256 both sides after
 	// the copy. A remote without sha256sum marks the result "unverified"
-	// rather than failing it; a mismatch is a hard error.
+	// rather than failing it; a mismatch is a hard error. The exec runs over
+	// the connection that wrote the file (dedicated when enabled), so the
+	// written bytes are what gets verified.
 	if result.Files == 0 && !result.Skipped {
-		sum, status, cerr := m.verifyTransferChecksum(tctx, client, action, validatedLocal, validatedRemote)
+		sum, status, cerr := m.verifyTransferChecksum(tctx, backing, action, validatedLocal, validatedRemote)
 		if cerr != nil {
 			return nil, cerr
 		}
@@ -430,16 +440,24 @@ func idleProgress(progress ProgressFunc, watchdog *time.Timer, idle time.Duratio
 // sftpPoolEntry is a cached SFTP client for a connection.
 type sftpPoolEntry struct {
 	client *sftp.Client
-	timer  *time.Timer
+	// ssh is the backing dedicated connection; non-nil only for entries
+	// whose key contains dedicatedPoolTag. It is closed together with the
+	// SFTP client.
+	ssh   *ssh.Client
+	timer *time.Timer
 }
 
 // acquireSftp returns an SFTP client for the connection, reusing a pooled one
-// when available. cw selects the concurrent-writes client (a separate client
+// when available, plus the SSH connection backing it: the shared connection
+// when sftpDedicatedConn is off, otherwise a dedicated connection fully owned
+// by the SFTP pool. cw selects the concurrent-writes client (a separate client
 // so pipelined, possibly hole-leaving writes never interleave with the
-// resume-safe sequential client). The returned release puts the client back
-// into the pool; callers must Close it themselves instead when the transfer
-// failed.
-func (m *Manager) acquireSftp(ctx context.Context, client *ssh.Client, key string, cfg *config.SSHConfig, cw bool) (*sftp.Client, error) {
+// resume-safe sequential client). The caller releases the client back into
+// the pool via releaseSftp, or Closes it itself when the transfer failed.
+func (m *Manager) acquireSftp(ctx context.Context, client *ssh.Client, key string, cfg *config.SSHConfig, cw bool) (*sftp.Client, *ssh.Client, error) {
+	if cfg != nil && cfg.GetSftpDedicatedConn() {
+		return m.acquireDedicatedSftp(ctx, key, cfg, cw)
+	}
 	poolKey := key
 	if cw {
 		poolKey += "#cw"
@@ -451,19 +469,88 @@ func (m *Manager) acquireSftp(ctx context.Context, client *ssh.Client, key strin
 			e.timer.Stop()
 		}
 		m.mu.Unlock()
-		return e.client, nil
+		return e.client, client, nil
 	}
 	m.mu.Unlock()
-	return m.openSftp(ctx, client, key, cfg, cw)
+	sftpClient, err := m.openSftp(ctx, client, cfg, cw)
+	if err != nil {
+		if ctx.Err() != nil {
+			m.Disconnect(key)
+			return nil, client, ctxToolError(ctx, CodeOperationTimeout, "SFTP open timed out")
+		}
+		return nil, client, err
+	}
+	return sftpClient, client, nil
+}
+
+// acquireDedicatedSftp returns an SFTP client over its own SSH connection,
+// for gateways that front sshd with a session-scoped overlay (shadow
+// container) where files written over the reused shell/exec session are
+// discarded when it ends. Dedicated clients are pooled under a key tagged
+// with dedicatedPoolTag; both the SFTP client and the backing connection are
+// closed on idle TTL or Disconnect.
+func (m *Manager) acquireDedicatedSftp(ctx context.Context, key string, cfg *config.SSHConfig, cw bool) (*sftp.Client, *ssh.Client, error) {
+	poolKey := key + dedicatedPoolTag
+	if cw {
+		poolKey += "#cw"
+	}
+	m.mu.Lock()
+	if e, ok := m.sftpPool[poolKey]; ok {
+		delete(m.sftpPool, poolKey)
+		if e.timer != nil {
+			e.timer.Stop()
+		}
+		m.mu.Unlock()
+		// A dedicated connection parked past the idle TTL may have been
+		// dropped by the gateway; probe before reuse and redial if dead so
+		// the next transfer never inherits a stale connection.
+		if e.ssh != nil && !sshAlive(e.ssh) {
+			_ = e.client.Close()
+			_ = e.ssh.Close()
+			return m.acquireDedicatedSftp(ctx, key, cfg, cw)
+		}
+		return e.client, e.ssh, nil
+	}
+	m.mu.Unlock()
+	sshClient, err := m.dial(key, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	sftpClient, err := m.openSftp(ctx, sshClient, cfg, cw)
+	if err != nil {
+		sshClient.Close()
+		return nil, nil, err
+	}
+	return sftpClient, sshClient, nil
+}
+
+// sshAlive reports whether the connection still responds to a keepalive
+// request within sftpAliveProbeTimeout.
+func sshAlive(c *ssh.Client) bool {
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := c.SendRequest("keepalive@openssh.com", true, nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return err == nil
+	case <-time.After(sftpAliveProbeTimeout):
+		return false
+	}
 }
 
 // releaseSftp returns a healthy client to the connection's pool with an idle
-// TTL; a duplicate or expired entry is closed.
-func (m *Manager) releaseSftp(key string, cw bool, client *sftp.Client) {
+// TTL; a duplicate or expired entry is closed. sshClient must be the backing
+// connection returned by acquireSftp.
+func (m *Manager) releaseSftp(key string, cfg *config.SSHConfig, cw bool, client *sftp.Client, sshClient *ssh.Client) {
 	if client == nil {
 		return
 	}
 	poolKey := key
+	if cfg != nil && cfg.GetSftpDedicatedConn() {
+		poolKey += dedicatedPoolTag
+	}
 	if cw {
 		poolKey += "#cw"
 	}
@@ -474,11 +561,17 @@ func (m *Manager) releaseSftp(key string, cw bool, client *sftp.Client) {
 		return
 	}
 	e := &sftpPoolEntry{client: client}
+	if strings.Contains(poolKey, dedicatedPoolTag) {
+		e.ssh = sshClient
+	}
 	e.timer = time.AfterFunc(sftpPoolIdleTTL, func() {
 		m.mu.Lock()
 		delete(m.sftpPool, poolKey)
 		m.mu.Unlock()
 		_ = client.Close()
+		if e.ssh != nil {
+			_ = e.ssh.Close()
+		}
 	})
 	m.sftpPool[poolKey] = e
 }
@@ -487,7 +580,7 @@ func (m *Manager) releaseSftp(key string, cw bool, client *sftp.Client) {
 // enabled only on the cw client: pkg/sftp may leave holes in a file after a
 // failed concurrent write (pkg/sftp#472), which is acceptable for a fresh
 // .part that is deleted on failure, but never for a resume-safe partial.
-func (m *Manager) openSftp(ctx context.Context, client *ssh.Client, key string, cfg *config.SSHConfig, cw bool) (*sftp.Client, error) {
+func (m *Manager) openSftp(ctx context.Context, client *ssh.Client, cfg *config.SSHConfig, cw bool) (*sftp.Client, error) {
 	type result struct {
 		client *sftp.Client
 		err    error
@@ -516,7 +609,6 @@ func (m *Manager) openSftp(ctx context.Context, client *ssh.Client, key string, 
 		}
 		return r.client, nil
 	case <-ctx.Done():
-		m.Disconnect(key)
 		return nil, ctxToolError(ctx, CodeOperationTimeout, "SFTP open timed out")
 	}
 }
@@ -623,14 +715,14 @@ func (m *Manager) upload(ctx context.Context, sftpClient *sftp.Client, client *s
 					if match {
 						copyClient := sftpClient
 						if concurrent {
-							cwClient, cwErr := m.acquireSftp(ctx, client, key, cfg, true)
+							cwClient, cwBacking, cwErr := m.acquireSftp(ctx, client, key, cfg, true)
 							if cwErr != nil {
 								return nil, cwErr
 							}
 							copyClient = cwClient
 							defer func() {
 								if ctx.Err() == nil {
-									m.releaseSftp(key, true, cwClient)
+									m.releaseSftp(key, cfg, true, cwClient, cwBacking)
 								} else {
 									_ = cwClient.Close()
 								}
@@ -671,7 +763,7 @@ func (m *Manager) upload(ctx context.Context, sftpClient *sftp.Client, client *s
 		copyClient := sftpClient
 		if concurrent {
 			// A dedicated concurrent-writes client; released back to its own pool.
-			cwClient, cwErr := m.acquireSftp(ctx, client, key, cfg, true)
+			cwClient, cwBacking, cwErr := m.acquireSftp(ctx, client, key, cfg, true)
 			if cwErr != nil {
 				partFile.Close()
 				return nil, cwErr
@@ -679,7 +771,7 @@ func (m *Manager) upload(ctx context.Context, sftpClient *sftp.Client, client *s
 			copyClient = cwClient
 			defer func() {
 				if ctx.Err() == nil {
-					m.releaseSftp(key, true, cwClient)
+					m.releaseSftp(key, cfg, true, cwClient, cwBacking)
 				} else {
 					_ = cwClient.Close()
 				}

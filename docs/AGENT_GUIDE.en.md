@@ -43,6 +43,7 @@ One tool, `action` param. Progress via `notifications/progress` when client send
 - **Dedup**: destination matches (size+mtime) → skipped. **Resume**: partial destination → continue. Download = temp + atomic rename, stamps remote mtime.
 - Growing source: tail appended after main copy.
 - Concurrent SFTP (16×32 KB default; `sftpConcurrency`/`sftpChunkSize` per connection).
+- `sftpDedicatedConn: true` (per connection or `$global`): SFTP runs over its own SSH connection. Gateways with a shadow container / session-scoped overlay in front of sshd discard files written over the reused shell session — enable this when transferred files vanish; lazy creation, 5 min idle recycle, liveness-probed before reuse.
 - Local path outside the `localPathMode` scope → `LOCAL_PATH_NOT_ALLOWED` with a scope message ("not within the allowed local paths for this connection"); a `..` escape is reported separately as "Path traversal rejected".
 
 ### list-servers

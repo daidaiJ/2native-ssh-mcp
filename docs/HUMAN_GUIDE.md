@@ -316,6 +316,7 @@ Server options:
 | `commandLogDir` | `.ssh-mcp-logs` | 命令日志目录（`<dir>/<连接名>.log`） |
 | `commandLogOnlySuccess` | false | 只记录成功命令 |
 | `sftpConcurrency` / `sftpChunkSize` | 16 / 32768 | SFTP 并发数与分块大小 |
+| `sftpDedicatedConn` | false | SFTP 走独立 SSH 连接（懒创建、空闲 5 分钟回收、复用前探活）；sshd 前有影子容器/会话级 overlay 导致文件丢失时开启，`$global` 可设全局默认 |
 | `algorithms` | 空 | kex/cipher/serverHostKey/hmac 协商 |
 | `hostKeyCheck` | `accept-new` | 主机密钥校验：`accept-new`（未知记录后接受）/ `strict`（未知拒绝）/ `none`（不校验）；`known_hosts` 文件及其目录（如 `~/.ssh`）不存在时自动创建 |
 | `knownHostsFile` | `~/.ssh/known_hosts` | 主机密钥校验用的 known_hosts 文件 |

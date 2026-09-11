@@ -158,6 +158,12 @@ type SSHConfig struct {
 	SftpConcurrency int `json:"sftpConcurrency,omitempty"`
 	// SftpChunkSize is the SFTP transfer chunk size in bytes (default: 32768).
 	SftpChunkSize int `json:"sftpChunkSize,omitempty"`
+	// SftpDedicatedConn runs file transfers over a dedicated SSH connection
+	// instead of reusing the shell/exec connection. For gateways that front
+	// sshd with a session-scoped overlay (shadow container), files written
+	// over the reused session can be discarded when it ends; a separate
+	// connection sidesteps that. Default: false.
+	SftpDedicatedConn *bool `json:"sftpDedicatedConn,omitempty"`
 	// ApprovalMode controls the destructive-command approval gate on
 	// execute-command: "auto" (default) never asks, "ask-destructive" sends
 	// an MCP elicitation to the human before running a command classified as
@@ -391,6 +397,16 @@ func (c *SSHConfig) GetResultFormat() string {
 	default:
 		return ResultFormatText
 	}
+}
+
+// GetSftpDedicatedConn returns whether file transfers should run over a
+// dedicated SSH connection instead of the shared shell/exec connection
+// (default: false).
+func (c *SSHConfig) GetSftpDedicatedConn() bool {
+	if c.SftpDedicatedConn != nil {
+		return *c.SftpDedicatedConn
+	}
+	return false
 }
 
 // ExpandHome expands a leading ~ in a path.

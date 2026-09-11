@@ -316,6 +316,7 @@ Server options:
 | `commandLogDir` | `.ssh-mcp-logs` | Command log directory (`<dir>/<connection-name>.log`) |
 | `commandLogOnlySuccess` | false | Only log successful commands |
 | `sftpConcurrency` / `sftpChunkSize` | 16 / 32768 | SFTP concurrency and chunk size |
+| `sftpDedicatedConn` | false | Run SFTP over a dedicated SSH connection (lazy, 5 min idle recycle, liveness-probed before reuse); enable when a shadow container / session-scoped overlay in front of sshd loses transferred files; `$global` sets the default |
 | `algorithms` | empty | kex/cipher/serverHostKey/hmac negotiation |
 | `hostKeyCheck` | `accept-new` | Host key verification: `accept-new` (accept after unknown record) / `strict` (reject unknown) / `none` (no verification); automatically creates `known_hosts` file and its directory (e.g., `~/.ssh`) if they don't exist |
 | `knownHostsFile` | `~/.ssh/known_hosts` | known_hosts file for host key verification |

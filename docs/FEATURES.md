@@ -23,6 +23,7 @@
 - **安全**：命令白/黑名单、路径白名单（本地/远端，本地范围可配 `localPathMode`：cwd / list / any）、凭据隔离（SSH 凭据留在本地，不暴露给模型）、输出脱敏（`redactSecrets`，默认关闭——脱敏扫描对含密钥的大输出有明显开销，需要时按连接开启）、配置权限检查（Unix `0600`/`0700`，Windows ACL；可用 `--allow-insecure-config-perms` 或配置文件 `$global.allowInsecureConfigPerms` 跳过）
 - **认证与兼容性**：密码/私钥/ssh-agent/Pageant/键盘交互认证（2FA）、代理（SOCKS5/HTTP/HTTPS）、算法协商配置（兼容老服务器）
 - **文件传输性能**：SFTP 并发传输（`sftpConcurrency`/`sftpChunkSize`，高延迟链路提速；大文件自动启用并发写）、SFTP 客户端按连接池化（空闲 5 分钟回收）、`sftpTimeoutMs` 为**无进展超时**而非总时长（健康的大文件传输不再被墙钟切断）、断点续传、去重、进度通知
+- **SFTP 独立连接**：`sftpDedicatedConn`（每连接或 `$global` 全局默认）让文件传输走单独的 SSH 连接——sshd 前有影子容器/会话级 overlay 的网关会丢弃复用 shell 会话写入的文件；连接懒创建（首次传输才拨号）、空闲 5 分钟回收、复用前 keepalive 探活（网关掐断了自动重拨）
 - **HTTP daemon**：`start/stop/status/kill` 子命令 + 引用计数 + PID 文件 + 健康检查端点；`install` 一键注册 Windows 开机自启
 - **自动发布**：推送带消息的 tag 即触发 GitHub Actions 构建 6 平台二进制并创建 Release（日志用 tag 消息），详见 [DEVELOPMENT.md](DEVELOPMENT.md#自动发布-release)
 

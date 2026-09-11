@@ -31,6 +31,15 @@ func loadTestManager(t *testing.T) *Manager {
 		t.Fatalf("load config: %v", err)
 	}
 	if _, ok := opts.Configs["ubuntu"]; !ok {
+		// Same fallback as newSftpTestManager: re-register the first
+		// configured connection under the name the tests reference.
+		for _, conf := range opts.Configs {
+			conf.Name = "ubuntu"
+			opts.Configs["ubuntu"] = conf
+			break
+		}
+	}
+	if _, ok := opts.Configs["ubuntu"]; !ok {
 		t.Fatal("config.json must define an 'ubuntu' connection for integration tests")
 	}
 	m, err := New(opts.Configs, opts.CommandLogDir)

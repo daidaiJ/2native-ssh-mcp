@@ -34,6 +34,17 @@ func newSftpTestManager(t *testing.T) *Manager {
 	}
 	ubuntu, ok := opts.Configs["ubuntu"]
 	if !ok {
+		// Fall back to the first configured connection so the suite also runs
+		// against environments without an "ubuntu" entry (e.g. a WSL host):
+		// re-register it under the name the tests reference.
+		for _, conf := range opts.Configs {
+			conf.Name = "ubuntu"
+			opts.Configs["ubuntu"] = conf
+			ubuntu = conf
+			break
+		}
+	}
+	if ubuntu == nil {
 		t.Fatal("config.json must define an 'ubuntu' connection for integration tests")
 	}
 	ubuntu.LocalPathMode = config.LocalPathModeAny
@@ -274,5 +285,42 @@ func TestTransferChecksumVerified(t *testing.T) {
 	}
 	if res.Checksum != localMD5(t, local) && res.Checksum == "" {
 		t.Fatalf("checksum must be recorded: %+v", res)
+	}
+}
+
+// TestTransferDedicatedConn covers sftpDedicatedConn: the transfer still
+// lands byte-identical when SFTP runs over its own SSH connection, and the
+// client is pooled under the dedicated key so it survives idle reuse.
+func TestTransferDedicatedConn(t *testing.T) {
+	m := newSftpTestManager(t)
+	m.mu.Lock()
+	on := true
+	m.configs["ubuntu"].SftpDedicatedConn = &on
+	m.mu.Unlock()
+
+	dir := sftpTestDir(t, m)
+	local := writeFile(t, t.TempDir(), 256*1024, 5)
+	remote := dir + "/ded.bin"
+
+	if _, err := m.TransferFile(nil, "upload", local, remote, "ubuntu", false, nil); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	if got := remoteMD5(t, m, remote); got != localMD5(t, local) {
+		t.Fatalf("remote content mismatch after dedicated-conn upload")
+	}
+
+	m.mu.Lock()
+	_, pooled := m.sftpPool["ubuntu"+dedicatedPoolTag]
+	m.mu.Unlock()
+	if !pooled {
+		t.Fatal("expected a pooled dedicated SFTP client after the transfer")
+	}
+
+	down := filepath.Join(t.TempDir(), "down.bin")
+	if _, err := m.TransferFile(nil, "download", down, remote, "ubuntu", false, nil); err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	if localMD5(t, down) != localMD5(t, local) {
+		t.Fatalf("downloaded content mismatch")
 	}
 }
