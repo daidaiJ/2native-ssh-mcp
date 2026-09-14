@@ -334,6 +334,7 @@ Server options:
 | `redactSecrets` | false | Output redaction (password/token/Bearer/PEM); enabling has scan cost |
 | `resultFormat` | text | Successful command result rendering: text = sectioned plain text (real newlines), json = structured JSON |
 | `tryKeyboard` | false | Keyboard-interactive authentication (the server's 2FA challenge pops up in the MCP client; unattended setups fall back to `SSH_MCP_2FA_CODE`) |
+| `via` | empty | Jump-host connection name (OpenSSH ProxyJump): the target is reached through the jump host's `direct-tcpip` tunnel; the target must not also set `proxy` |
 
 > Strings in the configuration file support `${environment-variable-name}` references, so credentials can be stored in environment variables without touching disk.
 
@@ -343,6 +344,35 @@ Server options:
 - Private Key: `privateKey` (may have `passphrase`, or use environment variable `SSH_MCP_PASSPHRASE`)
 - ssh-agent: `agent` (Unix socket path; on Windows use `pageant` for Pageant)
 - Keyboard-interactive: `tryKeyboard: true`. The password prompt is answered automatically from the configured password; OTP/verification-code prompts **pop up live in the MCP client that triggered the connection** (answer within 2 minutes; only the session that started the dial is prompted — other connections are never blocked). If the prompt is declined/cancelled/timed out, or the client cannot elicit at all (background jobs, headless runs), it automatically falls back to the `SSH_MCP_2FA_CODE` environment variable; if that is unset too, empty answers are sent and the server simply rejects — a failed authentication fails only that connection, never wedges the process or other connections.
+
+## Jump Hosts (via, OpenSSH ProxyJump)
+
+When an internal machine is unreachable from this machine and only reachable through a jump host, point the target connection's `via` at the jump-host connection. This machine never opens a TCP connection to the target directly — the SSH handshake rides a `direct-tcpip` tunnel through the jump host (standard OpenSSH ProxyJump semantics):
+
+```json
+{
+  "bastion": {
+    "host": "bastion.example.com",
+    "username": "deploy",
+    "agent": "pageant"
+  },
+  "internal-db": {
+    "host": "10.0.1.50",
+    "username": "dbadmin",
+    "privateKey": "~/.ssh/db_key",
+    "via": "bastion"
+  }
+}
+```
+
+- The jump host and the target **authenticate independently** (their own password/key/2FA, their own hostKeyCheck/known_hosts); no agent forwarding.
+- The jump host is an ordinary connection: it may carry a `proxy` and may be shared by several `via` targets. The **target itself must not also set `proxy`/`socksProxy`** (ambiguous semantics — validation rejects it). Self references and cycles (A→B→A) fail at startup.
+- `list-servers` labels the target with `via=bastion` so an agent knows it is not directly reachable.
+- Commands, shell mode, SFTP, and background jobs all behave exactly as on a direct connection — the tunnel only replaces the TCP layer. A dead jump host produces a clear jump-host error, and the next call reconnects the jump host before re-establishing the tunnel.
+- `ProxyJump <alias>` in `~/.ssh/config` is parsed and mapped to `via` (a single alias only; `a,b` multi-hop, `user@host`, and `host:port` are rejected). The alias must already be declared as a connection in the configuration — nothing is created implicitly.
+- **Compatible with standard OpenSSH jump hosts; NOT compatible with appliances that only offer an interactive menu / disallow exec** — for those, keep using the existing `transportMode: shell` + `commandTemplate`.
+
+Difference from `commandTemplate: "ssh jumphost <quotedCommand>"`: the template logs into the jump host and runs a *remote* ssh there — timeouts, process-group kills, and SFTP semantics all happen on the jump host, and the target never sees local keys. `via` is a true tunnel: the target gets its own authentication and session semantics. Pick one per scenario; do not mix them.
 
 ## Audit Log (tamper-evident command history, hash chain)
 

@@ -335,6 +335,7 @@ Server options:
 | `redactSecrets` | false | 输出脱敏（password/token/Bearer/PEM），开启有扫描开销 |
 | `resultFormat` | text | execute-command 成功结果渲染：text=分节纯文本（真实换行），json=结构化 JSON |
 | `tryKeyboard` | false | 键盘交互认证（服务器 2FA 挑战弹窗到 MCP 客户端；无人值守场景用 `SSH_MCP_2FA_CODE` 兜底） |
+| `via` | 空 | 跳板机连接名（OpenSSH ProxyJump）：本机经跳板 `direct-tcpip` 隧道连目标，目标不可再配 `proxy` |
 
 > 配置文件中的字符串支持 `${环境变量名}` 引用，凭据可放在环境变量里而不落盘。
 
@@ -344,6 +345,35 @@ Server options:
 - 私钥：`privateKey`（可带 `passphrase`，或环境变量 `SSH_MCP_PASSPHRASE`）
 - ssh-agent：`agent`（Unix socket 路径；Windows 填 `pageant` 使用 Pageant）
 - 键盘交互：`tryKeyboard: true`。密码提示自动用配置的密码回答；OTP/验证码提示**实时弹窗到触发连接的 MCP 客户端**（2 分钟内作答，只弹给发起连接的那个会话，不影响其它连接）。弹窗被拒绝/取消/超时，或客户端不支持弹窗（后台任务、无头运行）时，自动回退到环境变量 `SSH_MCP_2FA_CODE`；连它也没配，则以空答案交由服务器拒绝——认证失败只会让本次连接失败，不会中断其它连接或挂死进程。
+
+## 跳板机（via，OpenSSH ProxyJump）
+
+内网机器对本机不可达、只能先登录跳板时，给目标连接配置 `via` 指向跳板连接。本机从不直接 TCP 连接目标——SSH 握手走跳板的 `direct-tcpip` 隧道（标准 OpenSSH ProxyJump 语义）：
+
+```json
+{
+  "bastion": {
+    "host": "bastion.example.com",
+    "username": "deploy",
+    "agent": "pageant"
+  },
+  "internal-db": {
+    "host": "10.0.1.50",
+    "username": "dbadmin",
+    "privateKey": "~/.ssh/db_key",
+    "via": "bastion"
+  }
+}
+```
+
+- 跳板和目标**各自认证**（各自的密码/密钥/2FA、各自的 hostKeyCheck/known_hosts），不转发 agent。
+- 跳板连接是普通连接，可以带 `proxy`、可以复用给多个 `via` 目标；但**目标本身不能再配 `proxy`/`socksProxy`**（语义冲突，配置校验会报错）。跳板自引用或循环依赖（A→B→A）在启动时即报错。
+- `list-servers` 的目标条目带 `via=bastion`，提醒 agent 该机器不可直连。
+- 执行命令、shell 模式、SFTP、后台任务全部与直连相同——隧道只替换 TCP 层；跳板挂了会报出明确的跳板错误，下次调用自动先重连跳板再打隧道。
+- `~/.ssh/config` 里的 `ProxyJump <别名>` 会被解析映射到 `via`（仅支持单个别名；`a,b` 多跳、`user@host`、`host:port` 会报错）。别名必须在配置文件里已声明为连接，不会静默新建。
+- **兼容标准 OpenSSH 跳板；不兼容只提供交互菜单 / 禁止 exec 的堡垒机**——那种场景继续用已有的 `transportMode: shell` + `commandTemplate`。
+
+与 `commandTemplate: "ssh jumphost <quotedCommand>"` 的区别：后者是「登录跳板后在远端再敲一次 ssh」，超时、杀进程、SFTP 语义都发生在跳板上，目标机器拿不到本地的密钥；`via` 是真正的隧道，目标拿到的是它自己的认证与会话语义。两者按场景选用，不要混用。
 
 ## 审计日志（防篡改命令记录，哈希链）
 

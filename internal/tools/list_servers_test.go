@@ -28,6 +28,20 @@ func TestFormatServerListIncludesMetadata(t *testing.T) {
 	}
 }
 
+// A via target must be labeled as such so the agent knows the host is not
+// directly reachable (and the JSON carries it too).
+func TestFormatServerListShowsVia(t *testing.T) {
+	text := formatServerList([]manager.ServerInfo{
+		{Name: "internal-db", Host: "10.0.1.50", Port: 22, Username: "dbadmin", Via: "bastion"},
+	})
+	if !strings.Contains(text, "via=bastion") {
+		t.Fatalf("summary line must show the jump host:\n%s", text)
+	}
+	if !strings.Contains(text, `"via":"bastion"`) {
+		t.Fatalf("servers JSON must show the jump host:\n%s", text)
+	}
+}
+
 func TestFormatRecentCommands(t *testing.T) {
 	now := time.Date(2026, 9, 5, 19, 21, 0, 0, time.Local)
 	entries := []manager.CommandLogEntry{

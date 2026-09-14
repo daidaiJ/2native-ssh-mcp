@@ -24,6 +24,7 @@
 - **认证与兼容性**：密码/私钥/ssh-agent/Pageant/键盘交互认证（2FA：服务器挑战实时弹窗到触发连接的 MCP 会话，2 分钟超时；拒绝/超时/不支持弹窗自动回退 `SSH_MCP_2FA_CODE`，再由服务器裁决，不挂死不中断其它连接）、代理（SOCKS5/HTTP/HTTPS）、算法协商配置（兼容老服务器）
 - **文件传输性能**：SFTP 并发传输（`sftpConcurrency`/`sftpChunkSize`，高延迟链路提速；大文件自动启用并发写）、SFTP 客户端按连接池化（空闲 5 分钟回收）、`sftpTimeoutMs` 为**无进展超时**而非总时长（健康的大文件传输不再被墙钟切断）、断点续传、去重、进度通知
 - **SFTP 独立连接**：`sftpDedicatedConn`（每连接或 `$global` 全局默认）让文件传输走单独的 SSH 连接——sshd 前有影子容器/会话级 overlay 的网关会丢弃复用 shell 会话写入的文件；连接懒创建（首次传输才拨号）、空闲 5 分钟回收、复用前 keepalive 探活（网关掐断了自动重拨）
+- **跳板机隧道**：`via`（OpenSSH ProxyJump）经跳板连接的 `direct-tcpip` 隧道做二次 SSH 握手——跳板与目标各自认证/校验主机密钥，不转发 agent；执行/shell/SFTP/后台行为与直连一致，`list-servers` 标注 `via=`；环、自指、via+proxy 冲突、多跳语法启动即报错；兼容标准 OpenSSH 跳板，不兼容菜单式堡垒机（后者用 `transportMode: shell` + `commandTemplate`）
 - **HTTP daemon**：`start/stop/status/kill` 子命令 + 引用计数 + PID 文件 + 健康检查端点；`install` 一键注册 Windows 开机自启
 - **自动发布**：推送带消息的 tag 即触发 GitHub Actions 构建 6 平台二进制并创建 Release（日志用 tag 消息），详见 [DEVELOPMENT.md](DEVELOPMENT.md#自动发布-release)
 

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -27,33 +28,12 @@ import (
 // the Manager lock: the handshake — and any human prompt inside it — runs
 // without holding the connection table.
 func (m *Manager) dial(ctx context.Context, key string, cfg *config.SSHConfig) (*ssh.Client, error) {
-	authMethods, err := buildAuthMethods(cfg, elicitorFromContext(ctx), ctx)
+	if cfg.Via != "" {
+		return m.dialVia(ctx, key, cfg)
+	}
+	clientConfig, err := prepareClientConfig(cfg, ctx)
 	if err != nil {
 		return nil, err
-	}
-	if len(authMethods) == 0 {
-		return nil, newToolError(CodeSSHAuthMissing,
-			fmt.Sprintf("No valid authentication method provided for [%s] (agent, password, private key, or tryKeyboard)", key), false)
-	}
-
-	hkcb, err := buildHostKeyCallback(cfg)
-	if err != nil {
-		return nil, newToolError(CodeSSHConnectionFailed,
-			fmt.Sprintf("SSH connection [%s] failed: %v", key, err), false)
-	}
-	clientConfig := &ssh.ClientConfig{
-		User:            cfg.Username,
-		Auth:            authMethods,
-		HostKeyCallback: hkcb,
-		Timeout:         time.Duration(cfg.ConnectionTimeoutMs) * time.Millisecond,
-	}
-	if cfg.Algorithms != nil {
-		clientConfig.Config = ssh.Config{
-			KeyExchanges: cfg.Algorithms.Kex,
-			Ciphers:      cfg.Algorithms.Cipher,
-			MACs:         cfg.Algorithms.Hmac,
-		}
-		clientConfig.HostKeyAlgorithms = cfg.Algorithms.ServerHostKey
 	}
 
 	addr := net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", cfg.Port))
@@ -88,6 +68,100 @@ func (m *Manager) dial(ctx context.Context, key string, cfg *config.SSHConfig) (
 			fmt.Sprintf("SSH connection [%s] failed: %v", key, err), true)
 	}
 	return ssh.NewClient(sshConn, chans, reqs), nil
+}
+
+// dialVia reaches the target through a jump host's direct-tcpip channel
+// (OpenSSH ProxyJump semantics). The jump host is a normal managed
+// connection — its own proxy, credentials, and 2FA apply to the outer
+// handshake; the inner handshake over the tunnel uses only the target's
+// config (user, auth, host key check, algorithms, timeout). Only the TCP
+// layer changes: the returned client behaves like any direct connection.
+func (m *Manager) dialVia(ctx context.Context, key string, cfg *config.SSHConfig) (*ssh.Client, error) {
+	viaKey := m.resolveName(cfg.Via)
+	viaCfg := m.configs[viaKey]
+
+	bastion, err := m.EnsureConnected(ctx, viaKey)
+	if err != nil {
+		te := AsToolError(err)
+		return nil, newToolError(CodeSSHConnectionFailed,
+			fmt.Sprintf("SSH connection [%s] failed: jump host [%s] is unreachable: %s", key, viaKey, te.Message), te.Retriable)
+	}
+
+	clientConfig, err := prepareClientConfig(cfg, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	addr := net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", cfg.Port))
+	logger.Info("Using ProxyJump for [%s] via [%s]", key, viaKey)
+
+	conn, err := bastion.Dial("tcp", addr)
+	if err != nil {
+		return nil, newToolError(CodeSSHConnectionFailed,
+			fmt.Sprintf("SSH connection [%s] failed: jump host [%s] could not open a channel to %s: %v", key, viaKey, addr, err), true)
+	}
+
+	// Same handshake-deadline patch as the direct dial: ClientConfig.Timeout
+	// does not cover NewClientConn (golang/go#21941).
+	timeout := time.Duration(cfg.ConnectionTimeoutMs) * time.Millisecond
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, clientConfig)
+	_ = conn.SetDeadline(time.Time{})
+	if err != nil {
+		conn.Close()
+		var te *ToolError
+		if errors.As(err, &te) {
+			return nil, te
+		}
+		if strings.Contains(err.Error(), "unable to authenticate") {
+			return nil, newToolError(CodeSSHConnectionFailed,
+				fmt.Sprintf("SSH connection [%s] failed: target authentication through jump host [%s] rejected: %v", key, viaKey, err), false)
+		}
+		return nil, newToolError(CodeSSHConnectionFailed,
+			fmt.Sprintf("SSH connection [%s] failed: handshake with %s through jump host [%s]: %v", key, addr, viaKey, err), true)
+	}
+
+	// A via target is itself a user of the jump host: keep the jump host's
+	// idle timer from reaping the tunnel while this connection is open.
+	if viaCfg != nil {
+		m.Touch(viaKey, DefaultKeepAliveDuration)
+	}
+	return ssh.NewClient(sshConn, chans, reqs), nil
+}
+
+// prepareClientConfig assembles the ssh.ClientConfig for a target connection
+// from its own credentials, host key policy, algorithms, and timeout (the
+// elicitor/context feed the keyboard-interactive path).
+func prepareClientConfig(cfg *config.SSHConfig, ctx context.Context) (*ssh.ClientConfig, error) {
+	authMethods, err := buildAuthMethods(cfg, elicitorFromContext(ctx), ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(authMethods) == 0 {
+		return nil, newToolError(CodeSSHAuthMissing,
+			fmt.Sprintf("No valid authentication method provided for [%s] (agent, password, private key, or tryKeyboard)", cfg.Name), false)
+	}
+
+	hkcb, err := buildHostKeyCallback(cfg)
+	if err != nil {
+		return nil, newToolError(CodeSSHConnectionFailed,
+			fmt.Sprintf("SSH connection [%s] failed: %v", cfg.Name, err), false)
+	}
+	clientConfig := &ssh.ClientConfig{
+		User:            cfg.Username,
+		Auth:            authMethods,
+		HostKeyCallback: hkcb,
+		Timeout:         time.Duration(cfg.ConnectionTimeoutMs) * time.Millisecond,
+	}
+	if cfg.Algorithms != nil {
+		clientConfig.Config = ssh.Config{
+			KeyExchanges: cfg.Algorithms.Kex,
+			Ciphers:      cfg.Algorithms.Cipher,
+			MACs:         cfg.Algorithms.Hmac,
+		}
+		clientConfig.HostKeyAlgorithms = cfg.Algorithms.ServerHostKey
+	}
+	return clientConfig, nil
 }
 
 // dialTCP opens the TCP connection, going through the configured proxy when

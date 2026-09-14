@@ -94,6 +94,9 @@ func formatServerList(servers []manager.ServerInfo) string {
 		if server.ApprovalMode == string(approval.ModeAskDestructive) {
 			parts = append(parts, "approval=ask-destructive")
 		}
+		if server.Via != "" {
+			parts = append(parts, "via="+server.Via)
+		}
 		if server.Status != nil {
 			if server.Status.Hostname != "" {
 				parts = append(parts, "hostname="+server.Status.Hostname)

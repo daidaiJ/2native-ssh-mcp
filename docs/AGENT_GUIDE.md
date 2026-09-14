@@ -134,6 +134,7 @@ Auth: password | privateKey (+passphrase, `SSH_MCP_PASSPHRASE` env) | agent (`SS
 ## Usage rules
 
 - **`tryKeyboard` 的连接，2FA 弹窗只出现在建立连接的那次调用**：连接保活期内（默认空闲 10 分钟断开）复用连接不会再弹；一旦空闲重连或连接掉线，下一次 execute-command 会重新弹窗。无人值守/后台任务（心跳、空闲过期后的自动重连）没有弹窗上下文，直接走 `SSH_MCP_2FA_CODE` 兜底——长任务建议该环境变量始终配置。
+- **`list-servers` 显示 `via=<name>` 的连接不可直连**：它经跳板连接的 direct-tcpip 隧道（OpenSSH ProxyJump），本机到目标的 TCP 从不存在；跳板挂掉会报带跳板名的错误，重试即自动重连跳板。这与 `commandTemplate: "ssh jumphost …"`（远端再 exec 一层 ssh）是两条路，不要混用。
 
 - **Foreground `timeout` must exceed the real runtime** — the default `commandTimeoutMs=30000` still applies; a long build needs `timeout` ≥ its duration or it will be cut off with `COMMAND_TIMEOUT`. On timeout the remote process group is killed by PID (channel Signal is only a fallback — OpenSSH often ignores it), so timed-out commands do not leak remote processes.
 - **exec runs without a PTY by default** — a PTY makes tools like docker/npm behave as if interactive and can cause SIGHUP issues on long tasks, so it is opt-in: connection `"pty": true` or the `execute-command` `pty` parameter. Background jobs never use a PTY regardless.

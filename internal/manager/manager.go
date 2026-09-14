@@ -102,6 +102,10 @@ type ServerInfo struct {
 	// ("auto" or "ask-destructive") so an agent knows before running
 	// anything whether the human wants to be asked.
 	ApprovalMode string `json:"approvalMode,omitempty"`
+	// Via names the jump host connection this target dials through
+	// (OpenSSH ProxyJump semantics): the agent must not assume the host is
+	// directly reachable.
+	Via string `json:"via,omitempty"`
 }
 
 type connectState struct {
@@ -159,6 +163,9 @@ func New(configs map[string]*config.SSHConfig, defaultLogDir string) (*Manager, 
 	}
 
 	names := make([]string, 0, len(configs))
+	if err := config.ValidateVias(configs); err != nil {
+		return nil, err
+	}
 	for name, cfg := range configs {
 		names = append(names, name)
 		whitelist, err := compilePatterns(cfg.CommandWhitelist, name, "whitelist")
@@ -537,6 +544,7 @@ func (m *Manager) GetAllServerInfos() []ServerInfo {
 			Connected:      m.connected[name],
 			Status:         m.statuses[name],
 			ApprovalMode:   cfg.ApprovalMode,
+			Via:            cfg.Via,
 			RecentCommands: m.commandLogs[name].Recent(recentCommandsInList),
 		})
 	}
