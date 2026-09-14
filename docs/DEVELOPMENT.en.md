@@ -14,24 +14,24 @@
 │   ├── logger/                    # stderr logging (doesn't pollute stdio protocol)
 │   ├── manager/                   # Connection management core
 │   │   ├── manager.go             #   Lazy connection, idle keep-alive, path validation, command logging
-│   │   ├── dial.go                #   Authentication (password/private key/agent/Pageant/2FA), proxy (SOCKS5/HTTP/HTTPS)
+│   │   ├── dial.go                #   Authentication (password/private key/agent/Pageant/2FA), proxy (SOCKS5/HTTP/HTTPS), via jump tunnel
 │   │   ├── hostkey.go             #   Host key verification (accept-new/strict/none, known_hosts)
 │   │   ├── exec.go                #   exec mode command execution (timeout/output limits/exit code)
 │   │   ├── shell.go               #   shell mode (marker protocol, ANSI cleanup, serial queue)
 │   │   ├── background.go          #   Background tasks (detached exec, log polling, stopping)
 │   │   ├── session.go             #   Named sessions (CWD preservation, reattachment after disconnect, idle TTL)
 │   │   ├── heartbeat.go           #   Application-level heartbeat (keepalive semantics, in-flight protection)
+│   │   ├── kbdint.go              #   Keyboard-interactive auth (2FA challenge via MCP elicitation, env fallback)
 │   │   ├── result.go              #   Structured result (exit code, status, ANSI stripping)
 │   │   ├── compress.go            #   Large output head/tail compression
 │   │   ├── redact.go              #   Output redaction
 │   │   ├── sftp.go                #   File transfer (concurrent copying, progress, deduplication, resumable transfer)
 │   │   ├── status.go              #   Remote system status collection (hostname/OS/memory/disk, etc.)
-│   │   └── commandlog.go          #   Command log file (JSON lines, retains last N commands)
+│   │   └── commandlog.go          #   Audit log (append-only JSONL, SHA-256 hash chain, batched flush, rotation)
 │   ├── daemon/                    # HTTP daemon: PID file, refcount+guest lease, admin endpoints, Windows auto-start
 │   └── tools/                     # MCP tools: list-servers / execute-command / session / file-transfer
-├── SECURITY.md                    # Threat model and security recommendations
+├── SECURITY.md                    # Threat model, audit flush policy, tiered hardening recommendations
 ├── docs/                          # Guides and topic docs (Chinese by default; .en.md is the English version)
-│   └── reqs/                      # Implementation contracts (separate PRs; see docs/reqs/README.md)
 ├── skills/                        # Agent Skills (installation / remote execution strategies)
 ├── .github/workflows/ci.yml       # push/PR → ubuntu-latest go test -race ./...
 ├── .github/workflows/release.yml  # tag push → 6-platform build + Release; "-registry" tag → publish to MCP Registry
@@ -44,6 +44,19 @@
 ```bash
 go build ./...
 go test -race ./...
+```
+
+### Integration tests (real environment required)
+
+```bash
+# ProxyJump dual-sshd container fixture: bastion publishes a host port,
+# internal is reachable only through the compose network. Skips cleanly
+# without Docker, so the default CI is unaffected.
+go test -tags integration ./internal/manager/ -run ProxyJump -v
+
+# The remaining integration tests use a reachable connection from the
+# repo-root config.json (e.g. a WSL sshd)
+go test -tags integration ./internal/manager/ -run ExecKill -v
 ```
 
 ### Benchmarks

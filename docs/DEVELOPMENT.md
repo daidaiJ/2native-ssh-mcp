@@ -14,24 +14,24 @@
 │   ├── logger/                    # stderr 日志（不污染 stdio 协议）
 │   ├── manager/                   # 连接管理核心
 │   │   ├── manager.go             #   懒连接、空闲保活、路径校验、命令日志
-│   │   ├── dial.go                #   认证（密码/私钥/agent/Pageant/2FA）、代理（SOCKS5/HTTP/HTTPS）
+│   │   ├── dial.go                #   认证（密码/私钥/agent/Pageant/2FA）、代理（SOCKS5/HTTP/HTTPS）、via 跳板隧道
 │   │   ├── hostkey.go             #   主机密钥校验（accept-new/strict/none，known_hosts）
 │   │   ├── exec.go                #   exec 模式命令执行（超时/输出上限/退出码）
 │   │   ├── shell.go               #   shell 模式（marker 协议、ANSI 清理、串行队列）
 │   │   ├── background.go          #   后台任务（detached exec、日志轮询、停止）
 │   │   ├── session.go             #   命名会话（CWD 保持、断连重附着、空闲 TTL）
 │   │   ├── heartbeat.go           #   应用层心跳（keepalive 语义、in-flight 保护）
+│   │   ├── kbdint.go              #   键盘交互认证（2FA 挑战经 MCP elicitation 弹窗、env 兜底）
 │   │   ├── result.go              #   结构化结果（退出码、状态、ANSI 剥离）
 │   │   ├── compress.go            #   大输出头尾压缩
 │   │   ├── redact.go              #   输出脱敏
 │   │   ├── sftp.go                #   文件传输（并发拷贝、进度、去重、断点续传）
 │   │   ├── status.go              #   远程系统状态采集（hostname/OS/内存/磁盘等）
-│   │   └── commandlog.go          #   命令日志文件（JSON 行、保留最近 N 条）
+│   │   └── commandlog.go          #   审计日志（追加 JSONL、SHA-256 哈希链、批量落盘、滚动）
 │   ├── daemon/                    # HTTP daemon：PID 文件、refcount+guest 租约、admin 端点、Windows 自启动
 │   └── tools/                     # MCP 工具：list-servers / execute-command / session / file-transfer
-├── SECURITY.md                    # 威胁模型与安全建议
+├── SECURITY.md                    # 威胁模型、审计落盘策略与分级加固建议
 ├── docs/                          # 指南与专项文档（中文默认，.en.md 为英文版）
-│   └── reqs/                      # 待实现需求契约（独立 PR，见 docs/reqs/README.md）
 ├── skills/                        # Agent Skill（安装配置 / 远程执行策略）
 ├── .github/workflows/ci.yml       # push/PR → ubuntu-latest go test -race ./...
 ├── .github/workflows/release.yml  # tag 推送 → 6 平台构建 + Release；"-registry" tag → 发布到 MCP Registry
@@ -44,6 +44,17 @@
 ```bash
 go build ./...
 go test -race ./...
+```
+
+### 集成测试（需要真实环境）
+
+```bash
+# ProxyJump 双 sshd 容器 fixture：bastion 映射本机端口，internal 仅容器网络可达。
+# 无 Docker 时自动跳过，不影响默认 CI。
+go test -tags integration ./internal/manager/ -run ProxyJump -v
+
+# 其余 integration 测试走仓库根 config.json 里的可达连接（如 WSL sshd）
+go test -tags integration ./internal/manager/ -run ExecKill -v
 ```
 
 ### 基准测试
