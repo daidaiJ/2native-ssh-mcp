@@ -31,6 +31,7 @@
 │   └── tools/                     # MCP 工具：list-servers / execute-command / session / file-transfer
 ├── SECURITY.md                    # 威胁模型与安全建议
 ├── docs/                          # 指南与专项文档（中文默认，.en.md 为英文版）
+│   └── reqs/                      # 待实现需求契约（独立 PR，见 docs/reqs/README.md）
 ├── skills/                        # Agent Skill（安装配置 / 远程执行策略）
 ├── .github/workflows/ci.yml       # push/PR → ubuntu-latest go test -race ./...
 ├── .github/workflows/release.yml  # tag 推送 → 6 平台构建 + Release；"-registry" tag → 发布到 MCP Registry

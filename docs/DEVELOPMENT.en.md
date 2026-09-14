@@ -31,6 +31,7 @@
 │   └── tools/                     # MCP tools: list-servers / execute-command / session / file-transfer
 ├── SECURITY.md                    # Threat model and security recommendations
 ├── docs/                          # Guides and topic docs (Chinese by default; .en.md is the English version)
+│   └── reqs/                      # Implementation contracts (separate PRs; see docs/reqs/README.md)
 ├── skills/                        # Agent Skills (installation / remote execution strategies)
 ├── .github/workflows/ci.yml       # push/PR → ubuntu-latest go test -race ./...
 ├── .github/workflows/release.yml  # tag push → 6-platform build + Release; "-registry" tag → publish to MCP Registry
