@@ -129,9 +129,11 @@ session(action=close, sessionName=deploy)
 }
 ```
 
-Auth: password | privateKey (+passphrase, `SSH_MCP_PASSPHRASE` env) | agent (`SSH_AUTH_SOCK`, `"pageant"` on Windows) | keyboard-interactive (`tryKeyboard`, OTP via `SSH_MCP_2FA_CODE`). Proxy: `proxy` (socks5/http/https) or legacy `socksProxy`.
+Auth: password | privateKey (+passphrase, `SSH_MCP_PASSPHRASE` env) | agent (`SSH_AUTH_SOCK`, `"pageant"` on Windows) | keyboard-interactive (`tryKeyboard`: the 2FA challenge pops an MCP elicitation on the session that triggered the dial; if nobody answers it falls back to `SSH_MCP_2FA_CODE`, and failing that the server rejects authentication — it never wedges). Proxy: `proxy` (socks5/http/https) or legacy `socksProxy`.
 
 ## Usage rules
+
+- **For `tryKeyboard` connections, the 2FA prompt only appears on the call that establishes the connection**: while the connection stays warm (idle disconnect defaults to 10 minutes) reuse does not prompt again; after an idle reconnect or a dropped link the next execute-command prompts again. Unattended/background flows (heartbeats, automatic reconnect after idle expiry) have no prompt context and go straight to the `SSH_MCP_2FA_CODE` fallback — keep that variable set for long-running tasks.
 
 - **Foreground `timeout` must exceed the real runtime** — the default `commandTimeoutMs=30000` still applies; a long build needs `timeout` ≥ its duration or it will be cut off with `COMMAND_TIMEOUT`. On timeout the remote process group is killed by PID (channel Signal is only a fallback — OpenSSH often ignores it), so timed-out commands do not leak remote processes.
 - **exec runs without a PTY by default** — a PTY makes tools like docker/npm behave as if interactive and can cause SIGHUP issues on long tasks, so it is opt-in: connection `"pty": true` or the `execute-command` `pty` parameter. Background jobs never use a PTY regardless.

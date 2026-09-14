@@ -122,7 +122,7 @@ func (m *Manager) TransferFile(ctx context.Context, action, localPath, remotePat
 		return nil, err
 	}
 
-	client, err := m.EnsureConnected(name)
+	client, err := m.EnsureConnected(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -514,7 +514,7 @@ func (m *Manager) acquireDedicatedSftp(ctx context.Context, key string, cfg *con
 		return e.client, e.ssh, nil
 	}
 	m.mu.Unlock()
-	sshClient, err := m.dial(key, cfg)
+	sshClient, err := m.dial(ctx, key, cfg)
 	if err != nil {
 		return nil, nil, err
 	}

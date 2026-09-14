@@ -184,7 +184,7 @@ func (m *Manager) runCommandInternal(key, command string, opts RunOptions) (Comm
 	if err != nil {
 		return CommandResult{}, err
 	}
-	client, err := m.EnsureConnected(key)
+	client, err := m.EnsureConnected(context.Background(), key)
 	if err != nil {
 		return CommandResult{}, err
 	}

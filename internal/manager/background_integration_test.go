@@ -66,7 +66,7 @@ func remoteFileExists(t *testing.T, m *Manager, path string) bool {
 func TestExecStabilityRawSession(t *testing.T) {
 	m := loadTestManager(t)
 	defer m.DisconnectAll()
-	client, err := m.EnsureConnected("ubuntu")
+	client, err := m.EnsureConnected(context.Background(), "ubuntu")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestDetachedSurvivesNoPTYExec(t *testing.T) {
 	m := loadTestManager(t)
 	defer m.DisconnectAll()
 
-	client, err := m.EnsureConnected("ubuntu")
+	client, err := m.EnsureConnected(context.Background(), "ubuntu")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestDetachedSurvivesNoPTYExec(t *testing.T) {
 	}
 
 	m.Disconnect("ubuntu")
-	client2, err := m.EnsureConnected("ubuntu")
+	client2, err := m.EnsureConnected(context.Background(), "ubuntu")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,9 +185,9 @@ func TestBackgroundJobIntegration(t *testing.T) {
 	defer m.DisconnectAll()
 
 	// Clean up any leftover state from a previous failed run.
-	_ = m.CloseSession("bgtest")
+	_ = m.CloseSession(context.Background(), "bgtest")
 
-	info, err := m.OpenSessionWithOptions("bgtest", "ubuntu", SessionOpenOptions{
+	info, err := m.OpenSessionWithOptions(context.Background(), "bgtest", "ubuntu", SessionOpenOptions{
 		Background: true,
 		CmdString:  "sleep 60; echo DONE",
 	})
@@ -199,7 +199,7 @@ func TestBackgroundJobIntegration(t *testing.T) {
 	}
 
 	// Read: job should be running and the log file present.
-	out, err := m.ReadSessionOutput("bgtest", 0, -1, 0)
+	out, err := m.ReadSessionOutput(context.Background(), "bgtest", 0, -1, 0)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestBackgroundJobIntegration(t *testing.T) {
 	// Simulate a connection drop: disconnect, then read again. The job must
 	// survive and still report running.
 	m.Disconnect("ubuntu")
-	out, err = m.ReadSessionOutput("bgtest", 0, -1, 0)
+	out, err = m.ReadSessionOutput(context.Background(), "bgtest", 0, -1, 0)
 	if err != nil {
 		t.Fatalf("read after disconnect: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestBackgroundJobIntegration(t *testing.T) {
 	}
 
 	// Explicit close must kill the job and remove its pid/log files.
-	if err := m.CloseSession("bgtest"); err != nil {
+	if err := m.CloseSession(context.Background(), "bgtest"); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 	time.Sleep(3 * time.Second)
@@ -239,18 +239,18 @@ func TestBackgroundJobIntegration(t *testing.T) {
 func TestSessionReadWaitMs(t *testing.T) {
 	m := loadTestManager(t)
 	name := "bgwait"
-	_ = m.CloseSession(name)
-	_, err := m.OpenSessionWithOptions(name, "ubuntu", SessionOpenOptions{
+	_ = m.CloseSession(context.Background(), name)
+	_, err := m.OpenSessionWithOptions(context.Background(), name, "ubuntu", SessionOpenOptions{
 		Background: true,
 		CmdString:  "sleep 2; echo WAITMS_DONE",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.CloseSession(name)
+	defer m.CloseSession(context.Background(), name)
 
 	start := time.Now()
-	out, err := m.ReadSessionOutput(name, 0, -1, 8000)
+	out, err := m.ReadSessionOutput(context.Background(), name, 0, -1, 8000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,8 +267,8 @@ func TestSessionReadWaitMs(t *testing.T) {
 func TestBackgroundPTY(t *testing.T) {
 	m := loadTestManager(t)
 	name := "bgpty"
-	_ = m.CloseSession(name)
-	_, err := m.OpenSessionWithOptions(name, "ubuntu", SessionOpenOptions{
+	_ = m.CloseSession(context.Background(), name)
+	_, err := m.OpenSessionWithOptions(context.Background(), name, "ubuntu", SessionOpenOptions{
 		Background: true,
 		Pty:        true,
 		CmdString:  "sleep 2; if [ -t 1 ]; then echo BG_PTY_YES; else echo BG_PTY_NO; fi",
@@ -276,9 +276,9 @@ func TestBackgroundPTY(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.CloseSession(name)
+	defer m.CloseSession(context.Background(), name)
 
-	out, err := m.ReadSessionOutput(name, 0, -1, 8000)
+	out, err := m.ReadSessionOutput(context.Background(), name, 0, -1, 8000)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -31,6 +31,9 @@ func registerFileTransfer(s *server.MCPServer, m *manager.Manager) {
 
 	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := request.GetArguments()
+		// Transfers may open the connection (or a dedicated SFTP connection):
+		// OTP challenges prompt on this session only.
+		ctx = withElicitor(ctx, s)
 
 		action, _ := args["action"].(string)
 		localPath, _ := args["localPath"].(string)

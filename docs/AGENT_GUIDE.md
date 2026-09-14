@@ -129,9 +129,11 @@ session(action=close, sessionName=deploy)
 }
 ```
 
-Auth: password | privateKey (+passphrase, `SSH_MCP_PASSPHRASE` env) | agent (`SSH_AUTH_SOCK`, `"pageant"` on Windows) | keyboard-interactive (`tryKeyboard`, OTP via `SSH_MCP_2FA_CODE`). Proxy: `proxy` (socks5/http/https) or legacy `socksProxy`.
+Auth: password | privateKey (+passphrase, `SSH_MCP_PASSPHRASE` env) | agent (`SSH_AUTH_SOCK`, `"pageant"` on Windows) | keyboard-interactive (`tryKeyboard`：2FA 挑战实时弹窗到触发连接的 MCP 会话；无人应答时回退 `SSH_MCP_2FA_CODE`，再不行由服务器拒绝认证，不会挂死). Proxy: `proxy` (socks5/http/https) or legacy `socksProxy`.
 
 ## Usage rules
+
+- **`tryKeyboard` 的连接，2FA 弹窗只出现在建立连接的那次调用**：连接保活期内（默认空闲 10 分钟断开）复用连接不会再弹；一旦空闲重连或连接掉线，下一次 execute-command 会重新弹窗。无人值守/后台任务（心跳、空闲过期后的自动重连）没有弹窗上下文，直接走 `SSH_MCP_2FA_CODE` 兜底——长任务建议该环境变量始终配置。
 
 - **Foreground `timeout` must exceed the real runtime** — the default `commandTimeoutMs=30000` still applies; a long build needs `timeout` ≥ its duration or it will be cut off with `COMMAND_TIMEOUT`. On timeout the remote process group is killed by PID (channel Signal is only a fallback — OpenSSH often ignores it), so timed-out commands do not leak remote processes.
 - **exec runs without a PTY by default** — a PTY makes tools like docker/npm behave as if interactive and can cause SIGHUP issues on long tasks, so it is opt-in: connection `"pty": true` or the `execute-command` `pty` parameter. Background jobs never use a PTY regardless.

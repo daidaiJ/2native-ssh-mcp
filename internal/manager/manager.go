@@ -288,8 +288,10 @@ func (m *Manager) IsConnected(name string) bool {
 }
 
 // Connect establishes the SSH connection lazily. Concurrent callers share
-// the same in-flight connection attempt.
-func (m *Manager) Connect(name string) error {
+// the same in-flight connection attempt. The context carries the Elicitor
+// for keyboard-interactive prompts; dialing runs without the Manager lock,
+// so a prompt blocking on the human never blocks other connections.
+func (m *Manager) Connect(ctx context.Context, name string) error {
 	key := m.resolveName(name)
 	if m.hasUsableConnection(key) {
 		return nil
@@ -318,7 +320,7 @@ func (m *Manager) Connect(name string) error {
 		return err
 	}
 
-	client, err := m.dial(key, cfg)
+	client, err := m.dial(ctx, key, cfg)
 	if err != nil {
 		st.err = err
 		close(st.done)
@@ -349,11 +351,13 @@ func (m *Manager) Connect(name string) error {
 	return nil
 }
 
-// EnsureConnected returns a usable client, connecting if necessary.
-func (m *Manager) EnsureConnected(name string) (*ssh.Client, error) {
+// EnsureConnected returns a usable client, connecting if necessary. The
+// context carries the Elicitor for keyboard-interactive prompts triggered
+// by this call.
+func (m *Manager) EnsureConnected(ctx context.Context, name string) (*ssh.Client, error) {
 	key := m.resolveName(name)
 	if !m.hasUsableConnection(key) {
-		if err := m.Connect(key); err != nil {
+		if err := m.Connect(ctx, key); err != nil {
 			return nil, err
 		}
 	}

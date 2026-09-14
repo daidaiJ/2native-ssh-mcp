@@ -21,7 +21,7 @@
 - **结果渲染**：execute-command 成功结果默认为分节文本（真实换行：stdout → `[stderr]` → `[exit code] N` → 落盘提示），人和模型都可直接读；按连接配置 `resultFormat: "json"` 切换为结构化 CommandResult JSON；错误路径始终为 JSON（`code`/`message`/`retriable`/`partial`/`replaySafe`）
 - **审计日志（防篡改）**：按连接**追加**记录执行过的命令（不含输出），每行带前一行 SHA-256 形成哈希链，事后篡改任何一行都能被 `audit-verify` 定位到行号；失败记录始终落盘，`commandLogOnlySuccess` 只影响 list-servers 展示窗口；按 16 MiB / 10000 行滚动且跨文件链不断（配置：`commandLogSize` / `commandLogDir` / `commandLogOnlySuccess`，校验：`audit-verify --file|--config-file`）
 - **安全**：命令白/黑名单、路径白名单（本地/远端，本地范围可配 `localPathMode`：cwd / list / any）、凭据隔离（SSH 凭据留在本地，不暴露给模型）、输出脱敏（`redactSecrets`，默认关闭——脱敏扫描对含密钥的大输出有明显开销，需要时按连接开启）、配置权限检查（Unix `0600`/`0700`，Windows ACL；可用 `--allow-insecure-config-perms` 或配置文件 `$global.allowInsecureConfigPerms` 跳过）
-- **认证与兼容性**：密码/私钥/ssh-agent/Pageant/键盘交互认证（2FA）、代理（SOCKS5/HTTP/HTTPS）、算法协商配置（兼容老服务器）
+- **认证与兼容性**：密码/私钥/ssh-agent/Pageant/键盘交互认证（2FA：服务器挑战实时弹窗到触发连接的 MCP 会话，2 分钟超时；拒绝/超时/不支持弹窗自动回退 `SSH_MCP_2FA_CODE`，再由服务器裁决，不挂死不中断其它连接）、代理（SOCKS5/HTTP/HTTPS）、算法协商配置（兼容老服务器）
 - **文件传输性能**：SFTP 并发传输（`sftpConcurrency`/`sftpChunkSize`，高延迟链路提速；大文件自动启用并发写）、SFTP 客户端按连接池化（空闲 5 分钟回收）、`sftpTimeoutMs` 为**无进展超时**而非总时长（健康的大文件传输不再被墙钟切断）、断点续传、去重、进度通知
 - **SFTP 独立连接**：`sftpDedicatedConn`（每连接或 `$global` 全局默认）让文件传输走单独的 SSH 连接——sshd 前有影子容器/会话级 overlay 的网关会丢弃复用 shell 会话写入的文件；连接懒创建（首次传输才拨号）、空闲 5 分钟回收、复用前 keepalive 探活（网关掐断了自动重拨）
 - **HTTP daemon**：`start/stop/status/kill` 子命令 + 引用计数 + PID 文件 + 健康检查端点；`install` 一键注册 Windows 开机自启

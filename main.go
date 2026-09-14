@@ -189,7 +189,7 @@ func runStart(args []string) {
 // a server that cannot reach its hosts.
 func preConnect(m *manager.Manager) {
 	for _, name := range m.ConfigNames() {
-		if _, err := m.EnsureConnected(name); err != nil {
+		if _, err := m.EnsureConnected(context.Background(), name); err != nil {
 			logger.Error("pre-connect failed for [%s]: %v", name, err)
 			os.Exit(1)
 		}

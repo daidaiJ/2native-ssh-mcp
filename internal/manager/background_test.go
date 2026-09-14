@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"regexp"
 	"strings"
 	"testing"
@@ -146,7 +147,7 @@ func TestCloseSessionOrphanKeepsSession(t *testing.T) {
 	m.sessions["orphan-test"] = ns
 	m.mu.Unlock()
 
-	if err := m.CloseSession("orphan-test"); err == nil {
+	if err := m.CloseSession(context.Background(), "orphan-test"); err == nil {
 		t.Fatal("expected error when the stop cannot be confirmed")
 	}
 

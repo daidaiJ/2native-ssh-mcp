@@ -80,14 +80,15 @@ type namedSession struct {
 }
 
 // OpenSession creates a named interactive session on an exec-mode connection.
-func (m *Manager) OpenSession(sessionName, connectionName string) (*SessionInfo, error) {
-	return m.openOrReuseSession(sessionName, connectionName)
+// The context carries the Elicitor for any dial this open triggers.
+func (m *Manager) OpenSession(ctx context.Context, sessionName, connectionName string) (*SessionInfo, error) {
+	return m.openOrReuseSession(ctx, sessionName, connectionName)
 }
 
 // ensureShell returns a usable shell for the session, reconnecting and
 // recreating the shell channel if the connection was dropped. The saved CWD
 // is restored on a fresh shell.
-func (m *Manager) ensureShell(ns *namedSession) (*shellSession, error) {
+func (m *Manager) ensureShell(ctx context.Context, ns *namedSession) (*shellSession, error) {
 	m.mu.Lock()
 	sh := ns.shell
 	disconnected := ns.disconnected
@@ -97,7 +98,7 @@ func (m *Manager) ensureShell(ns *namedSession) (*shellSession, error) {
 		return sh, nil
 	}
 
-	client, err := m.EnsureConnected(ns.connectionKey)
+	client, err := m.EnsureConnected(ctx, ns.connectionKey)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +154,7 @@ func (m *Manager) RunInSession(ctx context.Context, sessionName, cmdString, dire
 		defer cancel()
 	}
 
-	if _, err := m.ensureShell(ns); err != nil {
+	if _, err := m.ensureShell(ctx, ns); err != nil {
 		return CommandResult{}, err
 	}
 
@@ -186,7 +187,7 @@ func (m *Manager) RunInSession(ctx context.Context, sessionName, cmdString, dire
 // The session is only removed from the map when the background stop is
 // confirmed; otherwise it stays visible (orphaned) so list/read still see it
 // and a later close can retry.
-func (m *Manager) CloseSession(sessionName string) error {
+func (m *Manager) CloseSession(ctx context.Context, sessionName string) error {
 	m.mu.Lock()
 	ns, ok := m.sessions[sessionName]
 	if !ok {
@@ -202,7 +203,7 @@ func (m *Manager) CloseSession(sessionName string) error {
 	ns.shell = nil
 	m.mu.Unlock()
 
-	if !m.stopBackgroundProcess(ns) {
+	if !m.stopBackgroundProcess(ctx, ns) {
 		// Remote job state unconfirmed: keep the session so a later close
 		// (after the connection is back) can retry the stop.
 		ns.resetIdleTimer(m)
@@ -293,7 +294,7 @@ func (m *Manager) expireSessionIfIdle(name string, gen uint64) {
 	key := ns.connectionKey
 	m.mu.Unlock()
 	logger.Info("Session [%s] idle for %s, closing", name, ttl)
-	_ = m.CloseSession(name)
+	_ = m.CloseSession(context.Background(), name)
 	m.Touch(key, DefaultKeepAliveDuration)
 }
 

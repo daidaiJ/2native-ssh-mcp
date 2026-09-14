@@ -70,7 +70,7 @@ func (m *Manager) ExecuteCommand(ctx context.Context, cmdString, directory, name
 		defer cancel()
 	}
 
-	client, err := m.EnsureConnected(name)
+	client, err := m.EnsureConnected(ctx, name)
 	if err != nil {
 		return CommandResult{}, err
 	}

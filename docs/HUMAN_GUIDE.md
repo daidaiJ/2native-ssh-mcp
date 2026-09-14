@@ -334,7 +334,7 @@ Server options:
 | `pty` | false | exec 模式分配伪终端（默认关闭，交互命令按需开启） |
 | `redactSecrets` | false | 输出脱敏（password/token/Bearer/PEM），开启有扫描开销 |
 | `resultFormat` | text | execute-command 成功结果渲染：text=分节纯文本（真实换行），json=结构化 JSON |
-| `tryKeyboard` | false | 键盘交互认证（2FA 码用环境变量 `SSH_MCP_2FA_CODE`） |
+| `tryKeyboard` | false | 键盘交互认证（服务器 2FA 挑战弹窗到 MCP 客户端；无人值守场景用 `SSH_MCP_2FA_CODE` 兜底） |
 
 > 配置文件中的字符串支持 `${环境变量名}` 引用，凭据可放在环境变量里而不落盘。
 
@@ -343,7 +343,7 @@ Server options:
 - 密码：`password`
 - 私钥：`privateKey`（可带 `passphrase`，或环境变量 `SSH_MCP_PASSPHRASE`）
 - ssh-agent：`agent`（Unix socket 路径；Windows 填 `pageant` 使用 Pageant）
-- 键盘交互：`tryKeyboard: true`，密码提示用配置的密码，OTP 提示用 `SSH_MCP_2FA_CODE`
+- 键盘交互：`tryKeyboard: true`。密码提示自动用配置的密码回答；OTP/验证码提示**实时弹窗到触发连接的 MCP 客户端**（2 分钟内作答，只弹给发起连接的那个会话，不影响其它连接）。弹窗被拒绝/取消/超时，或客户端不支持弹窗（后台任务、无头运行）时，自动回退到环境变量 `SSH_MCP_2FA_CODE`；连它也没配，则以空答案交由服务器拒绝——认证失败只会让本次连接失败，不会中断其它连接或挂死进程。
 
 ## 审计日志（防篡改命令记录，哈希链）
 

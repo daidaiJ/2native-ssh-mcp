@@ -15,11 +15,11 @@ func TestSessionNameValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = m.OpenSession("", "dev")
+	_, err = m.OpenSession(context.Background(), "", "dev")
 	if err == nil {
 		t.Fatal("expected error for empty session name")
 	}
-	_, err = m.OpenSession("bad name!", "dev")
+	_, err = m.OpenSession(context.Background(), "bad name!", "dev")
 	if err == nil {
 		t.Fatal("expected error for invalid session name")
 	}
@@ -106,7 +106,7 @@ func TestExpireSessionIfIdleAfterCloseIsNoop(t *testing.T) {
 	ns := &namedSession{name: "s1", connectionKey: "dev", lastUsed: time.Now()}
 	addSession(m, ns)
 
-	if err := m.CloseSession("s1"); err != nil {
+	if err := m.CloseSession(context.Background(), "s1"); err != nil {
 		t.Fatalf("CloseSession: %v", err)
 	}
 	// A late expire callback for the closed session must not panic or
@@ -123,7 +123,7 @@ func TestExpireSessionIfIdleAfterCloseIsNoop(t *testing.T) {
 
 func TestCloseSessionIdempotent(t *testing.T) {
 	m := newIdleTestManager(t)
-	if err := m.CloseSession("never-opened"); err != nil {
+	if err := m.CloseSession(context.Background(), "never-opened"); err != nil {
 		t.Fatalf("closing a never-opened session must succeed, got: %v", err)
 	}
 }

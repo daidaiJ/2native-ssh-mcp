@@ -65,8 +65,9 @@ type SessionOutput struct {
 
 // OpenSessionWithOptions creates or reuses a named session. When opts.Background
 // is true, cmdString must be set and the command runs detached to a remote log.
-func (m *Manager) OpenSessionWithOptions(sessionName, connectionName string, opts SessionOpenOptions) (*SessionInfo, error) {
-	info, err := m.openOrReuseSession(sessionName, connectionName)
+// The context carries the Elicitor for any dial this open triggers.
+func (m *Manager) OpenSessionWithOptions(ctx context.Context, sessionName, connectionName string, opts SessionOpenOptions) (*SessionInfo, error) {
+	info, err := m.openOrReuseSession(ctx, sessionName, connectionName)
 	if err != nil {
 		return nil, err
 	}
@@ -93,11 +94,11 @@ func (m *Manager) OpenSessionWithOptions(sessionName, connectionName string, opt
 			fmt.Sprintf("session %q already exists (finished); close it first or read logPath=%s", sessionName, logPath), false)
 	}
 	m.mu.Unlock()
-	return m.startBackgroundCommand(sessionName, opts.CmdString, opts.Directory, opts.Pty, opts.Approval)
+	return m.startBackgroundCommand(ctx, sessionName, opts.CmdString, opts.Directory, opts.Pty, opts.Approval)
 }
 
 // openOrReuseSession is the core of OpenSession without background start.
-func (m *Manager) openOrReuseSession(sessionName, connectionName string) (*SessionInfo, error) {
+func (m *Manager) openOrReuseSession(ctx context.Context, sessionName, connectionName string) (*SessionInfo, error) {
 	if !sessionNamePattern.MatchString(sessionName) {
 		return nil, newToolError(CodeCommandValidationFailed,
 			"sessionName must be 1-64 chars: letters, digits, '.', '-', '_'", false)
@@ -116,7 +117,7 @@ func (m *Manager) openOrReuseSession(sessionName, connectionName string) (*Sessi
 	m.mu.Lock()
 	if existing, ok := m.sessions[sessionName]; ok {
 		m.mu.Unlock()
-		if _, err := m.ensureShell(existing); err != nil {
+		if _, err := m.ensureShell(ctx, existing); err != nil {
 			return nil, err
 		}
 		m.mu.Lock()
@@ -137,7 +138,7 @@ func (m *Manager) openOrReuseSession(sessionName, connectionName string) (*Sessi
 	}
 	m.mu.Unlock()
 
-	client, err := m.EnsureConnected(connKey)
+	client, err := m.EnsureConnected(ctx, connKey)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +173,7 @@ func (m *Manager) openOrReuseSession(sessionName, connectionName string) (*Sessi
 // channel: a fresh no-PTY exec runs a starter that setsid's the job into a
 // new session with stdio redirected to a remote log, then exits. The job
 // survives connection drops; read/stop re-attach via fresh exec channels.
-func (m *Manager) startBackgroundCommand(sessionName, cmdString, directory string, pty bool, approval string) (*SessionInfo, error) {
+func (m *Manager) startBackgroundCommand(ctx context.Context, sessionName, cmdString, directory string, pty bool, approval string) (*SessionInfo, error) {
 	m.mu.Lock()
 	ns, ok := m.sessions[sessionName]
 	m.mu.Unlock()
@@ -196,7 +197,7 @@ func (m *Manager) startBackgroundCommand(sessionName, cmdString, directory strin
 		body = applyCommandTemplate(cfg.CommandTemplate, body)
 	}
 
-	client, err := m.EnsureConnected(ns.connectionKey)
+	client, err := m.EnsureConnected(ctx, ns.connectionKey)
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +298,7 @@ func parseBGStartedPID(output string) int {
 // waitMs blocks for up to that many milliseconds when there is nothing new
 // and the job is still running (0 returns immediately; capped at 30s), so
 // callers do not have to spin-poll.
-func (m *Manager) ReadSessionOutput(sessionName string, maxBytes, offset, waitMs int64) (*SessionOutput, error) {
+func (m *Manager) ReadSessionOutput(ctx context.Context, sessionName string, maxBytes, offset, waitMs int64) (*SessionOutput, error) {
 	if waitMs < 0 {
 		waitMs = 0
 	}
@@ -306,7 +307,7 @@ func (m *Manager) ReadSessionOutput(sessionName string, maxBytes, offset, waitMs
 	}
 	deadline := time.Now().Add(time.Duration(waitMs) * time.Millisecond)
 
-	out, err := m.readSessionOutputOnce(sessionName, maxBytes, offset)
+	out, err := m.readSessionOutputOnce(ctx, sessionName, maxBytes, offset)
 	if err != nil || waitMs == 0 || !out.Running || out.Output != "" {
 		return out, err
 	}
@@ -315,7 +316,7 @@ func (m *Manager) ReadSessionOutput(sessionName string, maxBytes, offset, waitMs
 	for {
 		time.Sleep(bgWaitPollInterval)
 		prev := out.Offset
-		out, err = m.readSessionOutputOnce(sessionName, maxBytes, -1)
+		out, err = m.readSessionOutputOnce(ctx, sessionName, maxBytes, -1)
 		if err != nil || out.Output != "" || !out.Running || out.Offset != prev {
 			return out, err
 		}
@@ -326,7 +327,7 @@ func (m *Manager) ReadSessionOutput(sessionName string, maxBytes, offset, waitMs
 }
 
 // readSessionOutputOnce performs a single background log read.
-func (m *Manager) readSessionOutputOnce(sessionName string, maxBytes, offset int64) (*SessionOutput, error) {
+func (m *Manager) readSessionOutputOnce(ctx context.Context, sessionName string, maxBytes, offset int64) (*SessionOutput, error) {
 	m.mu.Lock()
 	ns, ok := m.sessions[sessionName]
 	if !ok {
@@ -354,7 +355,7 @@ func (m *Manager) readSessionOutputOnce(sessionName string, maxBytes, offset int
 		maxBytes = defaultBGReadBytes
 	}
 
-	client, err := m.EnsureConnected(connKey)
+	client, err := m.EnsureConnected(ctx, connKey)
 	if err != nil {
 		return nil, err
 	}
@@ -455,7 +456,7 @@ func parseBGReadOutput(output string) (running bool, totalBytes int64, chunk str
 // channel and is only called on explicit session close. It returns true when
 // the stop was confirmed; otherwise the session is marked orphaned and the
 // background state is kept so a later close can retry.
-func (m *Manager) stopBackgroundProcess(ns *namedSession) bool {
+func (m *Manager) stopBackgroundProcess(ctx context.Context, ns *namedSession) bool {
 	m.mu.Lock()
 	background := ns.background
 	connKey := ns.connectionKey
@@ -468,7 +469,7 @@ func (m *Manager) stopBackgroundProcess(ns *namedSession) bool {
 	m.beginOp(connKey)
 	defer m.endOp(connKey)
 
-	client, err := m.EnsureConnected(connKey)
+	client, err := m.EnsureConnected(ctx, connKey)
 	if err != nil {
 		m.mu.Lock()
 		ns.orphaned = true

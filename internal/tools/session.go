@@ -27,6 +27,7 @@ func registerSession(s *server.MCPServer, m *manager.Manager) {
 	)
 	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := request.GetArguments()
+		ctx = withElicitor(ctx, s)
 		if action, _ := args["action"].(string); action == "open" {
 			// action=open with cmdString executes a command just like
 			// execute-command (background or not), so it must pass the same
@@ -39,11 +40,11 @@ func registerSession(s *server.MCPServer, m *manager.Manager) {
 					m.RecordRejectedCommand(sessionName, connectionName, cmdString, outcome)
 					return decline, nil
 				}
-				res, err := handleSessionTool(m, args, outcome)
+				res, err := handleSessionTool(ctx, m, args, outcome)
 				return appendNote(res, note), err
 			}
 		}
-		return handleSessionTool(m, args, "")
+		return handleSessionTool(ctx, m, args, "")
 	})
 }
 
@@ -52,7 +53,7 @@ func registerSession(s *server.MCPServer, m *manager.Manager) {
 // missing-argument error. approval is the destructive-command gate outcome
 // carried into the audit record of a background start ("" when the gate did
 // not run).
-func handleSessionTool(m *manager.Manager, args map[string]any, approval string) (*mcp.CallToolResult, error) {
+func handleSessionTool(ctx context.Context, m *manager.Manager, args map[string]any, approval string) (*mcp.CallToolResult, error) {
 	action, _ := args["action"].(string)
 	sessionName, _ := args["sessionName"].(string)
 
@@ -67,7 +68,7 @@ func handleSessionTool(m *manager.Manager, args map[string]any, approval string)
 		cmdString, _ := args["cmdString"].(string)
 		directory, _ := args["directory"].(string)
 		bgPty, _ := args["pty"].(bool)
-		info, err := m.OpenSessionWithOptions(sessionName, connectionName, manager.SessionOpenOptions{
+		info, err := m.OpenSessionWithOptions(ctx, sessionName, connectionName, manager.SessionOpenOptions{
 			Background: background,
 			CmdString:  cmdString,
 			Directory:  directory,
@@ -99,7 +100,7 @@ func handleSessionTool(m *manager.Manager, args map[string]any, approval string)
 		if v, ok := args["waitMs"].(float64); ok {
 			waitMs = int64(v)
 		}
-		out, err := m.ReadSessionOutput(sessionName, maxBytes, offset, waitMs)
+		out, err := m.ReadSessionOutput(ctx, sessionName, maxBytes, offset, waitMs)
 		if err != nil {
 			return errorResult(err), nil
 		}
@@ -113,7 +114,7 @@ func handleSessionTool(m *manager.Manager, args map[string]any, approval string)
 			return errorResult(manager.NewToolError(manager.CodeCommandValidationFailed,
 				"sessionName is required for action=close", false)), nil
 		}
-		if err := m.CloseSession(sessionName); err != nil {
+		if err := m.CloseSession(ctx, sessionName); err != nil {
 			return errorResult(err), nil
 		}
 		return mcp.NewToolResultText(fmt.Sprintf("Session %q closed", sessionName)), nil

@@ -333,7 +333,7 @@ Server options:
 | `pty` | false | Allocate a pseudo-terminal in exec mode (off by default; enable for interactive commands) |
 | `redactSecrets` | false | Output redaction (password/token/Bearer/PEM); enabling has scan cost |
 | `resultFormat` | text | Successful command result rendering: text = sectioned plain text (real newlines), json = structured JSON |
-| `tryKeyboard` | false | Keyboard-interactive authentication (2FA code via environment variable `SSH_MCP_2FA_CODE`) |
+| `tryKeyboard` | false | Keyboard-interactive authentication (the server's 2FA challenge pops up in the MCP client; unattended setups fall back to `SSH_MCP_2FA_CODE`) |
 
 > Strings in the configuration file support `${environment-variable-name}` references, so credentials can be stored in environment variables without touching disk.
 
@@ -342,7 +342,7 @@ Server options:
 - Password: `password`
 - Private Key: `privateKey` (may have `passphrase`, or use environment variable `SSH_MCP_PASSPHRASE`)
 - ssh-agent: `agent` (Unix socket path; on Windows use `pageant` for Pageant)
-- Keyboard-interactive: `tryKeyboard: true`, password prompt uses configured password, OTP prompt uses `SSH_MCP_2FA_CODE`
+- Keyboard-interactive: `tryKeyboard: true`. The password prompt is answered automatically from the configured password; OTP/verification-code prompts **pop up live in the MCP client that triggered the connection** (answer within 2 minutes; only the session that started the dial is prompted — other connections are never blocked). If the prompt is declined/cancelled/timed out, or the client cannot elicit at all (background jobs, headless runs), it automatically falls back to the `SSH_MCP_2FA_CODE` environment variable; if that is unset too, empty answers are sent and the server simply rejects — a failed authentication fails only that connection, never wedges the process or other connections.
 
 ## Audit Log (tamper-evident command history, hash chain)
 

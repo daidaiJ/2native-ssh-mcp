@@ -2,6 +2,7 @@ package manager
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
@@ -10,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -21,9 +21,13 @@ import (
 	"2native-ssh-mcp/internal/logger"
 )
 
-// dial establishes the SSH connection, optionally through a proxy.
-func (m *Manager) dial(key string, cfg *config.SSHConfig) (*ssh.Client, error) {
-	authMethods, err := buildAuthMethods(cfg)
+// dial establishes the SSH connection, optionally through a proxy. The
+// context carries the per-request Elicitor (keyboard-interactive OTP
+// prompts); it is read here and captured by the auth closures, never under
+// the Manager lock: the handshake — and any human prompt inside it — runs
+// without holding the connection table.
+func (m *Manager) dial(ctx context.Context, key string, cfg *config.SSHConfig) (*ssh.Client, error) {
+	authMethods, err := buildAuthMethods(cfg, elicitorFromContext(ctx), ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -184,8 +188,9 @@ func httpProxyDial(u *url.URL, target string, timeout time.Duration) (net.Conn, 
 	return &bufferedConn{reader: br, Conn: conn}, nil
 }
 
-// buildAuthMethods assembles the SSH auth methods in preference order.
-func buildAuthMethods(cfg *config.SSHConfig) ([]ssh.AuthMethod, error) {
+// buildAuthMethods assembles the SSH auth methods in preference order. The
+// elicitor (may be nil) and context feed the keyboard-interactive OTP path.
+func buildAuthMethods(cfg *config.SSHConfig, elicitor Elicitor, ctx context.Context) ([]ssh.AuthMethod, error) {
 	var methods []ssh.AuthMethod
 
 	if cfg.PrivateKey != "" {
@@ -216,7 +221,7 @@ func buildAuthMethods(cfg *config.SSHConfig) ([]ssh.AuthMethod, error) {
 	}
 
 	if cfg.TryKeyboard {
-		methods = append(methods, ssh.KeyboardInteractive(keyboardInteractive(cfg)))
+		methods = append(methods, ssh.KeyboardInteractive(keyboardInteractive(cfg, elicitor, ctx)))
 		logger.Info("Using keyboard-interactive authentication for [%s]", cfg.Name)
 	}
 
@@ -250,30 +255,6 @@ func agentSigners(agentPath string) ([]ssh.Signer, error) {
 	}
 	agentClient := agent.NewClient(conn)
 	return agentClient.Signers()
-}
-
-// keyboardInteractive answers keyboard-interactive prompts: password prompts
-// use the configured password, other prompts (e.g. OTP) use the
-// SSH_MCP_2FA_CODE environment variable.
-func keyboardInteractive(cfg *config.SSHConfig) ssh.KeyboardInteractiveChallenge {
-	return func(name, instruction string, questions []string, echos []bool) ([]string, error) {
-		otpCode := os.Getenv("SSH_MCP_2FA_CODE")
-		answers := make([]string, len(questions))
-		for i, q := range questions {
-			lower := strings.ToLower(q)
-			switch {
-			case cfg.Password != "" && (strings.Contains(lower, "password") || strings.Contains(lower, "密码")):
-				answers[i] = cfg.Password
-			case otpCode != "":
-				answers[i] = otpCode
-			case cfg.Password != "" && len(questions) == 1 && !echos[i]:
-				answers[i] = cfg.Password
-			default:
-				answers[i] = ""
-			}
-		}
-		return answers, nil
-	}
 }
 
 func redactProxyURL(u *url.URL) string {

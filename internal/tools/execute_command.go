@@ -33,6 +33,9 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 
 	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := request.GetArguments()
+		// Keyboard-interactive OTP prompts ride the same request context, so
+		// a challenge during dial shows only on this client session.
+		ctx = withElicitor(ctx, s)
 
 		cmdString, _ := args["cmdString"].(string)
 		directory, _ := args["directory"].(string)
@@ -68,7 +71,7 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 
 		if background {
 			bgPty, _ := args["pty"].(bool)
-			res, err := handleBackgroundCommand(m, cmdString, directory, sessionName, connectionName, bgPty, approval)
+			res, err := handleBackgroundCommand(ctx, m, cmdString, directory, sessionName, connectionName, bgPty, approval)
 			return appendNote(res, note), err
 		}
 
@@ -90,7 +93,7 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 // machinery and returns immediately: the agent gets a session name and remote
 // log path to poll with session action=read instead of burning a long
 // synchronous timeout.
-func handleBackgroundCommand(m *manager.Manager, cmdString, directory, sessionName, connectionName string, pty bool, approval string) (*mcp.CallToolResult, error) {
+func handleBackgroundCommand(ctx context.Context, m *manager.Manager, cmdString, directory, sessionName, connectionName string, pty bool, approval string) (*mcp.CallToolResult, error) {
 	if strings.TrimSpace(cmdString) == "" {
 		return errorResult(manager.NewToolError(manager.CodeCommandValidationFailed,
 			"cmdString is required for background=true", false)), nil
@@ -98,7 +101,7 @@ func handleBackgroundCommand(m *manager.Manager, cmdString, directory, sessionNa
 	if sessionName == "" {
 		sessionName = randomSessionName()
 	}
-	info, err := m.OpenSessionWithOptions(sessionName, connectionName, manager.SessionOpenOptions{
+	info, err := m.OpenSessionWithOptions(ctx, sessionName, connectionName, manager.SessionOpenOptions{
 		Background: true,
 		CmdString:  cmdString,
 		Directory:  directory,
