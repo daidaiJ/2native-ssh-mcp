@@ -65,6 +65,10 @@ go test -tags integration ./internal/manager/ -run ExecKill -v
 # Output pipeline (stripANSI / redact / compress, pure local, no SSH needed)
 go test ./internal/manager/ -bench BenchmarkOutput -benchmem
 
+# Audit log path (canonical JSON + hashing, append write-through vs batched
+# buffering, legacy rewrite-model comparison; pure local, no SSH needed)
+go test ./internal/manager/ -bench 'BenchmarkCommandLog|BenchmarkAuditCanonicalHash' -benchmem
+
 # SFTP transfer throughput (integration tag; needs a reachable connection in
 # config.json, e.g. a WSL sshd)
 go test -tags integration ./internal/manager/ -bench BenchmarkTransfer -benchmem

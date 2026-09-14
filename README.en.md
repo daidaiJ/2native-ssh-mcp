@@ -33,7 +33,7 @@ The agent only sees four MCP tools. SSH credentials stay in the local process an
 | 👤 Human users | [docs/HUMAN_GUIDE.en.md](docs/HUMAN_GUIDE.en.md) | Readable: secure setup, quick start, tool reference, release flow |
 | 🔍 Features | [docs/FEATURES.en.md](docs/FEATURES.en.md) | Full feature list and known limitations |
 | 🛠 Development | [docs/DEVELOPMENT.en.md](docs/DEVELOPMENT.en.md) | Project structure, build & test, Release and MCP Registry publishing |
-| 🔐 Security | [SECURITY.md](SECURITY.md) | Threat model, approval gate, hardening recommendations |
+| 🔐 Security | [SECURITY.md](SECURITY.md) | Threat model, approval gate, audit flush policy, tiered hardening |
 
 Docs are Chinese by default; the same-name `.en.md` files are the English versions.
 
@@ -44,9 +44,11 @@ Docs are Chinese by default; the same-name `.en.md` files are the English versio
 - **Output handling**: ANSI stripped, large output spilled to local files (`.ssh-mcp-out/`) for the agent to Read/Grep instead of re-running remotely
 - **File transfer**: atomic landing, deduplication, resumable transfer, recursive directories, sha256 verification, progress notifications
 - **Destructive-command approval (optional)**: `approvalMode: "ask-destructive"` prompts via MCP elicitation; built-in classifier plus user extensions/exemptions — gray areas are yours to decide; fails open when the client cannot prompt
+- **Tamper-evident audit log**: every command is appended to a SHA-256 hash chain (JSONL); later tampering is pinpointed to the line (`audit-verify`); flush policy tunable (batched/write-through) → [Audit log](docs/HUMAN_GUIDE.en.md#audit-log-tamper-evident-command-history-hash-chain)
+- **Jump-host tunnel**: `via` (OpenSSH ProxyJump) reaches internal hosts through the jump host's `direct-tcpip` channel; each hop authenticates independently, no agent forwarding; exec/shell/SFTP behave as a direct connection → [Jump hosts](docs/HUMAN_GUIDE.en.md#jump-hosts-via-openssh-proxyjump)
 - **Security**: command whitelist/blacklist, path whitelisting, credential isolation, config permission checks
 - **Dual transport**: stdio / streamable HTTP daemon (refcounting, health check, one-click Windows autostart)
-- **Auth & compatibility**: password/private key/ssh-agent/Pageant/2FA, proxies, algorithm negotiation (legacy servers)
+- **Auth & compatibility**: password/private key/ssh-agent/Pageant/keyboard-interactive 2FA (the challenge pops up in the MCP client; unattended setups fall back to an env var), proxies, algorithm negotiation (legacy servers) → [Authentication](docs/HUMAN_GUIDE.en.md#authentication-methods)
 
 <p align="center">
   <img src="docs/images/isolation.png" alt="Credential isolation: SSH keys and passwords stay in the local process and never reach the model" />

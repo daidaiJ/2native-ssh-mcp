@@ -33,7 +33,7 @@ AI 助手只看到四个 MCP 工具；本机进程负责 SSH，凭据不会进�
 | 👤 人类用户 | [docs/HUMAN_GUIDE.md](docs/HUMAN_GUIDE.md) | 易读版：安全配置、快速开始、工具说明、参数速查、发布流程 |
 | 🔍 特性详情 | [docs/FEATURES.md](docs/FEATURES.md) | 完整特性列表与已知限制（英文版 .en.md） |
 | 🛠 开发与发布 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 项目结构、构建测试、Release 与 MCP Registry 发布流程 |
-| 🔐 安全 | [SECURITY.md](SECURITY.md) | 威胁模型、审批闸门、加固建议 |
+| 🔐 安全 | [SECURITY.md](SECURITY.md) | 威胁模型、审批闸门、审计落盘策略与分级加固建议 |
 
 各文档均为中文默认，同名 `.en.md` 为英文版。
 
@@ -44,9 +44,11 @@ AI 助手只看到四个 MCP 工具；本机进程负责 SSH，凭据不会进�
 - **输出处理**：ANSI 剥离、大输出落盘到本地（`.ssh-mcp-out/`），Agent 用 Read/Grep 查全文，不远程重跑
 - **文件传输**：原子落盘、去重、断点续传、目录递归、sha256 校验、进度通知
 - **破坏性命令审批（可选）**：`approvalMode: "ask-destructive"` 经 MCP elicitation 弹窗确认，内置分类器 + 用户扩展/豁免，灰色地带用户自定；客户端不支持时 fail-open
+- **防篡改审计日志**：每条命令追加进 SHA-256 哈希链（JSONL），事后篡改可定位到行（`audit-verify`）；落盘策略批量/写穿可调 → [审计日志](docs/HUMAN_GUIDE.md#审计日志防篡改命令记录哈希链)
+- **跳板机隧道**：`via`（OpenSSH ProxyJump）经跳板 `direct-tcpip` 连内网，各跳独立认证、不转发 agent，exec/shell/SFTP 行为与直连一致 → [跳板机](docs/HUMAN_GUIDE.md#跳板机viaopenssh-proxyjump)
 - **安全**：命令白/黑名单、路径白名单、凭据隔离、配置权限检查
 - **双传输**：stdio / streamable HTTP daemon（引用计数、健康检查、Windows 一键自启）
-- **认证兼容**：密码/私钥/ssh-agent/Pageant/2FA、代理、算法协商（兼容老服务器）
+- **认证兼容**：密码/私钥/ssh-agent/Pageant/键盘交互 2FA（挑战弹窗到 MCP 客户端，无人值守用环境变量兜底）、代理、算法协商（兼容老服务器）→ [认证方式](docs/HUMAN_GUIDE.md#认证方式)
 
 <p align="center">
   <img src="docs/images/isolation.png" alt="凭据隔离：SSH 密钥与密码留在本机进程，不会到达模型" />

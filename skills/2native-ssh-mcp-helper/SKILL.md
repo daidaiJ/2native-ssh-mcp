@@ -48,14 +48,15 @@ Interactive wizard for **2native-ssh-mcp** (Go SSH MCP server). Produces a locke
    - `privateKey` → `"privateKey": "~/.ssh/id_ed25519"`, optional `"passphrase": "${SSH_MCP_PASSPHRASE}"`
    - `ssh-config alias` → `"host"` in config matches `~/.ssh/config` Host; CLI `--host alias` only for single-host mode
    - `agent` → `"agent": "/path/to/socket"` or `"pageant"` on Windows
-   - `2FA` → add `"tryKeyboard": true`, OTP via `SSH_MCP_2FA_CODE` env
+   - `2FA` → `"tryKeyboard": true`. The OTP/challenge prompt pops up in the MCP client (elicitation, 2-minute timeout); unattended/headless setups also set the `SSH_MCP_2FA_CODE` env as fallback
 
 5. **Security prompts** (AskQuestion yes/no each)
    - Command whitelist regexes (recommended for prod)
    - Command blacklist
    - `allowedLocalPaths` / `allowedRemotePaths` (+ `localPathMode`: `cwd` default, `list` = only `allowedLocalPaths`, `any` = unrestricted)
    - Server metadata: `description`, `business`, `aliases`, `notes` for list-servers
-   - Bastion: `"transportMode": "shell"` (no SFTP on shell mode)
+   - Jump host, standard OpenSSH bastion: declare the bastion as its own connection (with its own credentials, optional `proxy`), then add `"via": "<bastion-name>"` on the internal host; the target must not also set `proxy`/`socksProxy`. Details: [HUMAN_GUIDE Jump hosts](../../docs/HUMAN_GUIDE.md#跳板机viaopenssh-proxyjump)
+   - Bastion with only an interactive menu / no exec: `"transportMode": "shell"` (no SFTP on shell mode); `via` does not apply there
    - Host key check: `"hostKeyCheck"` — default `accept-new` (records unknown keys, rejects changed ones); use `strict` for fixed hosts, `none` for dynamic IP / frequently reimaged machines. `known_hosts` and its directory are auto-created; override path with `"knownHostsFile"`
 
 6. **Write config.json**
@@ -150,6 +151,9 @@ Interactive wizard for **2native-ssh-mcp** (Go SSH MCP server). Produces a locke
 |---|---|
 | Multi-host | `--config-file` with object of named connections |
 | Alias for connectionName | `"aliases": ["prod-web"]` in config |
+| Internal host behind a jump host | `"via": "<jump-connection-name>"` on the target; jump host declared as its own connection |
+| 2FA / OTP login | `"tryKeyboard": true` (elicitation popup); `SSH_MCP_2FA_CODE` env for unattended runs |
+| Verify audit log | `2native-ssh-mcp audit-verify --file <path>` or `--config-file config.json` |
 | Long-running logs | `session action=open` + `background=true`, poll `session action=read` |
 | Stateful shell (exec mode) | `session action=open` → `execute-command` with `sessionName` |
 | File upload/download | `file-transfer` (exec mode only) |

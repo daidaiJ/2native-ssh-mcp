@@ -63,6 +63,9 @@ go test -tags integration ./internal/manager/ -run ExecKill -v
 # 输出管线（stripANSI / redact / compress，纯本地，无需 SSH）
 go test ./internal/manager/ -bench BenchmarkOutput -benchmem
 
+# 审计日志链路（canonical JSON+哈希、追加写穿 vs 批量缓冲、旧重写模型对照；纯本地，无需 SSH）
+go test ./internal/manager/ -bench 'BenchmarkCommandLog|BenchmarkAuditCanonicalHash' -benchmem
+
 # SFTP 传输吞吐（走 integration 标签，需要 config.json 里有可达连接，如 WSL sshd）
 go test -tags integration ./internal/manager/ -bench BenchmarkTransfer -benchmem
 ```

@@ -13,12 +13,13 @@ Defensive playbook for agents using **2native-ssh-mcp**. Read this before execut
 
 ## Golden rules
 
-1. **Call `list-servers` first** — read metadata, aliases, notes; pick `connectionName` or plan a `sessionName`.
+1. **Call `list-servers` first** — read metadata, aliases, notes; pick `connectionName` or plan a `sessionName`. A `via=<name>` label means the host is only reachable through that jump-host connection — no direct TCP path exists, and jump-host failures name it.
 2. **Never use root** — use a dedicated low-privilege account.
 3. **Prefer narrow commands** — scope with `head`, `tail`, `grep`, `wc`, paths; avoid blind `cat` on large files.
 4. **Respect whitelist/blacklist** — if a command is rejected, do not bypass; ask the operator to widen policy.
 5. **Secrets** — redaction is off by default (`"redactSecrets": true` enables it per connection); regardless, avoid printing credentials.
 6. **Host key rejection** — if a connection fails with a host key mismatch (server reimaged / key rotated), do not bypass; report it. Fix is operator-side: remove the stale line from `known_hosts` (or set `"hostKeyCheck": "none"` for dynamic-IP hosts).
+7. **Assume everything is recorded** — executed commands land in a per-connection append-only, hash-chained audit log (failures included); act accordingly on production hosts.
 
 ## Output & tokens
 
@@ -83,6 +84,7 @@ session(action=close, sessionName=logs)
 - **`SSH_CONNECTION_LOST` (retriable=false)**: the connection dropped mid-command; the remote process may still be running. **Do not replay blindly** — inspect the partial `stdout` in the error JSON (`replaySafe: false`).
 - Foreground `timeout` must exceed the real runtime (default `commandTimeoutMs=30000`). On timeout the remote process group is killed by PID, so nothing is left running remotely.
 - exec runs **without a PTY by default**; interactive commands need `"pty": true` (connection config) or the `pty` tool parameter.
+- **"jump host [X] is unreachable" / "target authentication … rejected"** — two different failure layers on `via=` connections: the first is the jump host (retry — it may be a transient network issue), the second is the target's own credentials (do not retry; report).
 
 ## Operational traps (verified on real hosts)
 
