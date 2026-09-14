@@ -104,10 +104,11 @@ func TestEnrichHistoryOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.commandLogs["srv"], err = NewCommandLog(t.TempDir(), "srv", 20, false)
+	m.commandLogs["srv"], err = NewCommandLog(t.TempDir(), "srv", 20, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer m.commandLogs["srv"].Close()
 	m.commandLogs["srv"].items = []CommandLogEntry{
 		{Command: "echo one"}, {Command: "echo two"}, {Command: "echo one"},
 	}
@@ -144,13 +145,14 @@ func TestEnrichHistoryOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m2.commandLogs["srv"], err = NewCommandLog(t.TempDir(), "srv", 20, false)
+	m2.commandLogs["srv"], err = NewCommandLog(t.TempDir(), "srv", 20, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer m2.commandLogs["srv"].Close()
 	m2.commandLogs["srv"].items = []CommandLogEntry{{Command: "echo one"}}
 	res = CommandResult{Status: StatusOK, Stdout: "  1  whoami\n"}
-	res, _ = m2.finalizeCommand("srv", offCfg, "history", res, nil)
+	res, _ = m2.finalizeCommand("srv", offCfg, "history", res, nil, "")
 	if res.HistorySupplemented != 0 || res.Stdout != "  1  whoami\n" {
 		t.Fatalf("historyFromLog must default to off: %+v", res)
 	}

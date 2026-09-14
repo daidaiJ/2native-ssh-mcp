@@ -65,6 +65,9 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "audit-verify":
+			runAuditVerify(args[1:])
+			return
 		case "version":
 			fmt.Println(version)
 			return

@@ -35,6 +35,10 @@ var elicitationTimeout = 5 * time.Minute
 //     agent to consult the user before destructive actions on this
 //     connection. A client capability gap must not lock the user out.
 //
+// The returned approval string is the audit outcome: manager.ApprovalAuto
+// (mode auto), manager.ApprovalNone (gate not needed), accepted / declined /
+// timeout / fail-open.
+//
 // It only gates execute-command; file transfers take structured, visible
 // arguments and carry no free-text risk surface.
 func approvalGate(
@@ -42,13 +46,13 @@ func approvalGate(
 	srv *server.MCPServer,
 	cfg *config.SSHConfig,
 	cmdString string,
-) (proceed bool, note string, decline *mcp.CallToolResult) {
+) (proceed bool, note string, outcome string, decline *mcp.CallToolResult) {
 	if cfg == nil || cfg.ApprovalMode != config.ApprovalModeAskDestructive {
-		return true, "", nil
+		return true, "", manager.ApprovalAuto, nil
 	}
 	destructive, reason := approval.IsDestructive(cmdString, cfg.ApprovalPatterns, cfg.ApprovalExemptPatterns)
 	if !destructive {
-		return true, "", nil
+		return true, "", manager.ApprovalNone, nil
 	}
 
 	elicitationCtx, cancel := context.WithTimeout(ctx, elicitationTimeout)
@@ -64,24 +68,24 @@ func approvalGate(
 			if !ok {
 				verb = "did not approve"
 			}
-			return false, "", declinedResult(verb)
+			return false, "", manager.ApprovalDeclined, declinedResult(verb)
 		}
-		return true, "", nil
+		return true, "", manager.ApprovalAccepted, nil
 	case ctx.Err() != nil:
 		// The caller's context is gone (client disconnected): fail-open like
 		// any other transport failure.
-		return true, advisoryNote(cfg.Name, "elicitation aborted: client disconnected"), nil
+		return true, advisoryNote(cfg.Name, "elicitation aborted: client disconnected"), manager.ApprovalFailOpen, nil
 	case elicitationCtx.Err() == context.DeadlineExceeded:
 		// The user did not answer in time: fail closed. A silent timeout must
 		// never green-light a destructive command.
-		return false, "", declinedResult(fmt.Sprintf("did not respond within %s to", elicitationTimeout))
+		return false, "", manager.ApprovalTimeout, declinedResult(fmt.Sprintf("did not respond within %s to", elicitationTimeout))
 	case errors.Is(err, server.ErrNoActiveSession), errors.Is(err, server.ErrElicitationNotSupported):
 		// The client never advertised elicitation: fail-open with advice.
-		return true, advisoryNote(cfg.Name, "the client does not support MCP elicitation"), nil
+		return true, advisoryNote(cfg.Name, "the client does not support MCP elicitation"), manager.ApprovalFailOpen, nil
 	default:
 		// A transport error in an already-requested elicitation is treated
 		// the same way: the design decision is that approval is best-effort.
-		return true, advisoryNote(cfg.Name, fmt.Sprintf("elicitation failed: %v", err)), nil
+		return true, advisoryNote(cfg.Name, fmt.Sprintf("elicitation failed: %v", err)), manager.ApprovalFailOpen, nil
 	}
 }
 
@@ -155,8 +159,8 @@ func appendNote(res *mcp.CallToolResult, note string) *mcp.CallToolResult {
 }
 
 // wrapWithGate resolves the request's connection and runs approvalGate,
-// returning (proceed, note, decline-result).
-func wrapWithGate(ctx context.Context, srv *server.MCPServer, m *manager.Manager, sessionName, connectionName, cmdString string) (bool, string, *mcp.CallToolResult) {
+// returning (proceed, note, approval-outcome, decline-result).
+func wrapWithGate(ctx context.Context, srv *server.MCPServer, m *manager.Manager, sessionName, connectionName, cmdString string) (bool, string, string, *mcp.CallToolResult) {
 	cfg := m.ConfigFor(sessionName, connectionName)
 	return approvalGate(ctx, srv, cfg, cmdString)
 }

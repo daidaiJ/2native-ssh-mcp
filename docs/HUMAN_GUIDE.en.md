@@ -312,9 +312,10 @@ Server options:
 | `approvalPatterns` / `approvalExemptPatterns` | empty | User regexes widening / exempting the destructive set (exemptions win); `$global` defaults, per-connection overrides |
 | `allowedLocalPaths` / `allowedRemotePaths` | empty | Path whitelist for file transfers |
 | `localPathMode` | `cwd` | Local path restriction: `cwd` (process working directory + `allowedLocalPaths`) / `list` (only `allowedLocalPaths`) / `any` (unrestricted) |
-| `commandLogSize` | 20 | Number of command logs to retain (0 disables) |
-| `commandLogDir` | `.ssh-mcp-logs` | Command log directory (`<dir>/<connection-name>.log`) |
-| `commandLogOnlySuccess` | false | Only log successful commands |
+| `commandLogSize` | 20 | Recent-display window size (0 disables the audit log) |
+| `commandLogDir` | `.ssh-mcp-logs` | Audit log directory (`<dir>/<connection-name>.jsonl`) |
+| `commandLogOnlySuccess` | false | Show only successful commands in the window (disk always records failures) |
+| `commandLogFlushMs` | 5000 | Audit flush policy: max ms a record waits in the buffer; 0 = write-through |
 | `sftpConcurrency` / `sftpChunkSize` | 16 / 32768 | SFTP concurrency and chunk size |
 | `sftpDedicatedConn` | false | Run SFTP over a dedicated SSH connection (lazy, 5 min idle recycle, liveness-probed before reuse); enable when a shadow container / session-scoped overlay in front of sshd loses transferred files; `$global` sets the default |
 | `historyFromLog` | false | Supplements sparse remote `history` output (<10 entries) from the MCP command log (tail-deduped); mechanism in [FEATURES](FEATURES.en.md#mechanism-notes) |
@@ -343,17 +344,21 @@ Server options:
 - ssh-agent: `agent` (Unix socket path; on Windows use `pageant` for Pageant)
 - Keyboard-interactive: `tryKeyboard: true`, password prompt uses configured password, OTP prompt uses `SSH_MCP_2FA_CODE`
 
-## Command Logging (remote execution history, keeps last N entries)
+## Audit Log (tamper-evident command history, hash chain)
 
-Command logging is enabled by default, keeping 20 entries per connection (disable with `"commandLogSize": 0`). Executed commands are appended to `<commandLogDir>/<connection-name>.log` in JSON lines format, keeping only the most recent N entries, and persists across restarts:
+The audit log is enabled by default (disable with `"commandLogSize": 0`). Each connection's execution records are **appended** as JSON lines to `<commandLogDir>/<connection-name>.jsonl` (Unix file mode 0600). Every line carries the previous line's SHA-256 (`prevHash`), forming a **hash chain**: modifying any line afterwards makes verification fail at that line. **Command output is never recorded** — only who executed what, when, and with what outcome:
 
 ```json
-{"timestamp":"2026-08-22T10:00:00+08:00","command":"ls -la /tmp","exitCode":0,"success":true}
+{"v":1,"type":"command","ts":"2026-08-22T02:00:00.123Z","connection":"prod","tool":"execute-command","command":"ls -la /tmp","approval":"auto","exitCode":0,"success":true,"prevHash":"000...000","hash":"e3b0..."}
 ```
 
-- Global defaults: `--command-log-size <n>` / `--command-log-dir <dir>` (applies to connections without individual configuration)
-- Per-connection override: `commandLogSize` / `commandLogDir` / `commandLogOnlySuccess`
-- Use `commandLogOnlySuccess: true` to only log successful commands, avoiding noise from probe commands
+- Recorded: `execute-command` (success/failure/timeout/killed; approval refusals are logged with `approval=declined`), `file-transfer` (one summary per call, remote path only), named `session` open/close
+- Flush policy `commandLogFlushMs` (ms; global CLI `--command-log-flush-ms`): default 5000 = records buffer and flush in batches at 5 s / 32 records / 256 KiB, whichever comes first; graceful shutdown flushes the tail (a hard crash can lose the last ≤5 s). `0` = write-through: each record is on disk before the command result returns (strictest; ~13 µs per record, ~8 µs batched — negligible next to the SSH round trip). Tiered hardening guidance: [SECURITY.md](../SECURITY.md#hardening-levels)
+- **Failed commands are always written to disk** (internal audit needs the failure trail); `commandLogOnlySuccess: true` only affects the `recent=` display window in `list-servers` (which keeps showing successful commands only)
+- `commandLogSize` only controls the in-memory display window (default 20) loaded across restarts — it **no longer truncates the disk file**. Files rotate at 16 MiB or 10000 lines (whichever comes first) into `<connection>.jsonl.<UTC-timestamp>`; the new file starts with a `chain-start` record linking the old tail hash, so the chain never breaks across files
+- Verify one file: `2native-ssh-mcp audit-verify --file .ssh-mcp-logs/prod.jsonl`; verify every connection (including rotated files): `2native-ssh-mcp audit-verify --config-file config.json`. Exit codes: 0=chain intact or no log, 2=broken chain/legacy format (stderr prints file, line number, expected and actual hashes), 1=program error
+- Upgrade compatibility: a legacy `<connection-name>.log` found at startup is renamed to `<connection-name>.log.legacy` and a new chain starts (one stderr notice); old lines are never spliced into the new chain
+- Global defaults: `--command-log-size <n>` / `--command-log-dir <dir>`; per-connection override: `commandLogSize` / `commandLogDir` / `commandLogOnlySuccess`
 
 ## Security
 

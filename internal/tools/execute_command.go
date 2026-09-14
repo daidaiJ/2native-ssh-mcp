@@ -57,14 +57,18 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 		// Destructive-command approval gate (issue #5). Runs before both the
 		// background and foreground paths: a detached job is exactly the case
 		// where the human must be asked before the command starts.
-		proceed, note, decline := wrapWithGate(ctx, s, m, sessionName, connectionName, cmdString)
+		proceed, note, approval, decline := wrapWithGate(ctx, s, m, sessionName, connectionName, cmdString)
 		if !proceed {
+			// The command never reached the remote host, but the refusal is
+			// part of the audit trail (success=false, no remote exit).
+			m.RecordRejectedCommand(sessionName, connectionName, cmdString, approval)
 			return decline, nil
 		}
+		opts.Approval = approval
 
 		if background {
 			bgPty, _ := args["pty"].(bool)
-			res, err := handleBackgroundCommand(m, cmdString, directory, sessionName, connectionName, bgPty)
+			res, err := handleBackgroundCommand(m, cmdString, directory, sessionName, connectionName, bgPty, approval)
 			return appendNote(res, note), err
 		}
 
@@ -86,7 +90,7 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 // machinery and returns immediately: the agent gets a session name and remote
 // log path to poll with session action=read instead of burning a long
 // synchronous timeout.
-func handleBackgroundCommand(m *manager.Manager, cmdString, directory, sessionName, connectionName string, pty bool) (*mcp.CallToolResult, error) {
+func handleBackgroundCommand(m *manager.Manager, cmdString, directory, sessionName, connectionName string, pty bool, approval string) (*mcp.CallToolResult, error) {
 	if strings.TrimSpace(cmdString) == "" {
 		return errorResult(manager.NewToolError(manager.CodeCommandValidationFailed,
 			"cmdString is required for background=true", false)), nil
@@ -99,6 +103,7 @@ func handleBackgroundCommand(m *manager.Manager, cmdString, directory, sessionNa
 		CmdString:  cmdString,
 		Directory:  directory,
 		Pty:        pty,
+		Approval:   approval,
 	})
 	if err != nil {
 		return errorResult(err), nil

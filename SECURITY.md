@@ -91,6 +91,61 @@ On startup, when `--config-file` is set, the server verifies:
 
 Pass `--allow-insecure-config-perms` only for local development; the same override can be declared inside the config file itself (object format) via `"$global": {"allowInsecureConfigPerms": true}`. The check runs after the file is parsed, so a config that disables it is loaded as a deliberate user choice.
 
+## Audit log (tamper-evident command history)
+
+Every connection keeps an append-only JSONL audit log at `<commandLogDir>/<connection>.jsonl` (Unix mode 0600). Each line records the connection, tool (`execute-command` / `file-transfer` / `session`), command or transfer summary, approval outcome, exit code and success flag — **never command output** (output may contain secrets; redaction is not the audit's job).
+
+Each line carries `prevHash` — the SHA-256 of the previous line's canonical JSON — forming a hash chain anchored at 64 zeros. Records are written through a small buffer so the audit costs microseconds per command, not file-system round trips; the flush policy is user-configurable (see [Hardening levels](#hardening-levels)). Any later modification of a line (command text, exit code, deletion) breaks the chain and is pinpointed by:
+
+```
+2native-ssh-mcp audit-verify --file .ssh-mcp-logs/prod.jsonl
+2native-ssh-mcp audit-verify --config-file config.json   # every connection, incl. rotated files
+```
+
+Exit code 2 means the chain is broken or the file is a legacy (pre-chain) log; stderr names the file, line number, and expected vs actual hash. There is no repair tool on purpose: a broken chain is evidence, keep a copy for review. Failed commands are always written (approval refusals included, with `approval=declined`); `commandLogOnlySuccess` only filters the `list-servers` display window. The chain covers what this server executed — it does not retroactively prove what happened outside the log, and it is not a compliance certification.
+
+### Audit flush policy
+
+The audit log buffers records and flushes in batches so a command never waits on the file system unless you ask it to. The policy is per connection (`commandLogFlushMs`, also `--command-log-flush-ms` globally); the buffer additionally flushes at 32 records or 256 KiB, whichever comes first, and every graceful shutdown (`DisconnectAll`, daemon stop) flushes the tail.
+
+| Policy | Configuration | Durability | Measured cost per record |
+|---|---|---|---|
+| Batched (default) | unset, or `commandLogFlushMs: 5000` | a hard crash (`kill -9`, power loss) can lose the last ≤5 s of records; the on-disk chain always verifies | ~8 µs |
+| Write-through | `commandLogFlushMs: 0` | each record is on disk before the command result returns — the strict choice | ~13 µs |
+| Longer batches | e.g. `commandLogFlushMs: 60000` | quieter disk, up to 60 s of exposure | ~8 µs |
+| Audit disabled | `commandLogSize: 0` | no audit trail at all | 0 |
+
+Measured on a desktop Windows machine (AMD Ryzen 5 4600H); the replaced implementation rewrote the whole file per record and cost milliseconds. The numbers matter only for scale decisions — any policy is dominated by the SSH round trip.
+
+## Hardening levels
+
+Pick a level per deployment; every knob is per connection unless noted. Levels are cumulative — each includes everything above it.
+
+**Level 0 — Baseline (defaults)**
+
+- Audit chain on: `commandLogSize` unset (default 20-entry window), `commandLogFlushMs` unset (batched 5 s flush).
+- Host keys: `hostKeyCheck: "accept-new"` (first contact recorded, later changes fail).
+- `approvalMode: "auto"` — the agent executes without asking.
+- Reasonable for personal machines and dev sandboxes.
+
+**Level 1 — Hardened**
+
+- `commandLogFlushMs: 0` — write-through audit: nothing can take the process down between the command and its record.
+- `approvalMode: "ask-destructive"` plus `approvalPatterns` for anything the built-in classifier misses; `approvalExemptPatterns` to keep routine mutating commands prompt-free.
+- After the first contact is recorded, `hostKeyCheck: "strict"`.
+- `redactSecrets: true` on connections whose commands print credentials; keep `stripAnsi` on (default).
+- `commandLogOnlySuccess: false` (default) so the display window also shows failures.
+
+**Level 2 — Strict (internal audit / evidence-grade)**
+
+- Dedicated `commandLogDir` on a directory whose ACL allows only the service account (Unix: `0700` dir, the log itself is written `0600`) — separate from agent-readable workspaces, so records outlive and outrank agent tampering.
+- Scheduled verification: run `2native-ssh-mcp audit-verify --config-file config.json` from a cron job / scheduled task and alert on exit code 2. A chain nobody checks is only half a control.
+- Archive rotated `*.jsonl.<utc>` files off the host after each rotation window; the hash chain makes later tampering with archives detectable, so archives can be compared against each other.
+- HTTP transport only with `--http-token` on a loopback bind; prefer stdio where possible.
+- `localPathMode: "list"` plus explicit `allowedRemotePaths` so transfers cannot wander.
+- Never set `--allow-insecure-config-perms` / `$global.allowInsecureConfigPerms`.
+- Do not disable the audit (`commandLogSize: 0`) outside throwaway environments — at that point there is no execution trail at all.
+
 ## Reporting vulnerabilities
 
 Open a GitHub issue or contact the maintainer privately. Do not disclose credentials in bug reports.

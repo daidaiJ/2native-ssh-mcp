@@ -1,10 +1,14 @@
 package manager
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"2native-ssh-mcp/internal/config"
 )
@@ -129,5 +133,105 @@ func BenchmarkOutputRedactKVScanner1MiB(b *testing.B) {
 	b.SetBytes(int64(len(s)))
 	for i := 0; i < b.N; i++ {
 		_ = redactKV(s)
+	}
+}
+
+// Benchmarks for the per-command audit log. Every executed command pays one
+// AddAudit; the question is whether the hash chain (canonical JSON + SHA-256
+// + one O_APPEND write) costs more than the legacy model it replaced
+// (buffer the last N records, rewrite the whole file, rename over the old).
+// Run with:
+//
+//	go test ./internal/manager/ -bench BenchmarkCommandLog -benchmem
+
+func benchCommandLogEntries(b *testing.B) []CommandLogEntry {
+	entries := make([]CommandLogEntry, b.N)
+	for i := range entries {
+		entries[i] = CommandLogEntry{
+			Timestamp: time.Now(),
+			Command:   "systemctl restart nginx && journalctl -u nginx --since -5m | tail -n 50",
+			ExitCode:  0,
+			Success:   true,
+		}
+	}
+	return entries
+}
+
+// BenchmarkCommandLogAppendChain measures the shipped model: hash-chained
+// append-only JSONL.
+func BenchmarkCommandLogAppendChain(b *testing.B) {
+	dir := b.TempDir()
+	log, err := NewCommandLog(dir, "bench", 20, false, 0)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer log.Close()
+	entries := benchCommandLogEntries(b)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		log.Add(entries[i])
+	}
+}
+
+// BenchmarkCommandLogRewriteLegacy measures the pre-chain model this
+// replaced: keep the last 20 entries and atomically rewrite the whole file
+// on every record.
+func BenchmarkCommandLogRewriteLegacy(b *testing.B) {
+	dir := b.TempDir()
+	path := filepath.Join(dir, "legacy.log")
+	entries := benchCommandLogEntries(b)
+	window := make([]CommandLogEntry, 0, 20)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		window = append(window, entries[i])
+		if len(window) > 20 {
+			window = window[len(window)-20:]
+		}
+		tmp := path + ".tmp"
+		f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+		if err != nil {
+			b.Fatal(err)
+		}
+		enc := json.NewEncoder(f)
+		for _, e := range window {
+			_ = enc.Encode(e)
+		}
+		_ = f.Close()
+		_ = os.Rename(tmp, path)
+	}
+}
+
+// BenchmarkCommandLogAppendBuffered measures the default policy (5s flush
+// interval, batch caps at 32 records): per-record cost amortizes to the
+// window append plus a share of the hash and the batched write.
+func BenchmarkCommandLogAppendBuffered(b *testing.B) {
+	dir := b.TempDir()
+	log, err := NewCommandLog(dir, "bench", 20, false, 5000)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer log.Close()
+	entries := benchCommandLogEntries(b)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		log.Add(entries[i])
+	}
+}
+
+// BenchmarkAuditCanonicalHash isolates the CPU cost of one canonical JSON
+// encoding + SHA-256 (the per-record hashing overhead, no I/O).
+func BenchmarkAuditCanonicalHash(b *testing.B) {
+	r := AuditRecord{
+		V: auditVersion, Type: AuditTypeCommand,
+		TS: "2026-09-14T12:00:00.123456789Z", Connection: "bench",
+		Tool: "execute-command",
+		Command: "kubectl get pods -n prod -o wide | grep -v Completed | head -20",
+		Approval: ApprovalAccepted, PrevHash: zeroHash,
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := r.seal(); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

@@ -49,6 +49,18 @@ func registerFileTransfer(s *server.MCPServer, m *manager.Manager) {
 		sender := newProgressSender(s, server.ClientSessionFromContext(ctx), token)
 
 		result, err := m.TransferFile(ctx, action, localPath, remotePath, connectionName, force, sender.send)
+
+		// One audit record per transfer call (per call, not per file; the
+		// summary carries the remote path only — never local user paths).
+		auditExit, auditOK := 0, true
+		var auditCode string
+		if err != nil {
+			auditExit, auditOK, auditCode = 1, false, manager.AsToolError(err).Code
+		} else if len(result.Failed) > 0 {
+			auditExit, auditOK, auditCode = 1, false, manager.CodeSFTPError
+		}
+		m.RecordFileTransfer(connectionName, action, remotePath, auditExit, auditOK, auditCode)
+
 		if err != nil {
 			return errorResult(err), nil
 		}

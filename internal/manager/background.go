@@ -43,6 +43,9 @@ type SessionOpenOptions struct {
 	// Off by default; opt in for programs that refuse to run without a TTY
 	// (their line buffering also disappears, on top of PYTHONUNBUFFERED).
 	Pty bool
+	// Approval is the destructive-command gate outcome for the audit record
+	// of the detached command ("" means the gate did not need to ask).
+	Approval string
 }
 
 // SessionOutput holds polled background session output.
@@ -90,7 +93,7 @@ func (m *Manager) OpenSessionWithOptions(sessionName, connectionName string, opt
 			fmt.Sprintf("session %q already exists (finished); close it first or read logPath=%s", sessionName, logPath), false)
 	}
 	m.mu.Unlock()
-	return m.startBackgroundCommand(sessionName, opts.CmdString, opts.Directory, opts.Pty)
+	return m.startBackgroundCommand(sessionName, opts.CmdString, opts.Directory, opts.Pty, opts.Approval)
 }
 
 // openOrReuseSession is the core of OpenSession without background start.
@@ -160,6 +163,7 @@ func (m *Manager) openOrReuseSession(sessionName, connectionName string) (*Sessi
 	info := m.sessionInfoLocked(ns)
 	m.mu.Unlock()
 
+	m.recordSessionEvent(connKey, sessionName, "open")
 	m.Touch(connKey, DefaultKeepAliveDuration)
 	return info, nil
 }
@@ -168,7 +172,7 @@ func (m *Manager) openOrReuseSession(sessionName, connectionName string) (*Sessi
 // channel: a fresh no-PTY exec runs a starter that setsid's the job into a
 // new session with stdio redirected to a remote log, then exits. The job
 // survives connection drops; read/stop re-attach via fresh exec channels.
-func (m *Manager) startBackgroundCommand(sessionName, cmdString, directory string, pty bool) (*SessionInfo, error) {
+func (m *Manager) startBackgroundCommand(sessionName, cmdString, directory string, pty bool, approval string) (*SessionInfo, error) {
 	m.mu.Lock()
 	ns, ok := m.sessions[sessionName]
 	m.mu.Unlock()
@@ -217,7 +221,13 @@ func (m *Manager) startBackgroundCommand(sessionName, cmdString, directory strin
 	ns.bgRunning = true
 	m.mu.Unlock()
 	ns.resetIdleTimer(m)
-	m.RecordCommand(ns.connectionKey, "[background] "+cmdString, 0, true)
+	m.recordAudit(ns.connectionKey, AuditRecord{
+		Tool:     "execute-command",
+		Command:  "[background] " + cmdString,
+		Session:  sessionName,
+		Approval: approval,
+		Success:  true,
+	}, true)
 
 	m.mu.Lock()
 	info := m.sessionInfoLocked(ns)

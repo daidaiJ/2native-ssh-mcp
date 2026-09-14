@@ -26,7 +26,7 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 - **Light compress** (default): outputs ≥ `outputCompressThreshold` (4096 B) get head/tail lines + dedup; disable with `"outputCompressLight": false`. See `skills/2native-ssh-mcp-agent` for agent-side habits.
 - **ANSI stripped by default**: colors/progress escapes are removed from all output (exec, shell, background reads); disable per connection with `"stripAnsi": false`.
 - Connections **lazy**; after command kept alive per keepAlive policy, idle expiry closes. `keepAlive: false` closes immediately.
-- 每条执行的命令都会追加到连接的命令日志文件（默认保留最近 20 条；`list-servers` 展示每连接最近 3 条）——**不含输出**。
+- 每条执行的命令都会追加到连接的审计日志文件（防篡改哈希链 JSONL；`list-servers` 展示的 `recent=` 最近 3 条来自内存窗口，默认 20 条，且 `commandLogOnlySuccess: true` 时只显示成功命令）——**不含输出**。
 - **同批次的工具调用是并发执行的——没有顺序保证。** 有依赖关系的操作（上传 → 验证 → 重启）必须拆成多次顺序调用。详见 `skills/2native-ssh-mcp-agent` 的 "Operational traps" 一节（pgrep 自匹配、sudo 无 TTY、覆盖运行中的二进制）。
 
 ### file-transfer
@@ -221,6 +221,6 @@ git push origin v1.0.1
 - Logs → **stderr** only (stdio protocol on stdout).
 - Host keys verified against `known_hosts` by default (`hostKeyCheck: accept-new`): first contact is recorded (file + `~/.ssh` created automatically), later key changes fail with `SSH_HOST_KEY_MISMATCH` (retriable=false). `strict` rejects unknown hosts (`SSH_HOST_KEY_UNKNOWN`); `none` disables verification. A rekeyed server needs its stale `known_hosts` line removed (or `hostKeyCheck: none`).
 - Shell mode serializes commands per connection; no SFTP in shell mode. **`transportMode: shell` requires a POSIX `sh`-compatible interactive shell** (relies on `PS1`, `stty`, `printf`, `export`) — csh/tcsh/fish bastions must use `exec` + `commandTemplate` instead.
-- Command log files: `<dir>/<name>.log`, JSON lines, bounded, survive restarts.
+- Audit log files: `<dir>/<name>.jsonl`, append-only hash-chained JSON lines, rotated at 16 MiB / 10000 lines, survive restarts; verify with `2native-ssh-mcp audit-verify --file <path>`. The `recent=` window in `list-servers` comes from memory (last `commandLogSize`, failures filtered when `commandLogOnlySuccess`), not from the file tail.
 - MCP endpoint path: `/mcp`.
 - No SSH zlib compression (x/crypto/ssh limitation); use TCP keepalive + SFTP concurrency for slow links.

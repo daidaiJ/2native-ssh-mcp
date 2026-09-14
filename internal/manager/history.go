@@ -28,11 +28,25 @@ var historyCmdPattern = regexp.MustCompile(`^\s*history(?:\s+[1-9]\d*)?\s*$`)
 // the full line counts as one entry — dedupe is best-effort by design).
 var historyNumberedLine = regexp.MustCompile(`^\s*\d+\s{2,}(.*)$`)
 
-// finalizeCommand records the executed command in the connection's command
-// log and applies the history-log supplement when enabled. Shared tail of the
-// exec (ExecuteCommand) and named-session (RunInSession) paths.
-func (m *Manager) finalizeCommand(key string, cfg *config.SSHConfig, cmdString string, result CommandResult, err error) (CommandResult, error) {
-	m.RecordCommand(key, cmdString, result.ExitCode, result.ExitCode == 0)
+// finalizeCommand records the executed command in the connection's audit
+// log and applies the history-log supplement when enabled. Shared tail of
+// the exec (ExecuteCommand) and named-session (RunInSession) paths. approval
+// is the destructive-command gate outcome ("accepted"/"fail-open"/"" for
+// gate-passed commands); a non-nil err is audited as a failed execution with
+// the error's tool code (timeout, connection lost, ...).
+func (m *Manager) finalizeCommand(key string, cfg *config.SSHConfig, cmdString string, result CommandResult, err error, approval string) (CommandResult, error) {
+	success := err == nil && result.ExitCode == 0
+	r := AuditRecord{
+		Tool:     "execute-command",
+		Command:  cmdString,
+		Approval: approval,
+		ExitCode: result.ExitCode,
+		Success:  success,
+	}
+	if err != nil {
+		r.ErrorCode = AsToolError(err).Code
+	}
+	m.recordAudit(key, r, true)
 	if err == nil && cfg != nil && cfg.GetHistoryFromLog() {
 		m.enrichHistoryOutput(key, cmdString, &result)
 	}

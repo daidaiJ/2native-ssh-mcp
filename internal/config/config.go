@@ -22,6 +22,11 @@ const (
 	DefaultKeepaliveIntervalMs = 10000
 	DefaultKeepaliveCountMax   = 3
 	DefaultCommandLogSize      = 20
+	// DefaultCommandLogFlushMs is how long an audit record may sit in the
+	// write buffer before it is flushed to disk. The buffer also flushes at
+	// 32 records / 256 KiB; commandLogFlushMs: 0 means write-through (every
+	// record is written synchronously, strictest durability).
+	DefaultCommandLogFlushMs = 5000
 	// DefaultCommandLogDir is the local directory for per-connection command
 	// logs, relative to the process working directory so a workspace agent
 	// can Grep it.
@@ -137,6 +142,12 @@ type SSHConfig struct {
 	// command log file. Unset keeps DefaultCommandLogSize entries; an explicit
 	// 0 disables the log.
 	CommandLogSize *int `json:"commandLogSize,omitempty"`
+	// CommandLogFlushMs is the audit-log flush policy in milliseconds: the
+	// maximum time a record may sit in the write buffer before it is flushed
+	// to disk (the buffer also flushes at 32 records / 256 KiB). Unset uses
+	// DefaultCommandLogFlushMs; 0 means write-through — every record is
+	// written synchronously (strictest durability, highest per-command cost).
+	CommandLogFlushMs *int `json:"commandLogFlushMs,omitempty"`
 	// CommandLogDir overrides the global command log directory for this
 	// connection. The log file is <dir>/<name>.log.
 	CommandLogDir string `json:"commandLogDir,omitempty"`
@@ -255,6 +266,9 @@ func (c *SSHConfig) Normalize() error {
 		c.CommandLogSize = &v
 	} else if *c.CommandLogSize < 0 {
 		return fmt.Errorf("commandLogSize must be a non-negative integer, got: %d", *c.CommandLogSize)
+	}
+	if c.CommandLogFlushMs != nil && *c.CommandLogFlushMs < 0 {
+		return fmt.Errorf("commandLogFlushMs must be a non-negative integer (0 = write-through), got: %d", *c.CommandLogFlushMs)
 	}
 	if c.CommandLogDir == "" {
 		c.CommandLogDir = DefaultCommandLogDir

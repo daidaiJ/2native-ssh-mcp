@@ -3,9 +3,7 @@ package manager
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"io"
-	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -17,19 +15,21 @@ import (
 
 func TestCommandLogBoundedAndPersistent(t *testing.T) {
 	dir := t.TempDir()
-	log, err := NewCommandLog(dir, "dev", 3, false)
+	log, err := NewCommandLog(dir, "dev", 3, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer log.Close()
 	for i := 0; i < 5; i++ {
 		log.Add(CommandLogEntry{Timestamp: time.Now(), Command: "cmd", ExitCode: 0, Success: true})
 	}
 
 	// Reload from disk: only the last 3 entries survive.
-	reloaded, err := NewCommandLog(dir, "dev", 3, false)
+	reloaded, err := NewCommandLog(dir, "dev", 3, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer reloaded.Close()
 	reloaded.mu.Lock()
 	count := len(reloaded.items)
 	reloaded.mu.Unlock()
@@ -40,42 +40,71 @@ func TestCommandLogBoundedAndPersistent(t *testing.T) {
 
 func TestCommandLogOnlySuccess(t *testing.T) {
 	dir := t.TempDir()
-	log, err := NewCommandLog(dir, "dev", 10, true)
+	log, err := NewCommandLog(dir, "dev", 10, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer log.Close()
 	log.Add(CommandLogEntry{Command: "ok", Success: true})
 	log.Add(CommandLogEntry{Command: "fail", Success: false})
 	log.Add(CommandLogEntry{Command: "ok2", Success: true})
 
-	log.mu.Lock()
-	defer log.mu.Unlock()
-	if len(log.items) != 2 {
-		t.Fatalf("expected 2 entries (failed skipped), got %d", len(log.items))
+	// onlySuccess filters the in-memory display window only.
+	recent := log.Recent(10)
+	if len(recent) != 2 {
+		t.Fatalf("expected 2 entries in Recent window (failed filtered), got %d", len(recent))
 	}
-	if log.items[0].Command != "ok" || log.items[1].Command != "ok2" {
-		t.Fatalf("unexpected entries: %+v", log.items)
+	if recent[0].Command != "ok" || recent[1].Command != "ok2" {
+		t.Fatalf("unexpected window entries: %+v", recent)
+	}
+	// The disk chain still carries the failure (internal audit needs it).
+	records, err := readAuditRecords(filepath.Join(dir, "dev.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("expected 3 records on disk (failures included), got %d", len(records))
+	}
+	if records[1].Command != "fail" || records[1].Success {
+		t.Fatalf("failed record must reach disk unfiltered: %+v", records[1])
+	}
+	if err := VerifyAuditFiles([]string{filepath.Join(dir, "dev.jsonl")}); err != nil {
+		t.Fatalf("chain must verify: %v", err)
 	}
 }
 
 func TestCommandLogFileFormat(t *testing.T) {
 	dir := t.TempDir()
-	log, err := NewCommandLog(dir, "dev", 10, false)
+	log, err := NewCommandLog(dir, "dev", 10, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer log.Close()
 	log.Add(CommandLogEntry{Timestamp: time.Now(), Command: "ls -la", ExitCode: 0, Success: true})
+	log.Add(CommandLogEntry{Timestamp: time.Now(), Command: "exit 3", ExitCode: 3, Success: false})
 
-	data, err := os.ReadFile(filepath.Join(dir, "dev.log"))
+	records, err := readAuditRecords(filepath.Join(dir, "dev.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var entry CommandLogEntry
-	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
-		t.Fatalf("log file must contain JSON lines: %v", err)
+	if len(records) != 2 {
+		t.Fatalf("expected 2 JSONL records, got %d", len(records))
 	}
-	if entry.Command != "ls -la" {
-		t.Fatalf("unexpected entry: %+v", entry)
+	first, second := records[0], records[1]
+	if first.Command != "ls -la" {
+		t.Fatalf("unexpected record: %+v", first)
+	}
+	if first.V != auditVersion || first.Type != AuditTypeCommand {
+		t.Fatalf("record must carry version and type: %+v", first)
+	}
+	if first.PrevHash != zeroHash {
+		t.Fatalf("first record must anchor the chain at %s, got %s", zeroHash, first.PrevHash)
+	}
+	if second.PrevHash != first.Hash {
+		t.Fatalf("chain link broken: second.prevHash=%s first.hash=%s", second.PrevHash, first.Hash)
+	}
+	if err := VerifyAuditFiles([]string{filepath.Join(dir, "dev.jsonl")}); err != nil {
+		t.Fatalf("chain must verify: %v", err)
 	}
 }
 

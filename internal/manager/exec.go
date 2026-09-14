@@ -21,8 +21,11 @@ type RunOptions struct {
 	KeepAliveDuration time.Duration // idle duration after the command (default: 10 minutes)
 	// Pty overrides the connection's pty setting for this exec command
 	// (default: connection config, which itself defaults to no PTY).
-	Pty          *bool
+	Pty *bool
 	Prevalidated bool // skip whitelist/blacklist (internal commands)
+	// Approval is the destructive-command gate outcome for the audit log
+	// ("accepted"/"fail-open"; "" means the gate did not need to ask).
+	Approval string
 }
 
 // ExecuteCommand runs a command on the named connection and returns a
@@ -79,7 +82,7 @@ func (m *Manager) ExecuteCommand(ctx context.Context, cmdString, directory, name
 		result, err = m.runExecCommand(ctx, client, cfg, cmdString, directory, timeout, key, opts)
 	}
 
-	result, err = m.finalizeCommand(key, cfg, cmdString, result, err)
+	result, err = m.finalizeCommand(key, cfg, cmdString, result, err, opts.Approval)
 
 	// Keepalive policy: keep the connection alive (default 10 minutes) or
 	// close it right away.

@@ -35,7 +35,7 @@ func resultText(t *testing.T, res *mcp.CallToolResult) string {
 
 func TestSessionToolListWithoutSessionName(t *testing.T) {
 	m := newTestManager(t)
-	res, err := handleSessionTool(m, map[string]any{"action": "list"})
+	res, err := handleSessionTool(m, map[string]any{"action": "list"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestSessionToolListWithoutSessionName(t *testing.T) {
 
 func TestSessionToolListFiltersByConnection(t *testing.T) {
 	m := newTestManager(t)
-	res, err := handleSessionTool(m, map[string]any{"action": "list", "connectionName": "dev"})
+	res, err := handleSessionTool(m, map[string]any{"action": "list", "connectionName": "dev"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestSessionToolListFiltersByConnection(t *testing.T) {
 
 func TestSessionToolInvalidAction(t *testing.T) {
 	m := newTestManager(t)
-	res, err := handleSessionTool(m, map[string]any{"action": "nope"})
+	res, err := handleSessionTool(m, map[string]any{"action": "nope"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestSessionToolInvalidAction(t *testing.T) {
 
 func TestSessionToolOpenRequiresSessionName(t *testing.T) {
 	m := newTestManager(t)
-	res, err := handleSessionTool(m, map[string]any{"action": "open"})
+	res, err := handleSessionTool(m, map[string]any{"action": "open"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestSessionToolOpenRequiresSessionName(t *testing.T) {
 
 func TestSessionToolReadRequiresSessionName(t *testing.T) {
 	m := newTestManager(t)
-	res, err := handleSessionTool(m, map[string]any{"action": "read"})
+	res, err := handleSessionTool(m, map[string]any{"action": "read"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestSessionToolReadRequiresSessionName(t *testing.T) {
 
 func TestSessionToolCloseRequiresSessionName(t *testing.T) {
 	m := newTestManager(t)
-	res, err := handleSessionTool(m, map[string]any{"action": "close"})
+	res, err := handleSessionTool(m, map[string]any{"action": "close"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestSessionToolCloseIdempotent(t *testing.T) {
 	m := newTestManager(t)
 	// Closing a session that was never opened (or already closed by the
 	// idle TTL) must succeed, not report COMMAND_VALIDATION_FAILED.
-	res, err := handleSessionTool(m, map[string]any{"action": "close", "sessionName": "nope"})
+	res, err := handleSessionTool(m, map[string]any{"action": "close", "sessionName": "nope"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

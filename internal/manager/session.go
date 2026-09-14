@@ -158,7 +158,7 @@ func (m *Manager) RunInSession(ctx context.Context, sessionName, cmdString, dire
 	}
 
 	result, err := m.runNamedShellCommand(ctx, ns, cmdString, directory, cfg.CommandTemplate, timeout)
-	result, err = m.finalizeCommand(ns.connectionKey, cfg, cmdString, result, err)
+	result, err = m.finalizeCommand(ns.connectionKey, cfg, cmdString, result, err, opts.Approval)
 
 	ns.resetIdleTimer(m)
 
@@ -218,6 +218,7 @@ func (m *Manager) CloseSession(sessionName string) error {
 	if sh != nil {
 		sh.close()
 	}
+	m.recordSessionEvent(ns.connectionKey, sessionName, "close")
 	return nil
 }
 

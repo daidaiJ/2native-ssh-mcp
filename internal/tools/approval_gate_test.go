@@ -10,6 +10,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"2native-ssh-mcp/internal/config"
+	"2native-ssh-mcp/internal/manager"
 )
 
 // mockApprovalSession implements server.SessionWithElicitation with a canned
@@ -50,38 +51,50 @@ func askConfig() *config.SSHConfig {
 func TestGateAutoModeNeverAsks(t *testing.T) {
 	// No session in the context: if the gate tried to elicit, it would
 	// produce a fail-open note. auto mode must stay completely silent.
-	proceed, note, decline := approvalGate(context.Background(), nil, &config.SSHConfig{Name: "dev", ApprovalMode: config.ApprovalModeAuto}, "rm -rf /")
+	proceed, note, outcome, decline := approvalGate(context.Background(), nil, &config.SSHConfig{Name: "dev", ApprovalMode: config.ApprovalModeAuto}, "rm -rf /")
 	if !proceed || note != "" || decline != nil {
 		t.Fatalf("auto mode must pass through untouched, got proceed=%v note=%q decline=%v", proceed, note, decline)
+	}
+	if outcome != manager.ApprovalAuto {
+		t.Fatalf("auto mode must audit as %q, got %q", manager.ApprovalAuto, outcome)
 	}
 }
 
 func TestGateSafeCommandNeverAsks(t *testing.T) {
-	proceed, note, decline := approvalGate(context.Background(), nil, askConfig(), "ls -la /var/log")
+	proceed, note, outcome, decline := approvalGate(context.Background(), nil, askConfig(), "ls -la /var/log")
 	if !proceed || note != "" || decline != nil {
 		t.Fatalf("safe command must pass through, got proceed=%v note=%q decline=%v", proceed, note, decline)
+	}
+	if outcome != manager.ApprovalNone {
+		t.Fatalf("safe command must audit as %q, got %q", manager.ApprovalNone, outcome)
 	}
 }
 
 func TestGateFailOpenWithoutSession(t *testing.T) {
 	// No elicitation-capable session: command still runs, note appended.
-	proceed, note, decline := approvalGate(context.Background(), server.NewMCPServer("test", "1.0.0", server.WithElicitation()), askConfig(), "rm -rf /tmp/build")
+	proceed, note, outcome, decline := approvalGate(context.Background(), server.NewMCPServer("test", "1.0.0", server.WithElicitation()), askConfig(), "rm -rf /tmp/build")
 	if !proceed || decline != nil {
 		t.Fatalf("fail-open must proceed without a decline result, got proceed=%v decline=%v", proceed, decline)
 	}
 	if note == "" || !contains(note, "does not support MCP elicitation") || !contains(note, `"prod"`) {
 		t.Fatalf("note must name the connection and the reason, got %q", note)
 	}
+	if outcome != manager.ApprovalFailOpen {
+		t.Fatalf("fail-open must audit as %q, got %q", manager.ApprovalFailOpen, outcome)
+	}
 }
 
 func TestGateFailOpenOnTransportError(t *testing.T) {
 	s := &mockApprovalSession{sessionID: "s1", err: context.DeadlineExceeded}
-	proceed, note, decline := approvalGate(ctxWithSession(s), server.NewMCPServer("test", "1.0.0", server.WithElicitation()), askConfig(), "rm -rf /tmp/build")
+	proceed, note, outcome, decline := approvalGate(ctxWithSession(s), server.NewMCPServer("test", "1.0.0", server.WithElicitation()), askConfig(), "rm -rf /tmp/build")
 	if !proceed || decline != nil {
 		t.Fatalf("transport error must fail open, got proceed=%v decline=%v", proceed, decline)
 	}
 	if !contains(note, "elicitation failed") {
 		t.Fatalf("note must mention the elicitation failure, got %q", note)
+	}
+	if outcome != manager.ApprovalFailOpen {
+		t.Fatalf("transport error must audit as %q, got %q", manager.ApprovalFailOpen, outcome)
 	}
 	if s.requested == nil {
 		t.Fatal("expected an elicitation request to be sent")
@@ -92,9 +105,12 @@ func TestGateDeclineBlocks(t *testing.T) {
 	s := &mockApprovalSession{sessionID: "s1", result: &mcp.ElicitationResult{
 		ElicitationResponse: mcp.ElicitationResponse{Action: mcp.ElicitationResponseActionDecline},
 	}}
-	proceed, note, decline := approvalGate(ctxWithSession(s), server.NewMCPServer("test", "1.0.0", server.WithElicitation()), askConfig(), "rm -rf /tmp/build")
+	proceed, note, outcome, decline := approvalGate(ctxWithSession(s), server.NewMCPServer("test", "1.0.0", server.WithElicitation()), askConfig(), "rm -rf /tmp/build")
 	if proceed || note != "" || decline == nil {
 		t.Fatalf("decline must block with a decline result, got proceed=%v note=%q decline=%v", proceed, note, decline)
+	}
+	if outcome != manager.ApprovalDeclined {
+		t.Fatalf("decline must audit as %q, got %q", manager.ApprovalDeclined, outcome)
 	}
 	text := resultText(t, decline)
 	if !contains(text, `"executed": false`) {
@@ -106,9 +122,12 @@ func TestGateCancelBlocks(t *testing.T) {
 	s := &mockApprovalSession{sessionID: "s1", result: &mcp.ElicitationResult{
 		ElicitationResponse: mcp.ElicitationResponse{Action: mcp.ElicitationResponseActionCancel},
 	}}
-	proceed, _, decline := approvalGate(ctxWithSession(s), server.NewMCPServer("test", "1.0.0", server.WithElicitation()), askConfig(), "rm -rf /tmp/build")
+	proceed, _, outcome, decline := approvalGate(ctxWithSession(s), server.NewMCPServer("test", "1.0.0", server.WithElicitation()), askConfig(), "rm -rf /tmp/build")
 	if proceed || decline == nil {
 		t.Fatalf("cancel must block, got proceed=%v decline=%v", proceed, decline)
+	}
+	if outcome != manager.ApprovalDeclined {
+		t.Fatalf("cancel must audit as %q, got %q", manager.ApprovalDeclined, outcome)
 	}
 }
 
@@ -116,9 +135,12 @@ func TestGateAcceptProceeds(t *testing.T) {
 	s := &mockApprovalSession{sessionID: "s1", result: &mcp.ElicitationResult{
 		ElicitationResponse: mcp.ElicitationResponse{Action: mcp.ElicitationResponseActionAccept},
 	}}
-	proceed, note, decline := approvalGate(ctxWithSession(s), server.NewMCPServer("test", "1.0.0", server.WithElicitation()), askConfig(), "rm -rf /tmp/build")
+	proceed, note, outcome, decline := approvalGate(ctxWithSession(s), server.NewMCPServer("test", "1.0.0", server.WithElicitation()), askConfig(), "rm -rf /tmp/build")
 	if !proceed || note != "" || decline != nil {
 		t.Fatalf("accept must proceed cleanly, got proceed=%v note=%q decline=%v", proceed, note, decline)
+	}
+	if outcome != manager.ApprovalAccepted {
+		t.Fatalf("accept must audit as %q, got %q", manager.ApprovalAccepted, outcome)
 	}
 }
 
@@ -129,9 +151,12 @@ func TestGateAcceptWithConfirmFalseBlocks(t *testing.T) {
 			Content: map[string]any{"confirm": false},
 		},
 	}}
-	proceed, _, decline := approvalGate(ctxWithSession(s), server.NewMCPServer("test", "1.0.0", server.WithElicitation()), askConfig(), "rm -rf /tmp/build")
+	proceed, _, outcome, decline := approvalGate(ctxWithSession(s), server.NewMCPServer("test", "1.0.0", server.WithElicitation()), askConfig(), "rm -rf /tmp/build")
 	if proceed || decline == nil {
 		t.Fatalf("accept with confirm=false must block, got proceed=%v decline=%v", proceed, decline)
+	}
+	if outcome != manager.ApprovalDeclined {
+		t.Fatalf("confirm=false must audit as %q, got %q", manager.ApprovalDeclined, outcome)
 	}
 }
 
@@ -139,7 +164,7 @@ func TestGateElicitationMessageCarriesCommandAndReason(t *testing.T) {
 	s := &mockApprovalSession{sessionID: "s1", result: &mcp.ElicitationResult{
 		ElicitationResponse: mcp.ElicitationResponse{Action: mcp.ElicitationResponseActionAccept},
 	}}
-	_, _, _ = approvalGate(ctxWithSession(s), server.NewMCPServer("test", "1.0.0", server.WithElicitation()), askConfig(), "rm -rf /tmp/build")
+	_, _, _, _ = approvalGate(ctxWithSession(s), server.NewMCPServer("test", "1.0.0", server.WithElicitation()), askConfig(), "rm -rf /tmp/build")
 	msg := s.requested.Params.Message
 	if !contains(msg, "prod") || !contains(msg, "rm -rf /tmp/build") || !contains(msg, "deletes files") {
 		t.Fatalf("elicitation message must carry connection, command and reason, got %q", msg)
@@ -174,9 +199,12 @@ func TestGateTimeoutFailsClosed(t *testing.T) {
 	defer func() { elicitationTimeout = old }()
 
 	s := &blockingApprovalSession{mockApprovalSession{sessionID: "s1"}}
-	proceed, note, decline := approvalGate(ctxWithSession(s), server.NewMCPServer("test", "1.0.0", server.WithElicitation()), askConfig(), "rm -rf /tmp/build")
+	proceed, note, outcome, decline := approvalGate(ctxWithSession(s), server.NewMCPServer("test", "1.0.0", server.WithElicitation()), askConfig(), "rm -rf /tmp/build")
 	if proceed || note != "" || decline == nil {
 		t.Fatalf("timeout must fail closed, got proceed=%v note=%q decline=%v", proceed, note, decline)
+	}
+	if outcome != manager.ApprovalTimeout {
+		t.Fatalf("timeout must audit as %q, got %q", manager.ApprovalTimeout, outcome)
 	}
 	if text := resultText(t, decline); !contains(text, "did not respond within") {
 		t.Fatalf("decline reason must mention the timeout, got %s", text)

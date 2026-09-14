@@ -289,6 +289,7 @@ Connection options:
   --command-template <template>
   --pty / --try-keyboard
   --command-log-size <n> / --command-log-dir <dir> / --command-log-only-success
+  审计校验：2native-ssh-mcp audit-verify --file <path> 或 --config-file <path>
   --pre-connect                     启动前预连接所有服务器（任一失败即退出，fail-fast）
 
   --allow-insecure-config-perms    跳过配置文件权限检查（不推荐，仅开发用；也可在配置文件的 $global 里声明）
@@ -312,9 +313,10 @@ Server options:
 | `approvalPatterns` / `approvalExemptPatterns` | 空 | 用户追加"要问"的破坏性 regex / 用户豁免"不问"的 regex（优先级最高）；支持 `$global` 全局默认，连接级覆盖 |
 | `allowedLocalPaths` / `allowedRemotePaths` | 空 | 文件传输路径白名单 |
 | `localPathMode` | `cwd` | 本地路径限制：`cwd`（进程工作目录 + `allowedLocalPaths`）/ `list`（仅 `allowedLocalPaths`）/ `any`（不限制） |
-| `commandLogSize` | 20 | 命令日志保留条数（0 关闭） |
-| `commandLogDir` | `.ssh-mcp-logs` | 命令日志目录（`<dir>/<连接名>.log`） |
-| `commandLogOnlySuccess` | false | 只记录成功命令 |
+| `commandLogSize` | 20 | recent 展示窗口条数（0 关闭审计日志） |
+| `commandLogDir` | `.ssh-mcp-logs` | 审计日志目录（`<dir>/<连接名>.jsonl`） |
+| `commandLogOnlySuccess` | false | 展示窗口只显示成功命令（磁盘始终记录失败） |
+| `commandLogFlushMs` | 5000 | 审计落盘策略：缓冲最长等待毫秒数；0 = 每条写穿 |
 | `sftpConcurrency` / `sftpChunkSize` | 16 / 32768 | SFTP 并发数与分块大小 |
 | `sftpDedicatedConn` | false | SFTP 走独立 SSH 连接（懒创建、空闲 5 分钟回收、复用前探活）；sshd 前有影子容器/会话级 overlay 导致文件丢失时开启，`$global` 可设全局默认 |
 | `historyFromLog` | false | 远程 `history` 输出过少（<10 条）时自动从 MCP 命令日志补充（尾部去重），机制见 [FEATURES](FEATURES.md#机制详解) |
@@ -343,17 +345,21 @@ Server options:
 - ssh-agent：`agent`（Unix socket 路径；Windows 填 `pageant` 使用 Pageant）
 - 键盘交互：`tryKeyboard: true`，密码提示用配置的密码，OTP 提示用 `SSH_MCP_2FA_CODE`
 
-## 命令日志（远程执行记录，保留最后 N 条）
+## 审计日志（防篡改命令记录，哈希链）
 
-命令日志默认开启（每连接保留 20 条，`"commandLogSize": 0` 关闭）。每个连接执行过的命令会追加写入 `<commandLogDir>/<连接名>.log`，JSON 行格式，只保留最近 N 条，重启不丢失：
+审计日志默认开启（`"commandLogSize": 0` 关闭）。每个连接的执行记录以**追加写入**的 JSON 行保存在 `<commandLogDir>/<连接名>.jsonl`（Unix 文件权限 0600），每行带前一行记录的 SHA-256（`prevHash`），形成**哈希链**：事后改动任何一行，校验都会在该行失败。**不记录命令输出**，只记录谁在何时执行了什么、结果如何：
 
 ```json
-{"timestamp":"2026-08-22T10:00:00+08:00","command":"ls -la /tmp","exitCode":0,"success":true}
+{"v":1,"type":"command","ts":"2026-08-22T02:00:00.123Z","connection":"prod","tool":"execute-command","command":"ls -la /tmp","approval":"auto","exitCode":0,"success":true,"prevHash":"000...000","hash":"e3b0..."}
 ```
 
-- 全局默认：`--command-log-size <n>` / `--command-log-dir <dir>`（对未单独配置的连接生效）
-- 单连接覆盖：`commandLogSize` / `commandLogDir` / `commandLogOnlySuccess`
-- 配合 `commandLogOnlySuccess: true` 可只记录成功命令，避免探测类命令产生噪声
+- 记录范围：`execute-command`（成功/失败/超时/被杀，审批拒绝也记 `approval=declined`）、`file-transfer`（每次调用一条摘要，只含远端路径）、命名会话 `session` open/close
+- 落盘策略 `commandLogFlushMs`（毫秒，全局 CLI `--command-log-flush-ms`）：默认 5000 = 记录先进缓冲，按 5 秒 / 32 条 / 256 KiB 先到批量落盘，优雅退出会补写（硬崩溃最多丢最后 ≤5 秒）；`0` = 写穿，每条命令的结果返回前记录已在磁盘上（最严格，单条约 13µs，批量约 8µs，量级可忽略）。分级加固建议见 [SECURITY.md](../SECURITY.md#hardening-levels)
+- **失败记录始终落盘**（内审需要失败痕迹）；`commandLogOnlySuccess: true` 只影响 `list-servers` 里 `recent=` 展示窗口（仍只展示成功命令）
+- `commandLogSize` 只决定内存展示窗口（默认 20 条）和重启后加载的窗口，**不再裁剪磁盘文件**——文件按 16 MiB 或 10000 行先到为准滚动为 `<连接名>.jsonl.<UTC时间戳>`，新文件以 `chain-start` 记录衔接旧文件尾哈希，跨文件链不断
+- 单文件校验：`2native-ssh-mcp audit-verify --file .ssh-mcp-logs/prod.jsonl`；校验配置里所有连接（含滚动文件）：`2native-ssh-mcp audit-verify --config-file config.json`。退出码：0=链完整或无日志，2=链损坏/旧格式（stderr 打印文件、行号、期望与实际哈希），1=程序错误
+- 升级兼容：启动时发现旧版 `<连接名>.log` 会自动改名为 `<连接名>.log.legacy` 并开新链（stderr 提示一次），旧行不会混入新链
+- 全局默认：`--command-log-size <n>` / `--command-log-dir <dir>`；单连接覆盖：`commandLogSize` / `commandLogDir` / `commandLogOnlySuccess`
 
 ## 安全
 

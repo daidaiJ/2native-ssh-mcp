@@ -177,7 +177,11 @@ func New(configs map[string]*config.SSHConfig, defaultLogDir string) (*Manager, 
 				logDir = defaultLogDir
 			}
 			if logDir != "" {
-				log, err := NewCommandLog(logDir, name, *cfg.CommandLogSize, cfg.CommandLogOnlySuccess)
+				flushMs := config.DefaultCommandLogFlushMs
+				if cfg.CommandLogFlushMs != nil {
+					flushMs = *cfg.CommandLogFlushMs
+				}
+				log, err := NewCommandLog(logDir, name, *cfg.CommandLogSize, cfg.CommandLogOnlySuccess, flushMs)
 				if err != nil {
 					return nil, fmt.Errorf("failed to create command log for '%s': %w", name, err)
 				}
@@ -486,10 +490,20 @@ func (m *Manager) Disconnect(name string) {
 	}
 }
 
-// DisconnectAll closes every connection.
+// DisconnectAll closes every connection and flushes the audit logs so a
+// graceful shutdown never leaves records in the write buffer.
 func (m *Manager) DisconnectAll() {
 	for name := range m.configs {
 		m.Disconnect(name)
+	}
+	m.mu.Lock()
+	logs := make([]*CommandLog, 0, len(m.commandLogs))
+	for _, l := range m.commandLogs {
+		logs = append(logs, l)
+	}
+	m.mu.Unlock()
+	for _, l := range logs {
+		l.Close()
 	}
 }
 
@@ -581,20 +595,85 @@ func (m *Manager) validateCommand(command, name string) error {
 	return nil
 }
 
-// RecordCommand appends an entry to the connection's command log file.
-func (m *Manager) RecordCommand(name, command string, exitCode int, success bool) {
-	key := m.resolveName(name)
+// recordAudit appends one record to the connection's audit chain (no-op when
+// the log is disabled). Write failures are reported on stderr by the log and
+// never affect the command that already ran. window adds the record to the
+// in-memory recent-commands window (execute-command outcomes only).
+func (m *Manager) recordAudit(key string, r AuditRecord, window bool) {
 	m.mu.Lock()
 	log := m.commandLogs[key]
 	m.mu.Unlock()
-	if log != nil {
-		log.Add(CommandLogEntry{
-			Timestamp: time.Now(),
-			Command:   command,
-			ExitCode:  exitCode,
-			Success:   success,
-		})
+	if log == nil {
+		return
 	}
+	log.AddAudit(r, window)
+}
+
+// RecordCommand appends an execute-command entry to the connection's command
+// log file.
+func (m *Manager) RecordCommand(name, command string, exitCode int, success bool) {
+	m.recordAudit(m.resolveName(name), AuditRecord{
+		Tool:     "execute-command",
+		Command:  command,
+		ExitCode: exitCode,
+		Success:  success,
+	}, true)
+}
+
+// RecordAudit appends a fully described audit record for the named
+// connection (tool, approval outcome, exit code, error code).
+func (m *Manager) RecordAudit(name string, r AuditRecord) {
+	m.recordAudit(m.resolveName(name), r, r.Tool == "execute-command")
+}
+
+// RecordRejectedCommand records a command that the approval gate refused
+// before it reached the remote host (approval=declined/timeout). Disk only:
+// the recent-commands window keeps showing what actually ran.
+func (m *Manager) RecordRejectedCommand(sessionName, connectionName, command, approval string) {
+	key := ""
+	if sessionName != "" {
+		m.mu.Lock()
+		if ns, ok := m.sessions[sessionName]; ok {
+			key = ns.connectionKey
+		}
+		m.mu.Unlock()
+	}
+	if key == "" {
+		key = m.resolveName(connectionName)
+	}
+	if key == "" {
+		return
+	}
+	m.recordAudit(key, AuditRecord{
+		Tool:     "execute-command",
+		Command:  command,
+		Approval: approval,
+		Success:  false,
+	}, false)
+}
+
+// RecordFileTransfer records one file-transfer call as a single audit
+// record: per call, not per file; the summary carries the remote path only.
+func (m *Manager) RecordFileTransfer(connectionName, action, remotePath string, exitCode int, success bool, errorCode string) {
+	m.recordAudit(m.resolveName(connectionName), AuditRecord{
+		Tool:      "file-transfer",
+		Command:   action + " " + remotePath,
+		Approval:  ApprovalNone,
+		ExitCode:  exitCode,
+		Success:   success,
+		ErrorCode: errorCode,
+	}, false)
+}
+
+// recordSessionEvent records a named-session open/close as one audit record.
+func (m *Manager) recordSessionEvent(key, session, action string) {
+	m.recordAudit(key, AuditRecord{
+		Tool:     "session",
+		Command:  action,
+		Session:  session,
+		Approval: ApprovalNone,
+		Success:  true,
+	}, false)
 }
 
 // RecentCommands returns the last n recorded commands for a connection, or

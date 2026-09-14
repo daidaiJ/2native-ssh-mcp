@@ -34,22 +34,25 @@ func registerSession(s *server.MCPServer, m *manager.Manager) {
 			if cmdString, _ := args["cmdString"].(string); cmdString != "" {
 				sessionName, _ := args["sessionName"].(string)
 				connectionName, _ := args["connectionName"].(string)
-				proceed, note, decline := wrapWithGate(ctx, s, m, sessionName, connectionName, cmdString)
+				proceed, note, outcome, decline := wrapWithGate(ctx, s, m, sessionName, connectionName, cmdString)
 				if !proceed {
+					m.RecordRejectedCommand(sessionName, connectionName, cmdString, outcome)
 					return decline, nil
 				}
-				res, err := handleSessionTool(m, args)
+				res, err := handleSessionTool(m, args, outcome)
 				return appendNote(res, note), err
 			}
 		}
-		return handleSessionTool(m, args)
+		return handleSessionTool(m, args, "")
 	})
 }
 
 // handleSessionTool implements the session tool. sessionName is validated per
 // action (list does not need it); unknown actions are reported before any
-// missing-argument error.
-func handleSessionTool(m *manager.Manager, args map[string]any) (*mcp.CallToolResult, error) {
+// missing-argument error. approval is the destructive-command gate outcome
+// carried into the audit record of a background start ("" when the gate did
+// not run).
+func handleSessionTool(m *manager.Manager, args map[string]any, approval string) (*mcp.CallToolResult, error) {
 	action, _ := args["action"].(string)
 	sessionName, _ := args["sessionName"].(string)
 
@@ -69,6 +72,7 @@ func handleSessionTool(m *manager.Manager, args map[string]any) (*mcp.CallToolRe
 			CmdString:  cmdString,
 			Directory:  directory,
 			Pty:        bgPty,
+			Approval:   approval,
 		})
 		if err != nil {
 			return errorResult(err), nil

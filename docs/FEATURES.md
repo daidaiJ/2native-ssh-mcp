@@ -19,7 +19,7 @@
 - **会话保留**：后台作业结束后会话与远端日志保留 60 分钟，`read` 可 `offset=0` 重读（JSON 带 `logPath`/`exitCode`），`close` 幂等可重复调用
 - **输出处理**：默认剥离 ANSI 转义序列（颜色/进度条，`stripAnsi: false` 可关）；大输出分层处理——≥4KB 头尾摘要压缩（`outputCompressLight`/`outputCompressThreshold`），≥8KB（`outputSpillThreshold`，`-1` 关闭）把完整输出落盘到本地目录（默认 `.ssh-mcp-out/`，`outputSpillDir` 可改，保留最近 32 个），MCP 结果只留通知+短预览，Agent 用本地 Read/Grep 查看全文，不必远程重跑
 - **结果渲染**：execute-command 成功结果默认为分节文本（真实换行：stdout → `[stderr]` → `[exit code] N` → 落盘提示），人和模型都可直接读；按连接配置 `resultFormat: "json"` 切换为结构化 CommandResult JSON；错误路径始终为 JSON（`code`/`message`/`retriable`/`partial`/`replaySafe`）
-- **命令日志**：按连接记录最近 N 条执行过的命令（不含输出），可只记成功命令，落盘为 JSON 行文件（配置：`commandLogSize` / `commandLogDir` / `commandLogOnlySuccess`，或全局 `--command-log-size` 等 CLI 参数）
+- **审计日志（防篡改）**：按连接**追加**记录执行过的命令（不含输出），每行带前一行 SHA-256 形成哈希链，事后篡改任何一行都能被 `audit-verify` 定位到行号；失败记录始终落盘，`commandLogOnlySuccess` 只影响 list-servers 展示窗口；按 16 MiB / 10000 行滚动且跨文件链不断（配置：`commandLogSize` / `commandLogDir` / `commandLogOnlySuccess`，校验：`audit-verify --file|--config-file`）
 - **安全**：命令白/黑名单、路径白名单（本地/远端，本地范围可配 `localPathMode`：cwd / list / any）、凭据隔离（SSH 凭据留在本地，不暴露给模型）、输出脱敏（`redactSecrets`，默认关闭——脱敏扫描对含密钥的大输出有明显开销，需要时按连接开启）、配置权限检查（Unix `0600`/`0700`，Windows ACL；可用 `--allow-insecure-config-perms` 或配置文件 `$global.allowInsecureConfigPerms` 跳过）
 - **认证与兼容性**：密码/私钥/ssh-agent/Pageant/键盘交互认证（2FA）、代理（SOCKS5/HTTP/HTTPS）、算法协商配置（兼容老服务器）
 - **文件传输性能**：SFTP 并发传输（`sftpConcurrency`/`sftpChunkSize`，高延迟链路提速；大文件自动启用并发写）、SFTP 客户端按连接池化（空闲 5 分钟回收）、`sftpTimeoutMs` 为**无进展超时**而非总时长（健康的大文件传输不再被墙钟切断）、断点续传、去重、进度通知

@@ -34,6 +34,10 @@ type Options struct {
 	// CommandLogOnlySuccess is the global default for recording only
 	// successful commands in the command log.
 	CommandLogOnlySuccess bool
+	// CommandLogFlushMs overrides the audit-log flush policy (ms) for every
+	// connection, when the flag was given. nil = not set on the CLI.
+	// 0 = write-through (flush on every record).
+	CommandLogFlushMs *int
 }
 
 // GlobalConfigKey is the reserved top-level key in a config file object that
@@ -88,6 +92,8 @@ Commands:
   status      Show daemon status
   install     Install Windows autostart (startup folder shortcut)
   uninstall   Remove Windows autostart
+  audit-verify Verify a connection's tamper-evident audit log hash chain
+              (--file <path>, or --config-file <path> for every connection)
   version     Print version
   help        Print this help
 
@@ -117,6 +123,9 @@ Connection options:
   --command-log-size <n>           Keep the last n executed commands per connection (0 disables)
   --command-log-dir <dir>          Directory for per-connection command log files
   --command-log-only-success       Only record successful commands in the command log
+  --command-log-flush-ms <ms>      Audit log flush policy: max ms a record waits in the write
+                                   buffer (default 5000; buffer also flushes at 32 records;
+                                   0 = write-through, every record written synchronously)
   --pre-connect                    Pre-connect to all SSH servers on startup
 
   --allow-insecure-config-perms    Skip config file permission checks (not recommended;
@@ -206,6 +215,8 @@ func ParseArgs(args []string) (*Options, error) {
 	fs.IntVar(&commandLogSize, "command-log-size", DefaultCommandLogSize, "")
 	fs.StringVar(&commandLogDir, "command-log-dir", "", "")
 	fs.BoolVar(&commandLogOnly, "command-log-only-success", false, "")
+	var commandLogFlush int
+	fs.IntVar(&commandLogFlush, "command-log-flush-ms", DefaultCommandLogFlushMs, "")
 	fs.StringVar(&transport, "transport", "stdio", "")
 	fs.StringVar(&httpAddr, "http-addr", DefaultHTTPAddr, "")
 	fs.StringVar(&httpToken, "http-token", "", "")
@@ -221,6 +232,15 @@ func ParseArgs(args []string) (*Options, error) {
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
+
+	// commandLogFlushSet must be detected after Parse: FlagSet.Visit is a
+	// synchronous walk over the flags that were set.
+	commandLogFlushSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "command-log-flush-ms" {
+			commandLogFlushSet = true
+		}
+	})
 
 	if transport != "stdio" && transport != "http" {
 		return nil, fmt.Errorf("--transport must be 'stdio' or 'http', got: %s", transport)
@@ -242,6 +262,9 @@ func ParseArgs(args []string) (*Options, error) {
 		CommandLogSize:           commandLogSize,
 		CommandLogDir:            commandLogDir,
 		CommandLogOnlySuccess:    commandLogOnly,
+	}
+	if commandLogFlushSet {
+		opts.CommandLogFlushMs = &commandLogFlush
 	}
 
 	// fileGlobal holds the $global section of the config file, applied to
@@ -310,6 +333,9 @@ func ParseArgs(args []string) (*Options, error) {
 		}
 		if commandLogOnly && !conf.CommandLogOnlySuccess {
 			conf.CommandLogOnlySuccess = true
+		}
+		if conf.CommandLogFlushMs == nil && opts.CommandLogFlushMs != nil {
+			conf.CommandLogFlushMs = opts.CommandLogFlushMs
 		}
 		// Apply the $global approval defaults; a connection that set its own
 		// approvalMode or patterns keeps them (connection-level wins).
@@ -547,6 +573,13 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 			return nil, err
 		}
 		conf.CommandLogSize = &n
+	}
+	if v, ok := m["commandLogFlushMs"]; ok && v != nil && v != "" {
+		n, err := ParseInt(v, "commandLogFlushMs")
+		if err != nil {
+			return nil, err
+		}
+		conf.CommandLogFlushMs = &n
 	}
 	if v, ok := m["outputCompressLight"]; ok {
 		b, err := ParseBool(v)
