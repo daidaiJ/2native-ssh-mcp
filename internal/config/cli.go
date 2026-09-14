@@ -532,6 +532,7 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 		Agent:                  expandEnvVars(str(m["agent"])),
 		Proxy:                  expandEnvVars(str(m["proxy"])),
 		SocksProxy:             expandEnvVars(str(m["socksProxy"])),
+		Via:                    str(m["via"]),
 		CommandWhitelist:       StringSlice(firstAny(m["commandWhitelist"], m["whitelist"])),
 		CommandBlacklist:       StringSlice(firstAny(m["commandBlacklist"], m["blacklist"])),
 		AllowedLocalPaths:      StringSlice(m["allowedLocalPaths"]),
@@ -682,6 +683,14 @@ func buildSingleHostConfig(host, portStr, username, password, privateKey, passph
 		if err != nil {
 			return nil, err
 		}
+	}
+	// A ProxyJump alias only resolves against a named connection table; the
+	// single-host CLI has exactly one unnamed connection, so silently
+	// creating a jump connection is not an option — fail loudly instead.
+	if alias != nil && alias.ProxyJump != "" {
+		return nil, fmt.Errorf(
+			"ssh config alias %q sets ProxyJump %q; declare the jump host as a named connection in the configuration file and add \"via\": %q on this connection",
+			host, alias.ProxyJump, alias.ProxyJump)
 	}
 
 	if portStr == "" && len(positionals) > 1 {

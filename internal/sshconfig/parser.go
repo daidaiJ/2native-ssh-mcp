@@ -2,6 +2,7 @@
 package sshconfig
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,6 +16,11 @@ type Entry struct {
 	User         string
 	Port         int
 	IdentityFile string
+	// ProxyJump is the raw value of a single-alias ProxyJump directive.
+	// Lookup rejects the multi-hop ("a,b"), user@host, host:port, and none
+	// forms instead of silently truncating them; mapping the alias onto an
+	// existing connection is the caller's job (it knows the table).
+	ProxyJump string
 }
 
 type hostBlock struct {
@@ -45,7 +51,33 @@ func Lookup(hostAlias, configFilePath string) (*Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return matchHost(hostAlias, blocks), nil
+	entry := matchHost(hostAlias, blocks)
+	if entry != nil && entry.ProxyJump != "" {
+		if err := validateProxyJump(entry.ProxyJump); err != nil {
+			return nil, err
+		}
+	}
+	return entry, nil
+}
+
+// validateProxyJump enforces the single-alias form. The full OpenSSH grammar
+// (multi-hop lists, user@host:port, none) is deliberately out of scope: a
+// truncated parse would silently jump through the wrong host, so any
+// unsupported spelling is a hard error.
+func validateProxyJump(v string) error {
+	if strings.EqualFold(strings.TrimSpace(v), "none") {
+		return fmt.Errorf("ssh config: ProxyJump none is not supported; remove the directive instead")
+	}
+	if strings.ContainsAny(v, ", \t") {
+		return fmt.Errorf("ssh config: multi-hop ProxyJump %q is not supported; only a single alias is accepted", v)
+	}
+	if strings.Contains(v, "@") {
+		return fmt.Errorf("ssh config: ProxyJump %q with user@host is not supported; declare the jump host as a connection and reference it by name", v)
+	}
+	if strings.Contains(v, ":") {
+		return fmt.Errorf("ssh config: ProxyJump %q with host:port is not supported; declare the jump host as a connection and reference it by name", v)
+	}
+	return nil
 }
 
 // parseConfigFile parses an SSH config file, following Include directives.
@@ -177,8 +209,11 @@ func matchHost(hostAlias string, blocks []hostBlock) *Entry {
 		if result.IdentityFile == "" {
 			result.IdentityFile = expandTilde(block.config["identityfile"])
 		}
+		if result.ProxyJump == "" {
+			result.ProxyJump = block.config["proxyjump"]
+		}
 	}
-	if result.HostName == "" && result.User == "" && result.Port == 0 && result.IdentityFile == "" {
+	if result.HostName == "" && result.User == "" && result.Port == 0 && result.IdentityFile == "" && result.ProxyJump == "" {
 		return nil
 	}
 	return result

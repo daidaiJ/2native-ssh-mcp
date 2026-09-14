@@ -90,6 +90,16 @@ type SSHConfig struct {
 	CommandBlacklist   []string `json:"commandBlacklist,omitempty"`
 	Proxy              string   `json:"proxy,omitempty"`
 	SocksProxy         string   `json:"socksProxy,omitempty"`
+	// Via routes this connection's SSH handshake through another connection's
+	// direct-tcpip channel (OpenSSH ProxyJump semantics): the jump host's
+	// authentication/proxy/2FA apply to the hop, the target's credentials and
+	// host key check apply to the inner handshake. The value must be another
+	// connection name in the same configuration; multi-hop chains, self
+	// references, cycles, and combining via with proxy/socksProxy on the same
+	// connection are configuration errors (checked against the full table at
+	// startup). Only the TCP layer changes — exec/shell/SFTP/background
+	// behavior is identical to a direct connection.
+	Via string `json:"via,omitempty"`
 	Pty                *bool    `json:"pty,omitempty"`
 	AllowedLocalPaths  []string `json:"allowedLocalPaths,omitempty"`
 	AllowedRemotePaths []string `json:"allowedRemotePaths,omitempty"`
@@ -368,6 +378,75 @@ func (c *SSHConfig) Normalize() error {
 			out = append(out, a)
 		}
 		c.Aliases = out
+	}
+	return nil
+}
+
+// ValidateVias checks the via (ProxyJump) graph across the full connection
+// table — a single Normalize cannot see the other names. Per connection with
+// a via it rejects: multi-hop syntax (commas or whitespace), a self
+// reference, an unknown jump name, a target that also carries its own
+// proxy/socksProxy (the tunnel makes the semantics ambiguous — the jump host
+// itself may keep its proxy), and cycles (A→B→A). Errors name the
+// connections on the path so the misconfiguration is fixable in one read.
+func ValidateVias(configs map[string]*SSHConfig) error {
+	for name, cfg := range configs {
+		via := strings.TrimSpace(cfg.Via)
+		if via == "" {
+			continue
+		}
+		if strings.ContainsAny(via, ", \t") {
+			return fmt.Errorf("connection '%s': via must be a single connection name (multi-hop ProxyJump is not supported), got: %q", name, cfg.Via)
+		}
+		if cfg.Proxy != "" || cfg.SocksProxy != "" {
+			return fmt.Errorf("connection '%s': via and proxy/socksProxy are mutually exclusive — the jump host [%s] owns the outer transport; put the proxy on the jump host's own connection", name, via)
+		}
+		if via == name {
+			return fmt.Errorf("connection '%s': via must point at another connection, not itself", name)
+		}
+		if _, ok := configs[via]; !ok {
+			return fmt.Errorf("connection '%s': via points at unknown connection '%s' — the jump host must be declared as a connection in the same configuration", name, via)
+		}
+	}
+	// Cycle detection over the via graph. Every node participates, so even a
+	// cycle with no entry point is reported with its full path.
+	const visiting, done = 1, 2
+	state := make(map[string]int, len(configs))
+	var path []string
+	var visit func(name string) error
+	visit = func(name string) error {
+		switch state[name] {
+		case visiting:
+			cycle := append(append([]string(nil), path...), name)
+			start := 0
+			for i, p := range path {
+				if p == name {
+					start = i
+					break
+				}
+			}
+			return fmt.Errorf("via cycle: %s", strings.Join(cycle[start:], " -> "))
+		case done:
+			return nil
+		}
+		state[name] = visiting
+		path = append(path, name)
+		cfg := configs[name]
+		if cfg != nil {
+			if via := strings.TrimSpace(cfg.Via); via != "" {
+				if err := visit(via); err != nil {
+					return err
+				}
+			}
+		}
+		path = path[:len(path)-1]
+		state[name] = done
+		return nil
+	}
+	for name := range configs {
+		if err := visit(name); err != nil {
+			return err
+		}
 	}
 	return nil
 }
