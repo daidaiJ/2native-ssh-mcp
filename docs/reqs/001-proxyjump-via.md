@@ -154,4 +154,4 @@ CI：`go test -tags integration ./internal/manager/ -run ProxyJump` 在有 Docke
 
 ## 9. 开放问题
 
-无。多跳与 `user@host` 语法若有真实用户再开后续需求，不在本期膨胀。
+任务拆解、验收测试名、与 §4/§5 的边界见 [README.md §1](README.md#1-proxyjump别等真环境)。多跳与 `user@host` 语法若有真实用户再开后续需求，不在本期膨胀。
