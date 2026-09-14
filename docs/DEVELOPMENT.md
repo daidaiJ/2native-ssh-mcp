@@ -30,7 +30,7 @@
 │   │   └── commandlog.go          #   审计日志（追加 JSONL、SHA-256 哈希链、批量落盘、滚动）
 │   ├── daemon/                    # HTTP daemon：PID 文件、refcount+guest 租约、admin 端点、Windows 自启动
 │   └── tools/                     # MCP 工具：list-servers / execute-command / session / file-transfer
-├── SECURITY.md                    # 威胁模型、审计落盘策略与分级加固建议
+├── SECURITY.md                    # 威胁模型、审计落盘策略与分级加固建议（英文版 SECURITY.en.md）
 ├── docs/                          # 指南与专项文档（中文默认，.en.md 为英文版）
 ├── skills/                        # Agent Skill（安装配置 / 远程执行策略）
 ├── .github/workflows/ci.yml       # push/PR → ubuntu-latest go test -race ./...

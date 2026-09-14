@@ -33,7 +33,7 @@ The agent only sees four MCP tools. SSH credentials stay in the local process an
 | 👤 Human users | [docs/HUMAN_GUIDE.en.md](docs/HUMAN_GUIDE.en.md) | Readable: secure setup, quick start, tool reference, release flow |
 | 🔍 Features | [docs/FEATURES.en.md](docs/FEATURES.en.md) | Full feature list and known limitations |
 | 🛠 Development | [docs/DEVELOPMENT.en.md](docs/DEVELOPMENT.en.md) | Project structure, build & test, Release and MCP Registry publishing |
-| 🔐 Security | [SECURITY.md](SECURITY.md) | Threat model, approval gate, audit flush policy, tiered hardening |
+| 🔐 Security | [SECURITY.en.md](SECURITY.en.md) | Threat model, approval gate, audit flush policy, tiered hardening |
 
 Docs are Chinese by default; the same-name `.en.md` files are the English versions.
 

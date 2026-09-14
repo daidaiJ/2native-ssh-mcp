@@ -30,7 +30,7 @@
 │   │   └── commandlog.go          #   Audit log (append-only JSONL, SHA-256 hash chain, batched flush, rotation)
 │   ├── daemon/                    # HTTP daemon: PID file, refcount+guest lease, admin endpoints, Windows auto-start
 │   └── tools/                     # MCP tools: list-servers / execute-command / session / file-transfer
-├── SECURITY.md                    # Threat model, audit flush policy, tiered hardening recommendations
+├── SECURITY.en.md                 # Threat model, audit flush policy, tiered hardening (Chinese: SECURITY.md)
 ├── docs/                          # Guides and topic docs (Chinese by default; .en.md is the English version)
 ├── skills/                        # Agent Skills (installation / remote execution strategies)
 ├── .github/workflows/ci.yml       # push/PR → ubuntu-latest go test -race ./...

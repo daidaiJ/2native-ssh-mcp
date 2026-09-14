@@ -384,7 +384,7 @@ Server options:
 ```
 
 - 记录范围：`execute-command`（成功/失败/超时/被杀，审批拒绝也记 `approval=declined`）、`file-transfer`（每次调用一条摘要，只含远端路径）、命名会话 `session` open/close
-- 落盘策略 `commandLogFlushMs`（毫秒，全局 CLI `--command-log-flush-ms`）：默认 5000 = 记录先进缓冲，按 5 秒 / 32 条 / 256 KiB 先到批量落盘，优雅退出会补写（硬崩溃最多丢最后 ≤5 秒）；`0` = 写穿，每条命令的结果返回前记录已在磁盘上（最严格，单条约 13µs，批量约 8µs，量级可忽略）。分级加固建议见 [SECURITY.md](../SECURITY.md#hardening-levels)
+- 落盘策略 `commandLogFlushMs`（毫秒，全局 CLI `--command-log-flush-ms`）：默认 5000 = 记录先进缓冲，按 5 秒 / 32 条 / 256 KiB 先到批量落盘，优雅退出会补写（硬崩溃最多丢最后 ≤5 秒）；`0` = 写穿，每条命令的结果返回前记录已在磁盘上（最严格，单条约 13µs，批量约 8µs，量级可忽略）。分级加固建议见 [SECURITY.md](../SECURITY.md#加固分级)
 - **失败记录始终落盘**（内审需要失败痕迹）；`commandLogOnlySuccess: true` 只影响 `list-servers` 里 `recent=` 展示窗口（仍只展示成功命令）
 - `commandLogSize` 只决定内存展示窗口（默认 20 条）和重启后加载的窗口，**不再裁剪磁盘文件**——文件按 16 MiB 或 10000 行先到为准滚动为 `<连接名>.jsonl.<UTC时间戳>`，新文件以 `chain-start` 记录衔接旧文件尾哈希，跨文件链不断
 - 单文件校验：`2native-ssh-mcp audit-verify --file .ssh-mcp-logs/prod.jsonl`；校验配置里所有连接（含滚动文件）：`2native-ssh-mcp audit-verify --config-file config.json`。退出码：0=链完整或无日志，2=链损坏/旧格式（stderr 打印文件、行号、期望与实际哈希），1=程序错误

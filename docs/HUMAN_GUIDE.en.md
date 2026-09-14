@@ -383,7 +383,7 @@ The audit log is enabled by default (disable with `"commandLogSize": 0`). Each c
 ```
 
 - Recorded: `execute-command` (success/failure/timeout/killed; approval refusals are logged with `approval=declined`), `file-transfer` (one summary per call, remote path only), named `session` open/close
-- Flush policy `commandLogFlushMs` (ms; global CLI `--command-log-flush-ms`): default 5000 = records buffer and flush in batches at 5 s / 32 records / 256 KiB, whichever comes first; graceful shutdown flushes the tail (a hard crash can lose the last ≤5 s). `0` = write-through: each record is on disk before the command result returns (strictest; ~13 µs per record, ~8 µs batched — negligible next to the SSH round trip). Tiered hardening guidance: [SECURITY.md](../SECURITY.md#hardening-levels)
+- Flush policy `commandLogFlushMs` (ms; global CLI `--command-log-flush-ms`): default 5000 = records buffer and flush in batches at 5 s / 32 records / 256 KiB, whichever comes first; graceful shutdown flushes the tail (a hard crash can lose the last ≤5 s). `0` = write-through: each record is on disk before the command result returns (strictest; ~13 µs per record, ~8 µs batched — negligible next to the SSH round trip). Tiered hardening guidance: [SECURITY.en.md](../SECURITY.en.md#hardening-levels)
 - **Failed commands are always written to disk** (internal audit needs the failure trail); `commandLogOnlySuccess: true` only affects the `recent=` display window in `list-servers` (which keeps showing successful commands only)
 - `commandLogSize` only controls the in-memory display window (default 20) loaded across restarts — it **no longer truncates the disk file**. Files rotate at 16 MiB or 10000 lines (whichever comes first) into `<connection>.jsonl.<UTC-timestamp>`; the new file starts with a `chain-start` record linking the old tail hash, so the chain never breaks across files
 - Verify one file: `2native-ssh-mcp audit-verify --file .ssh-mcp-logs/prod.jsonl`; verify every connection (including rotated files): `2native-ssh-mcp audit-verify --config-file config.json`. Exit codes: 0=chain intact or no log, 2=broken chain/legacy format (stderr prints file, line number, expected and actual hashes), 1=program error
@@ -398,7 +398,7 @@ The audit log is enabled by default (disable with `"commandLogSize": 0`). Each c
 - MCP tools are annotated with `readOnlyHint` / `destructiveHint`, allowing clients to restrict dangerous operations accordingly
 - Optional destructive-command approval gate: `approvalMode: "ask-destructive"` (per connection or `$global`). The built-in classifier flags rm/reboot/mkfs-style commands and prompts via MCP elicitation first; `approvalPatterns` adds what *you* consider dangerous, `approvalExemptPatterns` exempts what you consider safe — gray areas are entirely yours, there is no un-overridable built-in denylist
 
-See [SECURITY.md](../SECURITY.md) for details.
+See [SECURITY.en.md](../SECURITY.en.md) for details.
 
 ## Automatic Release Publishing
 

@@ -105,5 +105,5 @@ session(action=close, sessionName=logs)
 ## Related
 
 - Install/config wizard: [2native-ssh-mcp-helper](../2native-ssh-mcp-helper/SKILL.md)
-- Security model: [SECURITY.md](../../SECURITY.md)
+- Security model: [SECURITY.md](../../SECURITY.en.md)
 - Agent API: [docs/AGENT_GUIDE.md](../../docs/AGENT_GUIDE.md)

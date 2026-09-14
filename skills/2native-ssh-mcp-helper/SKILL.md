@@ -174,4 +174,4 @@ Interactive wizard for **2native-ssh-mcp** (Go SSH MCP server). Produces a locke
 
 - Human guide: [docs/HUMAN_GUIDE.md](../../docs/HUMAN_GUIDE.md)
 - Agent guide: [docs/AGENT_GUIDE.md](../../docs/AGENT_GUIDE.md)
-- Security: [SECURITY.md](../../SECURITY.md)
+- Security: [SECURITY.en.md](../../SECURITY.en.md)
