@@ -14,12 +14,13 @@ Defensive playbook for agents using **2native-ssh-mcp**. Read this before execut
 ## Golden rules
 
 1. **Call `list-servers` first** — read metadata, aliases, notes; pick `connectionName` or plan a `sessionName`. A `via=<name>` label means the host is only reachable through that jump-host connection — no direct TCP path exists, and jump-host failures name it.
-2. **Never use root** — use a dedicated low-privilege account.
-3. **Prefer narrow commands** — scope with `head`, `tail`, `grep`, `wc`, paths; avoid blind `cat` on large files.
-4. **Respect whitelist/blacklist** — if a command is rejected, do not bypass; ask the operator to widen policy.
-5. **Secrets** — redaction is off by default (`"redactSecrets": true` enables it per connection); regardless, avoid printing credentials.
-6. **Host key rejection** — if a connection fails with a host key mismatch (server reimaged / key rotated), do not bypass; report it. Fix is operator-side: remove the stale line from `known_hosts` (or set `"hostKeyCheck": "none"` for dynamic-IP hosts).
-7. **Assume everything is recorded** — executed commands land in a per-connection append-only, hash-chained audit log (failures included); act accordingly on production hosts.
+2. **Always pass `connectionName` explicitly** — taken from `list-servers`. Omitting it only works when a connection named `default` exists (marked `default=true` in list-servers); otherwise the call fails. Never guess a connection: running on the wrong host is worse than a failed call.
+3. **Never use root** — use a dedicated low-privilege account.
+4. **Prefer narrow commands** — scope with `head`, `tail`, `grep`, `wc`, paths; avoid blind `cat` on large files.
+5. **Respect whitelist/blacklist** — if a command is rejected, do not bypass; ask the operator to widen policy.
+6. **Secrets** — redaction is off by default (`"redactSecrets": true` enables it per connection); regardless, avoid printing credentials.
+7. **Host key rejection** — if a connection fails with a host key mismatch (server reimaged / key rotated), do not bypass; report it. Fix is operator-side: remove the stale line from `known_hosts` (or set `"hostKeyCheck": "none"` for dynamic-IP hosts).
+8. **Assume everything is recorded** — executed commands land in a per-connection append-only, hash-chained audit log (failures included); act accordingly on production hosts.
 
 ## Output & tokens
 

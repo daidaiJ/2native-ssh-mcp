@@ -13,7 +13,7 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 |---|---|---|---|
 | `cmdString` | string | ✅ | Command |
 | `directory` | string | | Working dir (`cd -- '<dir>' && ...`) |
-| `connectionName` | string | | Name or alias from list-servers |
+| `connectionName` | string | | Name or alias from list-servers；**必填**，除非配置了名为 `default` 的连接 |
 | `timeout` | number | | ms; overrides `commandTimeoutMs` (default 30000) |
 | `keepAlive` | boolean | | Keep connection after command (default **true**) |
 | `keepAliveDuration` | number | | ms; idle TTL after command (default **600000** = 10 min) |
@@ -37,7 +37,7 @@ One tool, `action` param. Progress via `notifications/progress` when client send
 | `action` | string | ✅ | `upload` \| `download` |
 | `localPath` | string | ✅ | Under `localPathMode` scope (default: cwd + `allowedLocalPaths`; `list` = only `allowedLocalPaths`; `any` = unrestricted) |
 | `remotePath` | string | ✅ | Absolute POSIX; under `allowedRemotePaths` if set |
-| `connectionName` | string | | Name or alias from list-servers |
+| `connectionName` | string | | Name or alias from list-servers；**必填**，除非配置了名为 `default` 的连接 |
 | `force` | boolean | | Skip dedup/resume, full transfer |
 
 - **Dedup**: destination matches (size+mtime) → skipped. **Resume**: partial destination → continue. Download = temp + atomic rename, stamps remote mtime.

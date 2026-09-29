@@ -151,6 +151,7 @@ Interactive wizard for **2native-ssh-mcp** (Go SSH MCP server). Produces a locke
 |---|---|
 | Multi-host | `--config-file` with object of named connections |
 | Alias for connectionName | `"aliases": ["prod-web"]` in config |
+| Default connection (connectionName optional) | name a connection literally `"default"`; without it, every tool call must pass `connectionName` explicitly |
 | Internal host behind a jump host | `"via": "<jump-connection-name>"` on the target; jump host declared as its own connection |
 | 2FA / OTP login | `"tryKeyboard": true` (elicitation popup); `SSH_MCP_2FA_CODE` env for unattended runs |
 | Verify audit log | `2native-ssh-mcp audit-verify --file <path>` or `--config-file config.json` |
@@ -164,6 +165,7 @@ Interactive wizard for **2native-ssh-mcp** (Go SSH MCP server). Produces a locke
 ## Pitfalls
 
 - **Do not let long terminal output flood the context window.** Avoid commands that dump huge output (`cat` on large files, `tail -f`, recursive `grep`/`find`). Output is capped (`maxOutputBytes`, default 10 MB); at 8KB+ (`outputSpillThreshold`) it is spilled to a local file (default `.ssh-mcp-out/`) with only a notice + preview in the result, and 4-8KB output is head/tail-compressed (`outputCompressLight`), but even compressed output consumes tokens. For long-running or chatty commands use `session action=open` + `background=true` and poll with `session action=read` (bounded by `maxBytes`); to inspect a large remote file, download it with `file-transfer` and read locally instead of `cat`-ing it.
+- **Omitting `connectionName` is only valid with a connection named `default`.** There is no silent fallback to the first configured connection: without a `default` connection the call fails with the list of available names. Emphasize this to agents — always pick `connectionName` from `list-servers`.
 - Do not use `--password` in MCP `args` (visible in process list)
 - `transportMode: shell` disables SFTP file-transfer
 - Config file must be mode 0600 on Unix or server refuses to start
