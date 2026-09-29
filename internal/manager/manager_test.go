@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"strings"
 	"testing"
 	"time"
 
@@ -369,12 +370,49 @@ func TestResolveAliasAndDefaultName(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if m.defaultName != "centos" {
-			t.Fatalf("defaultName = %q, want centos", m.defaultName)
+		// No connection literally named "default": there is no default. An
+		// omitted connectionName must fail loudly rather than silently pick
+		// the first (sorted) connection.
+		if m.defaultName != "" {
+			t.Fatalf("defaultName = %q, want empty", m.defaultName)
 		}
 		if m.resolveName("CentOS") != "centos" || m.resolveName("Ubuntu") != "ubuntu" {
 			t.Fatalf("alias resolve failed: CentOS=%s Ubuntu=%s", m.resolveName("CentOS"), m.resolveName("Ubuntu"))
 		}
+	}
+}
+
+func TestDefaultNameRequiresExplicitDefaultConnection(t *testing.T) {
+	m, err := New(map[string]*config.SSHConfig{
+		"default": {Host: "h", Username: "u", Port: 22},
+		"ubuntu":  {Host: "h", Username: "u", Port: 22},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.defaultName != "default" {
+		t.Fatalf("defaultName = %q, want default", m.defaultName)
+	}
+	if m.resolveName("") != "default" {
+		t.Fatalf("resolveName(\"\") = %q, want default", m.resolveName(""))
+	}
+
+	// Without an explicit "default" connection, an omitted connectionName is
+	// a validation error listing the available connections.
+	m, err = New(map[string]*config.SSHConfig{
+		"ubuntu": {Host: "h", Username: "u", Port: 22},
+		"centos": {Host: "h", Username: "u", Port: 22},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.getConfig(""); err == nil {
+		t.Fatal("expected getConfig(\"\") to fail without a 'default' connection")
+	} else if !strings.Contains(err.Error(), "connectionName is required") || !strings.Contains(err.Error(), "centos, ubuntu") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := m.getConfig("ubuntu"); err != nil {
+		t.Fatalf("getConfig(ubuntu) failed: %v", err)
 	}
 }
 

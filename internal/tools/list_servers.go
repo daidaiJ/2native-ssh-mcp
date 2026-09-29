@@ -97,6 +97,9 @@ func formatServerList(servers []manager.ServerInfo) string {
 		if server.Via != "" {
 			parts = append(parts, "via="+server.Via)
 		}
+		if server.Default {
+			parts = append(parts, "default=true (used when connectionName is omitted)")
+		}
 		if server.Status != nil {
 			if server.Status.Hostname != "" {
 				parts = append(parts, "hostname="+server.Status.Hostname)

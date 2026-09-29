@@ -25,7 +25,7 @@ func registerFileTransfer(s *server.MCPServer, m *manager.Manager) {
 		mcp.WithString("action", mcp.Required(), mcp.Description("Operation to perform"), mcp.Enum("upload", "download")),
 		mcp.WithString("localPath", mcp.Required(), mcp.Description("Local path (a directory transfers recursively)")),
 		mcp.WithString("remotePath", mcp.Required(), mcp.Description("Remote path (absolute POSIX path; a directory transfers recursively)")),
-		mcp.WithString("connectionName", mcp.Description("SSH connection name or alias from list-servers (optional; defaults to the default connection)")),
+		mcp.WithString("connectionName", mcp.Description("SSH connection name or alias from list-servers (required unless a connection named 'default' is configured; omitting it without a 'default' connection fails with the list of available names)")),
 		mcp.WithBoolean("force", mcp.Description("Skip the dedup check and transfer the full file from scratch (default: false)")),
 	)
 

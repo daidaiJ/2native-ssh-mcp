@@ -23,7 +23,7 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 		mcp.WithString("cmdString", mcp.Required(), mcp.Description("Command to execute")),
 		mcp.WithString("directory", mcp.Description("Working directory for command execution")),
 		mcp.WithString("sessionName", mcp.Description("Optional named session (from session action=open); when set, connectionName is ignored")),
-		mcp.WithString("connectionName", mcp.Description("SSH connection name or alias from list-servers (optional; defaults to the default connection)")),
+		mcp.WithString("connectionName", mcp.Description("SSH connection name or alias from list-servers (required unless a connection named 'default' is configured; omitting it without a 'default' connection fails with the list of available names)")),
 		mcp.WithNumber("timeout", mcp.Description("Command execution timeout in milliseconds (optional; overrides the connection's commandTimeoutMs, which defaults to 30000ms)")),
 		mcp.WithBoolean("background", mcp.Description("Run the command detached as a background job and return immediately with sessionName/logPath; poll with session action=read (minutes-long work belongs here, not in a bigger timeout)")),
 		mcp.WithBoolean("pty", mcp.Description("Allocate a remote pseudo-terminal (default: false; opt in for interactive commands like sudo or vim; with background=true it wraps the detached job in a TTY)")),

@@ -106,6 +106,10 @@ type ServerInfo struct {
 	// (OpenSSH ProxyJump semantics): the agent must not assume the host is
 	// directly reachable.
 	Via string `json:"via,omitempty"`
+	// Default reports that this connection is the one used when a tool call
+	// omits connectionName; only set when a connection is literally named
+	// "default".
+	Default bool `json:"default,omitempty"`
 }
 
 type connectState struct {
@@ -197,10 +201,12 @@ func New(configs map[string]*config.SSHConfig, defaultLogDir string) (*Manager, 
 		}
 	}
 	sort.Strings(names)
+	// Only an explicitly configured connection named "default" is the default.
+	// Silently falling back to the first connection makes agents run commands
+	// against the wrong host without noticing; an omitted connectionName must
+	// fail loudly instead (see getConfig).
 	if _, ok := configs["default"]; ok {
 		m.defaultName = "default"
-	} else if len(names) > 0 {
-		m.defaultName = names[0]
 	}
 	for _, name := range names {
 		for _, alias := range configs[name].Aliases {
@@ -248,9 +254,20 @@ func (m *Manager) getConfig(name string) (*config.SSHConfig, error) {
 	key := m.resolveName(name)
 	cfg, ok := m.configs[key]
 	if !ok {
+		if key == "" {
+			return nil, newToolError(CodeCommandValidationFailed,
+				fmt.Sprintf("connectionName is required: no connection named 'default' is configured; available connections: %s",
+					strings.Join(m.sortedConfigNames(), ", ")), false)
+		}
 		return nil, fmt.Errorf("SSH configuration for '%s' not set", key)
 	}
 	return cfg, nil
+}
+
+func (m *Manager) sortedConfigNames() []string {
+	names := m.ConfigNames()
+	sort.Strings(names)
+	return names
 }
 
 // ConfigFor resolves the effective connection config for a tool request: the
@@ -545,6 +562,7 @@ func (m *Manager) GetAllServerInfos() []ServerInfo {
 			Status:         m.statuses[name],
 			ApprovalMode:   cfg.ApprovalMode,
 			Via:            cfg.Via,
+			Default:        name == m.defaultName && m.defaultName != "",
 			RecentCommands: m.commandLogs[name].Recent(recentCommandsInList),
 		})
 	}

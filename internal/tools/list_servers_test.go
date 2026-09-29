@@ -42,6 +42,25 @@ func TestFormatServerListShowsVia(t *testing.T) {
 	}
 }
 
+// The default connection must be labeled so the agent knows which connection
+// runs when connectionName is omitted (only possible with an explicit
+// "default" connection).
+func TestFormatServerListShowsDefault(t *testing.T) {
+	text := formatServerList([]manager.ServerInfo{
+		{Name: "centos", Host: "h", Port: 22, Username: "u"},
+		{Name: "default", Host: "h", Port: 22, Username: "u", Default: true},
+	})
+	if !strings.Contains(text, "default=true (used when connectionName is omitted)") {
+		t.Fatalf("summary line must mark the default connection:\n%s", text)
+	}
+	if !strings.Contains(text, `"default":true`) {
+		t.Fatalf("servers JSON must mark the default connection:\n%s", text)
+	}
+	if strings.Count(text, "default=true") != 1 {
+		t.Fatalf("only the default connection must be marked:\n%s", text)
+	}
+}
+
 func TestFormatRecentCommands(t *testing.T) {
 	now := time.Date(2026, 9, 5, 19, 21, 0, 0, time.Local)
 	entries := []manager.CommandLogEntry{
