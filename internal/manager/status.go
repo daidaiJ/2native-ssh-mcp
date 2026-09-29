@@ -51,10 +51,13 @@ type Processes struct {
 }
 
 // statusProbes are collected in a single remote command, each result
-// introduced by a marker line.
+// introduced by a marker line. ipAddresses reports only the default-route
+// interface's primary IPv4: a full interface dump is dominated by IPv6
+// link-local and veth/bridge addresses (30+ per host) that only bloat the
+// cached status.
 var statusProbes = map[string]string{
 	"hostname":      "hostname",
-	"ipAddresses":   "ip -o addr show | awk '{print $4}' | grep -v '^127\\.' | cut -d'/' -f1",
+	"ipAddresses":   "IF=$(ip route show default 2>/dev/null | sed -n 's/.* dev \\([^ ]*\\).*/\\1/p' | head -1); ip -4 -o addr show scope global dev \"$IF\" 2>/dev/null | awk '{print $4}' | cut -d'/' -f1 | head -1",
 	"osName":        "uname -s",
 	"osVersion":     "cat /etc/os-release 2>/dev/null | grep '^PRETTY_NAME=' | cut -d'=' -f2 | tr -d '\"' || uname -o",
 	"kernelVersion": "uname -r",
