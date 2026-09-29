@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -390,7 +391,15 @@ func (c *SSHConfig) Normalize() error {
 // itself may keep its proxy), and cycles (A→B→A). Errors name the
 // connections on the path so the misconfiguration is fixable in one read.
 func ValidateVias(configs map[string]*SSHConfig) error {
-	for name, cfg := range configs {
+	// Sorted order keeps validation errors and cycle reports deterministic —
+	// map iteration order would otherwise rotate cycle paths run to run.
+	names := make([]string, 0, len(configs))
+	for name := range configs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		cfg := configs[name]
 		via := strings.TrimSpace(cfg.Via)
 		if via == "" {
 			continue
@@ -443,7 +452,7 @@ func ValidateVias(configs map[string]*SSHConfig) error {
 		state[name] = done
 		return nil
 	}
-	for name := range configs {
+	for _, name := range names {
 		if err := visit(name); err != nil {
 			return err
 		}
