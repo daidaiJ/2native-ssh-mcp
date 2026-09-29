@@ -214,3 +214,17 @@ func TestGateTimeoutFailsClosed(t *testing.T) {
 func contains(s, sub string) bool {
 	return strings.Contains(s, sub)
 }
+
+// The approval prompt is the human's last checkpoint: it must show which
+// machine the destructive command will hit, not just the connection name.
+func TestConfirmationRequestShowsHost(t *testing.T) {
+	req := confirmationRequest(&config.SSHConfig{Name: "default", Host: "203.0.113.5", Port: 22}, "rm -rf /tmp/x", "matches rm -rf")
+	if !strings.Contains(req.Params.Message, `connection "default" (host 203.0.113.5:22)`) {
+		t.Fatalf("approval prompt must carry the host, got:\n%s", req.Params.Message)
+	}
+	// No host configured (shell transport edge): name only, no empty host.
+	req = confirmationRequest(&config.SSHConfig{Name: "bare"}, "x", "y")
+	if strings.Contains(req.Params.Message, "(host") {
+		t.Fatalf("prompt without a host must not render an empty host part:\n%s", req.Params.Message)
+	}
+}

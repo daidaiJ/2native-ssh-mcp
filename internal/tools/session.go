@@ -80,6 +80,9 @@ func handleSessionTool(ctx context.Context, m *manager.Manager, args map[string]
 		}
 		raw, _ := marshalCompactJSON(info)
 		msg := fmt.Sprintf("Session %q on connection %q", info.Name, info.ConnectionName)
+		if info.Host != "" {
+			msg += fmt.Sprintf(" (host %s:%d)", info.Host, info.Port)
+		}
 		if info.Background {
 			msg += " (background)"
 		}

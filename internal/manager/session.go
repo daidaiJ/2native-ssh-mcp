@@ -23,8 +23,14 @@ var sessionNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 type SessionInfo struct {
 	Name           string `json:"name"`
 	ConnectionName string `json:"connectionName"`
-	CWD            string `json:"cwd,omitempty"`
-	IdleSeconds    int64  `json:"idleSeconds"`
+	// Host/Port/Aliases identify the machine behind ConnectionName so agents
+	// (and humans reading transcripts) never have to guess which host a
+	// session — especially one on the default connection — actually reaches.
+	Host        string   `json:"host,omitempty"`
+	Port        int      `json:"port,omitempty"`
+	Aliases     []string `json:"aliases,omitempty"`
+	CWD         string   `json:"cwd,omitempty"`
+	IdleSeconds int64    `json:"idleSeconds"`
 	Background     bool   `json:"background,omitempty"`
 	Running        bool   `json:"running,omitempty"`
 	BGCommand      string `json:"bgCommand,omitempty"`
@@ -236,7 +242,9 @@ func (m *Manager) ListSessions() []SessionInfo {
 
 func (m *Manager) sessionInfoLocked(ns *namedSession) *SessionInfo {
 	idle := int64(time.Since(ns.lastUsed).Seconds())
-	return &SessionInfo{
+	// m.configs is built once at startup and only read afterwards, so it is
+	// safe to consult under m.mu (same pattern as ensureShell).
+	info := &SessionInfo{
 		Name:           ns.name,
 		ConnectionName: ns.connectionKey,
 		CWD:            ns.cwd,
@@ -249,6 +257,12 @@ func (m *Manager) sessionInfoLocked(ns *namedSession) *SessionInfo {
 		Disconnected:   ns.disconnected,
 		Orphaned:       ns.orphaned,
 	}
+	if cfg, ok := m.configs[ns.connectionKey]; ok {
+		info.Host = cfg.Host
+		info.Port = cfg.Port
+		info.Aliases = cfg.Aliases
+	}
+	return info
 }
 
 // resetIdleTimer (re)arms the session's idle expiry and refreshes lastUsed.

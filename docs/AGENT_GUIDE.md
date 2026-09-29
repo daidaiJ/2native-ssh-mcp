@@ -21,6 +21,7 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 - Whitelist/blacklist regexes per connection; rejected → `COMMAND_VALIDATION_FAILED`.
 - **Non-zero exit is a normal result, not an error** — read `exitCode` from the text (`[exit code] N`). Errors are reserved for validation/connect failures, `COMMAND_TIMEOUT`, `OUTPUT_LIMIT_EXCEEDED`, and `SSH_CONNECTION_LOST`.
 - **Successful results render as sectioned text by default** — real newlines: `stdout`, then `[stderr]`, `[exit code] N`, and a spill notice when output was persisted. Set `"resultFormat": "json"` on a connection to switch successful results to the structured CommandResult JSON; error paths always stay JSON.
+- **省略 `connectionName`（走 `default` 连接）时，响应会带上实际命中的连接摘要**：文本格式首行为 `connection=default host=<ip> port=<port> aliases=<...>`（无别名则省略），JSON 格式则多出 `connection`/`host`/`port`/`aliases` 字段；后台任务启动响应同样带这一行。显式传了 `connectionName` 的调用不重复此信息。
 - `SSH_CONNECTION_LOST` (retriable=false): the connection dropped mid-command; the remote process may still be running. **Do not replay blindly** — the error JSON carries partial `stdout`/`stderr` and `replaySafe: false`.
 - Output cap `maxOutputBytes` (default 10 MB, **stdout+stderr combined**) → `OUTPUT_LIMIT_EXCEEDED`; timeout → `COMMAND_TIMEOUT`. For timeout/lost/limit the error message stays short; partial output is in the same result's `stdout`/`stderr` fields.
 - **Light compress** (default): outputs ≥ `outputCompressThreshold` (4096 B) get head/tail lines + dedup; disable with `"outputCompressLight": false`. See `skills/2native-ssh-mcp-agent` for agent-side habits.
@@ -45,6 +46,7 @@ One tool, `action` param. Progress via `notifications/progress` when client send
 - Concurrent SFTP (16×32 KB default; `sftpConcurrency`/`sftpChunkSize` per connection).
 - `sftpDedicatedConn: true`（每连接或 `$global`）：SFTP 单开一条 SSH 连接。sshd 前有影子容器/会话级 overlay 的网关会丢弃复用 shell 会话写入的文件，传输后文件消失时开这个；连接懒创建、空闲 5 分钟回收、复用前探活。
 - 重接会话恢复上下文时优先跑 `history`：连接开了 `historyFromLog` 的话，远程历史过少（<10 条，exec 模式通常为 0）会自动从 MCP 命令日志补齐（尾部去重，`historySupplemented` 字段计数）。
+- **省略 `connectionName`（走 `default` 连接）时**，成功响应与 execute-command 相同：文本首行为 `connection=default host=<ip> port=<port> aliases=<...>`，JSON 里多 `connection`/`host`/`port`/`aliases` 字段。
 - 输出里的 `\xNN` 转义和 `nonUtf8: true` 标记表示远程输出不是有效 UTF-8（如 GBK）；需要可读文本时远程 `iconv -f gbk` 转换。
 - Local path outside the `localPathMode` scope → `LOCAL_PATH_NOT_ALLOWED` with a scope message ("not within the allowed local paths for this connection"); a `..` escape is reported separately as "Path traversal rejected".
 
@@ -60,6 +62,8 @@ One tool, `action` param. Exec-mode connections only.
 | `read` | `sessionName` | Poll background log; optional `maxBytes`, `offset` (negative/omitted = continue, `0` = re-read from start), `waitMs` (block up to 30s for new output or job exit) |
 | `close` | `sessionName` | Stop background job, release shell (**idempotent** — closing an already-closed session succeeds) |
 | `list` | — | All sessions; optional `connectionName` filter |
+
+会话摘要与 `open`/`list` 响应均带实际主机（`host=<ip>:<port>`，JSON 的 `host`/`port`/`aliases` 字段）——default 连接上的会话也能一眼看出在哪台机器。
 
 **Long tasks: `execute-command` with `background: true`** detaches the command via a background session and returns `sessionName` + `logPath` immediately (a random `bg-*` session is created if none given). Poll with `session action=read` (`waitMs` blocks for new output instead of returning empty). Equivalent: `session action=open` with `background=true` + `cmdString`. Add `pty: true` for jobs that require a TTY (wrapped in `script`, exit code preserved). Do NOT `nohup ... &` or `setsid` through a foreground `execute-command` — those die with the exec channel. Background jobs are started detached (no PTY, new session) and **survive connection drops**; after a drop the session shows `disconnected=true` and `read`/`execute-command` reconnect automatically. Only `action=close` kills the remote job.
 
@@ -139,7 +143,7 @@ Auth: password | privateKey (+passphrase, `SSH_MCP_PASSPHRASE` env) | agent (`SS
 - **Foreground `timeout` must exceed the real runtime** — the default `commandTimeoutMs=30000` still applies; a long build needs `timeout` ≥ its duration or it will be cut off with `COMMAND_TIMEOUT`. On timeout the remote process group is killed by PID (channel Signal is only a fallback — OpenSSH often ignores it), so timed-out commands do not leak remote processes.
 - **exec runs without a PTY by default** — a PTY makes tools like docker/npm behave as if interactive and can cause SIGHUP issues on long tasks, so it is opt-in: connection `"pty": true` or the `execute-command` `pty` parameter. Background jobs never use a PTY regardless.
 - **Non-zero exit is a normal result** — check `exitCode`; do not treat `[exit code] 1` as a transport failure.
-- **`approvalMode: "ask-destructive"` 的连接**：`list-servers` 会标注 `approval=ask-destructive` 与本客户端是否支持 elicitation。命中破坏性分类器时会弹窗征询用户——拒绝/取消则命令不执行，返回 `"executed": false`，不要重试；客户端不支持 elicitation 时命令照常执行（fail-open），结果尾部带提示，此时应先征询用户再发破坏性命令。
+- **`approvalMode: "ask-destructive"` 的连接**：`list-servers` 会标注 `approval=ask-destructive` 与本客户端是否支持 elicitation。命中破坏性分类器时会弹窗征询用户（提示中带连接名与实际 host:port）——拒绝/取消则命令不执行，返回 `"executed": false`，不要重试；客户端不支持 elicitation 时命令照常执行（fail-open），结果尾部带提示，此时应先征询用户再发破坏性命令。
 - **`SSH_CONNECTION_LOST` is not replay-safe** — the command may have partially executed; inspect the partial `stdout` before deciding to retry.
 
 ## Secure setup (pick one — do NOT put credentials in MCP client args)

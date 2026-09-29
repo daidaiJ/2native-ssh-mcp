@@ -69,12 +69,22 @@ func errorResult(err error) *mcp.CallToolResult {
 // errorResultFor formats a ToolError together with the partial CommandResult
 // captured before the failure (timeout, output limit, connection loss). The
 // message stays short; the partial stdout/stderr travel in the same result.
+// Connection identity fields (connection/host/port/aliases) pass through so
+// an agent retrying after a failure knows which host it was talking to.
 func errorResultFor(err error, res manager.CommandResult) *mcp.CallToolResult {
 	te := manager.AsToolError(err)
 	payload := map[string]any{
 		"code":      te.Code,
 		"message":   te.Message,
 		"retriable": te.Retriable,
+	}
+	if res.Connection != "" {
+		payload["connection"] = res.Connection
+		payload["host"] = res.Host
+		payload["port"] = res.Port
+		if len(res.Aliases) > 0 {
+			payload["aliases"] = res.Aliases
+		}
 	}
 		if res.Status != "" {
 			payload["stdout"] = res.Stdout

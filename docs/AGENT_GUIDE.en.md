@@ -21,6 +21,7 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 - Whitelist/blacklist regexes per connection; rejected → `COMMAND_VALIDATION_FAILED`.
 - **Non-zero exit is a normal result, not an error** — read `exitCode` from the text (`[exit code] N`). Errors are reserved for validation/connect failures, `COMMAND_TIMEOUT`, `OUTPUT_LIMIT_EXCEEDED`, and `SSH_CONNECTION_LOST`.
 - **Successful results render as sectioned text by default** — real newlines: `stdout`, then `[stderr]`, `[exit code] N`, and a spill notice when output was persisted. Set `"resultFormat": "json"` on a connection to switch successful results to the structured CommandResult JSON; error paths always stay JSON.
+- **Omitting `connectionName` (routed via the `default` connection) adds a summary of the connection that actually served the call**: in text format the first line is `connection=default host=<ip> port=<port> aliases=<...>` (aliases omitted when none); in JSON format the result gains `connection`/`host`/`port`/`aliases` fields; background job starts carry the same line. Calls with an explicit `connectionName` do not repeat it.
 - `SSH_CONNECTION_LOST` (retriable=false): the connection dropped mid-command; the remote process may still be running. **Do not replay blindly** — the error JSON carries partial `stdout`/`stderr` and `replaySafe: false`.
 - Output cap `maxOutputBytes` (default 10 MB, **stdout+stderr combined**) → `OUTPUT_LIMIT_EXCEEDED`; timeout → `COMMAND_TIMEOUT`. For timeout/lost/limit the error message stays short; partial output is in the same result's `stdout`/`stderr` fields.
 - **Light compress** (default): outputs ≥ `outputCompressThreshold` (4096 B) get head/tail lines + dedup; disable with `"outputCompressLight": false`. See `skills/2native-ssh-mcp-agent` for agent-side habits.
@@ -45,6 +46,7 @@ One tool, `action` param. Progress via `notifications/progress` when client send
 - Concurrent SFTP (16×32 KB default; `sftpConcurrency`/`sftpChunkSize` per connection).
 - `sftpDedicatedConn: true` (per connection or `$global`): SFTP runs over its own SSH connection. Gateways with a shadow container / session-scoped overlay in front of sshd discard files written over the reused shell session — enable this when transferred files vanish; lazy creation, 5 min idle recycle, liveness-probed before reuse.
 - When resuming context on a reconnect, run `history` first: with `historyFromLog` enabled on the connection, a sparse remote listing (<10 entries; usually 0 in exec mode) is automatically supplemented from the MCP command log (tail-deduped, counted in the `historySupplemented` field).
+- **Omitting `connectionName` (routed via the `default` connection)** marks the success response like execute-command: the first text line is `connection=default host=<ip> port=<port> aliases=<...>`, and the JSON gains `connection`/`host`/`port`/`aliases` fields.
 - `\xNN` escapes and a `nonUtf8: true` flag in the output mean the remote output was not valid UTF-8 (e.g. GBK); convert remotely with `iconv -f gbk` for readable text.
 - Local path outside the `localPathMode` scope → `LOCAL_PATH_NOT_ALLOWED` with a scope message ("not within the allowed local paths for this connection"); a `..` escape is reported separately as "Path traversal rejected".
 
@@ -60,6 +62,8 @@ One tool, `action` param. Exec-mode connections only.
 | `read` | `sessionName` | Poll background log; optional `maxBytes`, `offset` (negative/omitted = continue, `0` = re-read from start), `waitMs` (block up to 30s for new output or job exit) |
 | `close` | `sessionName` | Stop background job, release shell (**idempotent** — closing an already-closed session succeeds) |
 | `list` | — | All sessions; optional `connectionName` filter |
+
+Session summaries and the `open`/`list` responses carry the actual host (`host=<ip>:<port>`, plus `host`/`port`/`aliases` JSON fields) — even a session on the default connection shows which machine it lives on.
 
 **Long tasks: `execute-command` with `background: true`** detaches the command via a background session and returns `sessionName` + `logPath` immediately (a random `bg-*` session is created if none given). Poll with `session action=read` (`waitMs` blocks for new output instead of returning empty). Equivalent: `session action=open` with `background=true` + `cmdString`. Add `pty: true` for jobs that require a TTY (wrapped in `script`, exit code preserved). Do NOT `nohup ... &` or `setsid` through a foreground `execute-command` — those die with the exec channel. Background jobs are started detached (no PTY, new session) and **survive connection drops**; after a drop the session shows `disconnected=true` and `read`/`execute-command` reconnect automatically. Only `action=close` kills the remote job.
 
@@ -139,7 +143,7 @@ Auth: password | privateKey (+passphrase, `SSH_MCP_PASSPHRASE` env) | agent (`SS
 - **Foreground `timeout` must exceed the real runtime** — the default `commandTimeoutMs=30000` still applies; a long build needs `timeout` ≥ its duration or it will be cut off with `COMMAND_TIMEOUT`. On timeout the remote process group is killed by PID (channel Signal is only a fallback — OpenSSH often ignores it), so timed-out commands do not leak remote processes.
 - **exec runs without a PTY by default** — a PTY makes tools like docker/npm behave as if interactive and can cause SIGHUP issues on long tasks, so it is opt-in: connection `"pty": true` or the `execute-command` `pty` parameter. Background jobs never use a PTY regardless.
 - **Non-zero exit is a normal result** — check `exitCode`; do not treat `[exit code] 1` as a transport failure.
-- **`approvalMode: "ask-destructive"` 的连接**：`list-servers` 会标注 `approval=ask-destructive` 与本客户端是否支持 elicitation。命中破坏性分类器时会弹窗征询用户——拒绝/取消则命令不执行，返回 `"executed": false`，不要重试；客户端不支持 elicitation 时命令照常执行（fail-open），结果尾部带提示，此时应先征询用户再发破坏性命令。
+- **Connections with `approvalMode: "ask-destructive"`**: `list-servers` marks `approval=ask-destructive` and whether this client supports elicitation. When the destructive classifier matches, a prompt asks the user (it shows the connection name and the actual host:port) — declining/cancelling skips execution and returns `"executed": false`; do not retry. If the client does not support elicitation the command runs anyway (fail-open) with a trailing note — ask the user before destructive commands.
 - **`SSH_CONNECTION_LOST` is not replay-safe** — the command may have partially executed; inspect the partial `stdout` before deciding to retry.
 
 ## Secure setup (pick one — do NOT put credentials in MCP client args)

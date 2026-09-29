@@ -57,3 +57,24 @@ func TestTransferResultJSONUnitAndCounts(t *testing.T) {
 		t.Fatalf("skippedFiles = %v, want 3", parsed.SkippedFiles)
 	}
 }
+
+// A default-routed transfer (connectionName omitted) must surface which
+// connection and host received the files.
+func TestTransferResultJSONDefaultConnectionSummary(t *testing.T) {
+	res := &manager.TransferResult{
+		Action: "upload", Bytes: 10,
+		Elapsed: 24 * time.Millisecond, SpeedBps: 400,
+		Connection: "default", Host: "203.0.113.5", Port: 22,
+		Aliases: []string{"web"},
+	}
+	text := transferResultJSON(res).Content[0].(mcp.TextContent).Text
+	want := "connection=default host=203.0.113.5 port=22 aliases=web"
+	if !strings.HasPrefix(text, want+"\n\n") {
+		t.Fatalf("transfer result must start with the default-connection summary:\n%s", text)
+	}
+
+	plain := &manager.TransferResult{Action: "upload", Bytes: 10}
+	if got := transferResultJSON(plain).Content[0].(mcp.TextContent).Text; strings.Contains(got, "connection=default") {
+		t.Fatalf("explicit-connection transfer must not carry the summary:\n%s", got)
+	}
+}

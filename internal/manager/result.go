@@ -55,6 +55,13 @@ type CommandResult struct {
 	// HistorySupplemented counts command-log entries appended to sparse
 	// remote `history` output (historyFromLog, default off).
 	HistorySupplemented int `json:"historySupplemented,omitempty"`
+	// Connection/Host/Port/Aliases are populated only when the call omitted
+	// connectionName and the default connection served it, so the agent can
+	// see which host actually ran the command.
+	Connection string   `json:"connection,omitempty"`
+	Host       string   `json:"host,omitempty"`
+	Port       int      `json:"port,omitempty"`
+	Aliases    []string `json:"aliases,omitempty"`
 }
 
 // Text renders the human-readable body for a normal (ok/exited) result.

@@ -189,6 +189,9 @@ func formatSessionList(sessions []manager.SessionInfo) string {
 			fmt.Sprintf("connection=%s", s.ConnectionName),
 			fmt.Sprintf("idle=%ds", s.IdleSeconds),
 		}
+		if s.Host != "" {
+			parts = append(parts, fmt.Sprintf("host=%s:%d", s.Host, s.Port))
+		}
 		if s.CWD != "" {
 			parts = append(parts, "cwd="+s.CWD)
 		}

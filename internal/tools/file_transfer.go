@@ -72,6 +72,16 @@ func registerFileTransfer(s *server.MCPServer, m *manager.Manager) {
 		if token != nil && !result.Skipped {
 			sender.send(result.Bytes+result.ResumedFrom, result.Bytes+result.ResumedFrom)
 		}
+		if connectionName == "" {
+			// Default-routed call: stamp which connection actually served it
+			// so the agent can tell which host received the files.
+			if cfg := m.ConfigFor("", connectionName); cfg != nil {
+				result.Connection = "default"
+				result.Host = cfg.Host
+				result.Port = cfg.Port
+				result.Aliases = cfg.Aliases
+			}
+		}
 		return transferResultJSON(result), nil
 	})
 }
@@ -149,5 +159,9 @@ func transferResultJSON(result *manager.TransferResult) *mcp.CallToolResult {
 	}
 
 	raw, _ := marshalResultJSON(result)
+	if result.Connection != "" {
+		return mcp.NewToolResultText(connectionSummary(result.Connection, result.Host, result.Port, result.Aliases) +
+			"\n\n" + text + "\n\nJSON:\n" + raw)
+	}
 	return mcp.NewToolResultText(text + "\n\nJSON:\n" + raw)
 }

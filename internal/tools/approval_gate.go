@@ -57,7 +57,7 @@ func approvalGate(
 
 	elicitationCtx, cancel := context.WithTimeout(ctx, elicitationTimeout)
 	defer cancel()
-	result, err := srv.RequestElicitation(elicitationCtx, confirmationRequest(cfg.Name, cmdString, reason))
+	result, err := srv.RequestElicitation(elicitationCtx, confirmationRequest(cfg, cmdString, reason))
 	switch {
 	case err == nil:
 		if result.Action != mcp.ElicitationResponseActionAccept || confirmDeclined(result) {
@@ -89,13 +89,20 @@ func approvalGate(
 	}
 }
 
-// confirmationRequest builds the elicitation shown to the human.
-func confirmationRequest(connName, cmdString, reason string) mcp.ElicitationRequest {
+// confirmationRequest builds the elicitation shown to the human. The message
+// carries the host as well as the connection name: a human asked to approve a
+// destructive command must be able to verify which machine it will hit, not
+// just which configured alias.
+func confirmationRequest(cfg *config.SSHConfig, cmdString, reason string) mcp.ElicitationRequest {
+	target := cfg.Name
+	if cfg.Host != "" {
+		target = fmt.Sprintf("%q (host %s:%d)", cfg.Name, cfg.Host, cfg.Port)
+	}
 	return mcp.ElicitationRequest{
 		Params: mcp.ElicitationParams{
 			Message: fmt.Sprintf(
-				"Destructive command on SSH connection %q\n%s\nReason: %s\nAllow execution?",
-				connName, truncateRunes(cmdString, 500), reason),
+				"Destructive command on SSH connection %s\n%s\nReason: %s\nAllow execution?",
+				target, truncateRunes(cmdString, 500), reason),
 			RequestedSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

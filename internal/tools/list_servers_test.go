@@ -90,3 +90,15 @@ func TestFormatRecentCommands(t *testing.T) {
 		t.Fatalf("truncateRunes must collapse whitespace, got %q", got)
 	}
 }
+
+// Session summaries must expose the host behind the connection so agents
+// never guess which machine an active session — especially a default-routed
+// one — is attached to.
+func TestFormatSessionListShowsHost(t *testing.T) {
+	text := formatSessionList([]manager.SessionInfo{
+		{Name: "build", ConnectionName: "default", IdleSeconds: 5, Host: "203.0.113.5", Port: 22},
+	})
+	if !strings.Contains(text, "host=203.0.113.5:22") {
+		t.Fatalf("session summary must carry the host:\n%s", text)
+	}
+}

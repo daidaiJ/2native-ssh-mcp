@@ -82,10 +82,20 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 		} else {
 			result, err = m.ExecuteCommand(ctx, cmdString, directory, connectionName, opts)
 		}
+		cfg := m.ConfigFor(sessionName, connectionName)
+		if connectionName == "" && sessionName == "" && cfg != nil {
+			// Default-routed call: stamp which connection actually served it
+			// so the agent can tell which host it reached — on success and on
+			// error (a retrying agent must know which host it was talking to).
+			result.Connection = "default"
+			result.Host = cfg.Host
+			result.Port = cfg.Port
+			result.Aliases = cfg.Aliases
+		}
 		if err != nil {
 			return appendNote(errorResultFor(err, result), note), nil
 		}
-		return appendNote(commandResult(result, m.ConfigFor(sessionName, connectionName)), note), nil
+		return appendNote(commandResult(result, cfg), note), nil
 	})
 }
 
@@ -115,7 +125,25 @@ func handleBackgroundCommand(ctx context.Context, m *manager.Manager, cmdString,
 	text := fmt.Sprintf(
 		"Background job started: session=%q logPath=%s\nPoll with session action=read (sessionName=%q, waitMs blocks for new output); stop with session action=close.\n\n%s",
 		info.Name, info.LogPath, info.Name, raw)
+	if connectionName == "" {
+		// Default-routed call: surface which connection the job runs on.
+		if cfg := m.ConfigFor("", connectionName); cfg != nil {
+			text = connectionSummary("default", cfg.Host, cfg.Port, cfg.Aliases) + "\n\n" + text
+		}
+	}
 	return mcp.NewToolResultText(text), nil
+}
+
+// connectionSummary renders a connection's host identity, e.g.
+// "connection=default host=203.0.113.5 port=22 aliases=web,prod". It is
+// included in responses to calls that omitted connectionName, where the
+// agent otherwise cannot tell which host actually served the call.
+func connectionSummary(connName, host string, port int, aliases []string) string {
+	line := fmt.Sprintf("connection=%s host=%s port=%d", connName, host, port)
+	if len(aliases) > 0 {
+		line += " aliases=" + strings.Join(aliases, ",")
+	}
+	return line
 }
 
 // randomSessionName generates a throwaway background session name
@@ -134,7 +162,11 @@ func commandResult(res manager.CommandResult, cfg *config.SSHConfig) *mcp.CallTo
 	if cfg.GetResultFormat() == config.ResultFormatJSON {
 		return commandResultJSON(res)
 	}
-	return mcp.NewToolResultText(res.Text())
+	text := res.Text()
+	if res.Connection != "" {
+		text = connectionSummary(res.Connection, res.Host, res.Port, res.Aliases) + "\n\n" + text
+	}
+	return mcp.NewToolResultText(text)
 }
 
 // commandResultJSON renders a successful command result as structured JSON,
