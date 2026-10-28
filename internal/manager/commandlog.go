@@ -73,7 +73,6 @@ type AuditRecord struct {
 // encoding/json and the int fields are small, so the encoding is stable
 // across runs and platforms — pinned by commandlog_hash_test.go.
 func (r AuditRecord) canonicalJSON() ([]byte, error) {
-	r.Hash = ""
 	m := map[string]any{
 		"v":          r.V,
 		"type":       r.Type,

@@ -26,6 +26,16 @@ type RunOptions struct {
 	// Approval is the destructive-command gate outcome for the audit log
 	// ("accepted"/"fail-open"; "" means the gate did not need to ask).
 	Approval string
+	// AuditCommand is the readable equivalent of the command that actually
+	// runs, used for whitelist/blacklist matching and written to the audit
+	// record when the executed text is a machine-generated rendering of what
+	// the caller expressed (argv mode quotes every argument; a staged
+	// scriptFile runs as `sh /tmp/....sh`). Empty means "the command text is
+	// already readable".
+	AuditCommand string
+	// LintMode overrides the connection's lintMode for this call
+	// ("off"/"warn"/"strict"); empty means use the connection's setting.
+	LintMode string
 }
 
 // ExecuteCommand runs a command on the named connection and returns a
@@ -41,8 +51,9 @@ func (m *Manager) ExecuteCommand(ctx context.Context, cmdString, directory, name
 	if strings.TrimSpace(cmdString) == "" {
 		return CommandResult{}, newToolError(CodeCommandValidationFailed, "cmdString must be a non-empty command", false)
 	}
+	auditCommand := auditTextFor(cmdString, opts.AuditCommand)
 	if !opts.Prevalidated {
-		if err := m.validateCommand(cmdString, name); err != nil {
+		if err := m.validateCommand(auditCommand, name); err != nil {
 			return CommandResult{}, err
 		}
 	}
@@ -54,6 +65,15 @@ func (m *Manager) ExecuteCommand(ctx context.Context, cmdString, directory, name
 	cfg, err := m.getConfig(name)
 	if err != nil {
 		return CommandResult{}, err
+	}
+
+	var lintFindings []string
+	if !opts.Prevalidated {
+		findings, lintErr := m.checkCommandLint(cmdString, LintModeFor(cfg, opts.LintMode))
+		if lintErr != nil {
+			return CommandResult{}, lintErr
+		}
+		lintFindings = findings
 	}
 
 	timeout := opts.Timeout
@@ -82,7 +102,10 @@ func (m *Manager) ExecuteCommand(ctx context.Context, cmdString, directory, name
 		result, err = m.runExecCommand(ctx, client, cfg, cmdString, directory, timeout, key, opts)
 	}
 
-	result, err = m.finalizeCommand(key, cfg, cmdString, result, err, opts.Approval)
+	result, err = m.finalizeCommand(key, cfg, auditCommand, result, err, opts.Approval)
+	if len(lintFindings) > 0 {
+		result.Lint = lintFindings
+	}
 
 	// Keepalive policy: keep the connection alive (default 10 minutes) or
 	// close it right away.

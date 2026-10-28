@@ -23,11 +23,22 @@ import (
 // t.TempDir files are allowed, and returns a manager.
 func newSftpTestManager(tb testing.TB) *Manager {
 	tb.Helper()
-	wd, err := os.Getwd()
-	if err != nil {
-		tb.Fatal(err)
+	return newTestManager(tb, nil)
+}
+
+// newTestManager builds a manager from the integration config. The optional
+// adjust callback tweaks the "ubuntu" connection (path scope, command log,
+// autoProbe) before the manager is built.
+func newTestManager(tb testing.TB, adjust func(*config.SSHConfig)) *Manager {
+	tb.Helper()
+	cfgPath := os.Getenv("SSH_MCP_TEST_CONFIG")
+	if cfgPath == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			tb.Fatal(err)
+		}
+		cfgPath = filepath.Join(wd, "..", "..", "config.json")
 	}
-	cfgPath := filepath.Join(wd, "..", "..", "config.json")
 	opts, err := config.ParseArgs([]string{"--config-file", cfgPath})
 	if err != nil {
 		tb.Fatalf("load config: %v", err)
@@ -45,9 +56,12 @@ func newSftpTestManager(tb testing.TB) *Manager {
 		}
 	}
 	if ubuntu == nil {
-		tb.Fatal("config.json must define an 'ubuntu' connection for integration tests")
+		tb.Fatal("the integration config must define an 'ubuntu' connection for integration tests")
 	}
 	ubuntu.LocalPathMode = config.LocalPathModeAny
+	if adjust != nil {
+		adjust(ubuntu)
+	}
 	m, err := New(opts.Configs, "")
 	if err != nil {
 		tb.Fatal(err)

@@ -28,6 +28,7 @@ const DefaultKeepAliveDuration = 10 * time.Minute
 // ToolError codes, mirroring the TypeScript implementation.
 const (
 	CodeCommandValidationFailed = "COMMAND_VALIDATION_FAILED"
+	CodeCommandLintFailed       = "COMMAND_LINT_FAILED"
 	CodeCommandExecutionError   = "COMMAND_EXECUTION_ERROR"
 	CodeOutputLimitExceeded     = "OUTPUT_LIMIT_EXCEEDED"
 	CodeCommandTimeout          = "COMMAND_TIMEOUT"
@@ -110,6 +111,9 @@ type ServerInfo struct {
 	// omits connectionName; only set when a connection is literally named
 	// "default".
 	Default bool `json:"default,omitempty"`
+	// Capabilities is the remote base64/jq probe result (nil until the
+	// connection has been established once, or when autoProbe is off).
+	Capabilities *RemoteCapabilities `json:"capabilities,omitempty"`
 }
 
 type connectState struct {
@@ -119,19 +123,22 @@ type connectState struct {
 
 // Manager holds all SSH connections and their configuration.
 type Manager struct {
-	mu          sync.Mutex
-	configs     map[string]*config.SSHConfig
-	clients     map[string]*ssh.Client
-	connected   map[string]bool
-	statuses    map[string]*ServerStatus
-	pending     map[string]*connectState
-	whitelist   map[string][]*regexp.Regexp
-	blacklist   map[string][]*regexp.Regexp
-	shells      map[string]*shellSession
-	commandLogs map[string]*CommandLog
-	idleTimers  map[string]*time.Timer
-	aliases     map[string]string // alias -> canonical connection name
-	sessions    map[string]*namedSession
+	mu        sync.Mutex
+	configs   map[string]*config.SSHConfig
+	clients   map[string]*ssh.Client
+	connected map[string]bool
+	statuses  map[string]*ServerStatus
+	pending   map[string]*connectState
+	whitelist map[string][]*regexp.Regexp
+	blacklist map[string][]*regexp.Regexp
+	// capabilities caches the per-connection remote capability probe
+	// (base64/jq), refreshed on every reconnect.
+	capabilities map[string]*RemoteCapabilities
+	shells       map[string]*shellSession
+	commandLogs  map[string]*CommandLog
+	idleTimers   map[string]*time.Timer
+	aliases      map[string]string // alias -> canonical connection name
+	sessions     map[string]*namedSession
 	// inFlight counts active operations per connection key. While non-zero
 	// the connection must not be torn down (idle timer, keepalive failure).
 	inFlight map[string]int
@@ -149,21 +156,22 @@ type Manager struct {
 // connection); it may be empty to disable logging.
 func New(configs map[string]*config.SSHConfig, defaultLogDir string) (*Manager, error) {
 	m := &Manager{
-		configs:     configs,
-		clients:     map[string]*ssh.Client{},
-		connected:   map[string]bool{},
-		statuses:    map[string]*ServerStatus{},
-		pending:     map[string]*connectState{},
-		whitelist:   map[string][]*regexp.Regexp{},
-		blacklist:   map[string][]*regexp.Regexp{},
-		shells:      map[string]*shellSession{},
-		commandLogs: map[string]*CommandLog{},
-		idleTimers:  map[string]*time.Timer{},
-		aliases:     map[string]string{},
-		sessions:    map[string]*namedSession{},
-		inFlight:    map[string]int{},
-		unhealthy:   map[string]bool{},
-		sftpPool:    map[string]*sftpPoolEntry{},
+		configs:      configs,
+		clients:      map[string]*ssh.Client{},
+		connected:    map[string]bool{},
+		statuses:     map[string]*ServerStatus{},
+		pending:      map[string]*connectState{},
+		whitelist:    map[string][]*regexp.Regexp{},
+		blacklist:    map[string][]*regexp.Regexp{},
+		capabilities: map[string]*RemoteCapabilities{},
+		shells:       map[string]*shellSession{},
+		commandLogs:  map[string]*CommandLog{},
+		idleTimers:   map[string]*time.Timer{},
+		aliases:      map[string]string{},
+		sessions:     map[string]*namedSession{},
+		inFlight:     map[string]int{},
+		unhealthy:    map[string]bool{},
+		sftpPool:     map[string]*sftpPoolEntry{},
 	}
 
 	names := make([]string, 0, len(configs))
@@ -294,6 +302,29 @@ func (m *Manager) ConfigFor(sessionName, connectionName string) *config.SSHConfi
 	return cfg
 }
 
+// ResolveConnection returns the connection key a tool call targets: the named
+// session's connection when sessionName is set, otherwise connectionName
+// resolved through aliases (empty means the default connection, which must
+// exist). It fails with the same error the execution paths produce, so a call
+// that cannot be routed fails before anything is staged or sent.
+func (m *Manager) ResolveConnection(sessionName, connectionName string) (string, error) {
+	key := connectionName
+	if sessionName != "" {
+		m.mu.Lock()
+		ns, ok := m.sessions[sessionName]
+		m.mu.Unlock()
+		if !ok {
+			return "", newToolError(CodeCommandValidationFailed,
+				fmt.Sprintf("session %q not found; call session action=open first", sessionName), false)
+		}
+		key = ns.connectionKey
+	}
+	if _, err := m.getConfig(key); err != nil {
+		return "", err
+	}
+	return m.resolveName(key), nil
+}
+
 // ConfigNames returns all configured connection names.
 func (m *Manager) ConfigNames() []string {
 	names := make([]string, 0, len(m.configs))
@@ -368,6 +399,7 @@ func (m *Manager) Connect(ctx context.Context, name string) error {
 	m.startHeartbeat(key, client, cfg)
 	m.Touch(key, DefaultKeepAliveDuration)
 	m.scheduleStatus(key)
+	m.scheduleCapabilityProbe(key)
 
 	st.err = nil
 	close(st.done)
@@ -483,6 +515,8 @@ func (m *Manager) Disconnect(name string) {
 	client := m.clients[key]
 	delete(m.clients, key)
 	delete(m.connected, key)
+	// The probe result describes this connection; a later reconnect re-probes.
+	delete(m.capabilities, key)
 	if t, ok := m.idleTimers[key]; ok {
 		t.Stop()
 		delete(m.idleTimers, key)
@@ -563,6 +597,7 @@ func (m *Manager) GetAllServerInfos() []ServerInfo {
 			ApprovalMode:   cfg.ApprovalMode,
 			Via:            cfg.Via,
 			Default:        name == m.defaultName && m.defaultName != "",
+			Capabilities:   m.capabilities[name],
 			RecentCommands: m.commandLogs[name].Recent(recentCommandsInList),
 		})
 	}

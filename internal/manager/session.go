@@ -143,13 +143,22 @@ func (m *Manager) RunInSession(ctx context.Context, sessionName, cmdString, dire
 	if strings.TrimSpace(cmdString) == "" {
 		return CommandResult{}, newToolError(CodeCommandValidationFailed, "cmdString must be a non-empty command", false)
 	}
+	auditCommand := auditTextFor(cmdString, opts.AuditCommand)
 	if !opts.Prevalidated {
-		if err := m.validateCommand(cmdString, ns.connectionKey); err != nil {
+		if err := m.validateCommand(auditCommand, ns.connectionKey); err != nil {
 			return CommandResult{}, err
 		}
 	}
 
 	cfg := m.configs[ns.connectionKey]
+	var lintFindings []string
+	if !opts.Prevalidated {
+		findings, lintErr := m.checkCommandLint(cmdString, LintModeFor(cfg, opts.LintMode))
+		if lintErr != nil {
+			return CommandResult{}, lintErr
+		}
+		lintFindings = findings
+	}
 	timeout := opts.Timeout
 	if timeout <= 0 {
 		timeout = time.Duration(cfg.CommandTimeoutMs) * time.Millisecond
@@ -165,7 +174,10 @@ func (m *Manager) RunInSession(ctx context.Context, sessionName, cmdString, dire
 	}
 
 	result, err := m.runNamedShellCommand(ctx, ns, cmdString, directory, cfg.CommandTemplate, timeout)
-	result, err = m.finalizeCommand(ns.connectionKey, cfg, cmdString, result, err, opts.Approval)
+	result, err = m.finalizeCommand(ns.connectionKey, cfg, auditCommand, result, err, opts.Approval)
+	if len(lintFindings) > 0 {
+		result.Lint = lintFindings
+	}
 
 	ns.resetIdleTimer(m)
 
@@ -383,7 +395,7 @@ func buildNamedShellScript(cmdString, directory, commandTemplate string) string 
 	beginMarker := "__MCP_BEGIN__" + commandID + "__"
 	endMarker := "__MCP_END__" + commandID + "__RC__"
 
-	body := cmdString
+	var body string
 	if directory != "" {
 		body = "cd -- " + shellQuote(directory) + " && { " + cmdString + "; }"
 	} else {

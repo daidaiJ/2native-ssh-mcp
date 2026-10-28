@@ -57,6 +57,16 @@ const (
 	LocalPathModeAny = "any"
 )
 
+// Lint modes for the pre-execution structural check on a shell command.
+const (
+	// LintOff disables linting entirely.
+	LintOff = "off"
+	// LintWarn (default) reports findings and runs the command anyway.
+	LintWarn = "warn"
+	// LintStrict refuses commands whose findings are errors.
+	LintStrict = "strict"
+)
+
 // Approval modes for destructive commands (execute-command only).
 const (
 	// ApprovalModeAuto runs everything without asking (default; YOLO).
@@ -131,6 +141,21 @@ type SSHConfig struct {
 	// (default: .ssh-mcp-out under the process working directory; ~ is
 	// expanded).
 	OutputSpillDir string `json:"outputSpillDir,omitempty"`
+	// ScriptCleanup removes the remote temp file that a scriptFile execution
+	// staged, once the command finishes (default: true when unset).
+	ScriptCleanup *bool `json:"scriptCleanup,omitempty"`
+	// ScriptInterpreter is the remote interpreter used for a staged script
+	// that has no shebang (default: "sh").
+	ScriptInterpreter string `json:"scriptInterpreter,omitempty"`
+	// LintMode controls the pre-execution structural check on a shell command
+	// string: "off", "warn" (default; findings are reported and the command
+	// still runs) or "strict" (error-class findings refuse the command).
+	LintMode string `json:"lintMode,omitempty"`
+	// AutoProbe enables the one-off remote capability probe (base64/jq) that
+	// runs when the connection is established (default: true when unset).
+	// Turn it off for connections whose remote side records every command and
+	// where this server must not add any command of its own.
+	AutoProbe *bool `json:"autoProbe,omitempty"`
 	// StripAnsi strips ANSI escape sequences from command output before it
 	// is returned (default: true when unset; false keeps colors/progress
 	// bars for debugging).
@@ -334,6 +359,14 @@ func (c *SSHConfig) Normalize() error {
 	if c.LocalPathMode != LocalPathModeCwd && c.LocalPathMode != LocalPathModeList && c.LocalPathMode != LocalPathModeAny {
 		return fmt.Errorf("localPathMode must be 'cwd', 'list' or 'any', got: %s", c.LocalPathMode)
 	}
+	if c.LintMode == "" {
+		c.LintMode = LintWarn
+	}
+	switch c.LintMode {
+	case LintOff, LintWarn, LintStrict:
+	default:
+		return fmt.Errorf("lintMode must be 'off', 'warn' or 'strict', got: %s", c.LintMode)
+	}
 	if c.KnownHostsFile != "" {
 		c.KnownHostsFile = ExpandHome(c.KnownHostsFile)
 	}
@@ -531,6 +564,52 @@ func (c *SSHConfig) GetHistoryFromLog() bool {
 		return *c.HistoryFromLog
 	}
 	return false
+}
+
+// GetScriptCleanup returns whether the remote temp file staged for a
+// scriptFile execution is removed once the command finishes (default: true).
+func (c *SSHConfig) GetScriptCleanup() bool {
+	if c == nil || c.ScriptCleanup == nil {
+		return true
+	}
+	return *c.ScriptCleanup
+}
+
+// GetScriptInterpreter returns the remote interpreter used for a staged
+// script that has no shebang (default "sh").
+func (c *SSHConfig) GetScriptInterpreter() string {
+	if c == nil {
+		return "sh"
+	}
+	if v := strings.TrimSpace(c.ScriptInterpreter); v != "" {
+		return v
+	}
+	return "sh"
+}
+
+// GetLintMode returns the pre-execution lint mode (default: warn). Unknown
+// values fall back to the default; validation rejects them at startup.
+func (c *SSHConfig) GetLintMode() string {
+	if c == nil {
+		return LintWarn
+	}
+	switch strings.ToLower(strings.TrimSpace(c.LintMode)) {
+	case LintOff:
+		return LintOff
+	case LintStrict:
+		return LintStrict
+	default:
+		return LintWarn
+	}
+}
+
+// GetAutoProbe returns whether the remote capability probe runs on connect
+// (default: true).
+func (c *SSHConfig) GetAutoProbe() bool {
+	if c == nil || c.AutoProbe == nil {
+		return true
+	}
+	return *c.AutoProbe
 }
 
 // GetUtf8Sanitize returns whether invalid UTF-8 sequences in command output

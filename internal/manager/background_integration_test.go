@@ -21,11 +21,14 @@ import (
 
 func loadTestManager(t *testing.T) *Manager {
 	t.Helper()
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
+	cfgPath := os.Getenv("SSH_MCP_TEST_CONFIG")
+	if cfgPath == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfgPath = filepath.Join(wd, "..", "..", "config.json")
 	}
-	cfgPath := filepath.Join(wd, "..", "..", "config.json")
 	opts, err := config.ParseArgs([]string{"--config-file", cfgPath})
 	if err != nil {
 		t.Fatalf("load config: %v", err)

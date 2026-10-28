@@ -100,6 +100,9 @@ func formatServerList(servers []manager.ServerInfo) string {
 		if server.Default {
 			parts = append(parts, "default=true (used when connectionName is omitted)")
 		}
+		if caps := formatCapabilities(server.Capabilities); caps != "" {
+			parts = append(parts, caps)
+		}
 		if server.Status != nil {
 			if server.Status.Hostname != "" {
 				parts = append(parts, "hostname="+server.Status.Hostname)
@@ -119,6 +122,33 @@ func formatServerList(servers []manager.ServerInfo) string {
 
 	raw, _ := marshalCompactJSON(servers)
 	return "Configured SSH servers:\n" + strings.Join(lines, "\n") + "\n\nServers JSON:\n" + raw
+}
+
+// formatCapabilities renders the remote capability probe as one inventory
+// segment: which of base64/jq the host offers, or why the probe did not run.
+// Returns "" while the connection has never been established (nothing probed
+// yet), so the segment only appears when it says something.
+func formatCapabilities(caps *manager.RemoteCapabilities) string {
+	if caps == nil {
+		return ""
+	}
+	if caps.Skipped != "" {
+		return "capabilities=not probed (" + caps.Skipped + ")"
+	}
+	if caps.Error != "" {
+		return "capabilities=probe failed (" + caps.Error + ")"
+	}
+	var available []string
+	if caps.Base64 {
+		available = append(available, "base64")
+	}
+	if caps.JQ {
+		available = append(available, "jq")
+	}
+	if len(available) == 0 {
+		return "capabilities=none (no base64, no jq on the remote host)"
+	}
+	return "capabilities=" + strings.Join(available, ",")
 }
 
 // recentCommandMaxRunes caps each command preview so one long command cannot

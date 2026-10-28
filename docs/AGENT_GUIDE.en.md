@@ -11,14 +11,20 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 ### execute-command
 | Param | Type | Req | Notes |
 |---|---|---|---|
-| `cmdString` | string | ✅ | Command |
+| `cmdString` | string | ✅\* | Shell command; in argv mode, the program itself. `cmdString` or `scriptFile` — at least one |
+| `args` | string[] | | argv mode: the server quotes each argument byte-for-byte before handing it to the program, with no shell parsing (spaces, quotes, `$`, backslashes and `*` arrive literally); mutually exclusive with `scriptFile` |
+| `scriptFile` | string | | Local script: read, staged to remote `/tmp` over SFTP, then run (its shebang decides the interpreter, otherwise `scriptInterpreter`, default `sh`); mutually exclusive with `cmdString`/`args` |
+| `scriptCleanup` | boolean | | Remove the staged script once it finishes (default: the connection's `scriptCleanup`, itself default true; a run killed by timeout or the output limit may leave it behind) |
+| `lintMode` | string | | Pre-execution structural check: `off` / `warn` (default; report and run) / `strict` (error-class findings refuse the command with `COMMAND_LINT_FAILED`); not applicable to `args`/`scriptFile` |
 | `directory` | string | | Working dir (`cd -- '<dir>' && ...`) |
 | `connectionName` | string | | Name or alias from list-servers; **required** unless a connection named `default` exists |
 | `timeout` | number | | ms; overrides `commandTimeoutMs` (default 30000) |
 | `keepAlive` | boolean | | Keep connection after command (default **true**) |
 | `keepAliveDuration` | number | | ms; idle TTL after command (default **600000** = 10 min) |
 
-- Whitelist/blacklist regexes per connection; rejected → `COMMAND_VALIDATION_FAILED`.
+\* `cmdString` is no longer schema-required: it is empty on a `scriptFile`-only call, and a call with neither is rejected (`COMMAND_VALIDATION_FAILED`).
+
+- Whitelist/blacklist regexes per connection; rejected → `COMMAND_VALIDATION_FAILED` (in argv mode they match the command line built from the **original** arguments, so quoting cannot hide a match).
 - **Non-zero exit is a normal result, not an error** — read `exitCode` from the text (`[exit code] N`). Errors are reserved for validation/connect failures, `COMMAND_TIMEOUT`, `OUTPUT_LIMIT_EXCEEDED`, and `SSH_CONNECTION_LOST`.
 - **Successful results render as sectioned text by default** — real newlines: `stdout`, then `[stderr]`, `[exit code] N`, and a spill notice when output was persisted. Set `"resultFormat": "json"` on a connection to switch successful results to the structured CommandResult JSON; error paths always stay JSON.
 - **Omitting `connectionName` (routed via the `default` connection) adds a summary of the connection that actually served the call**: in text format the first line is `connection=default host=<ip> port=<port> aliases=<...>` (aliases omitted when none); in JSON format the result gains `connection`/`host`/`port`/`aliases` fields; background job starts carry the same line. Calls with an explicit `connectionName` do not repeat it.
@@ -29,6 +35,21 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 - Connections **lazy**; after command kept alive per keepAlive policy, idle expiry closes. `keepAlive: false` closes immediately.
 - Executed commands appended to the connection's audit log file (tamper-evident hash-chained JSONL; the `recent=` last 3 shown by `list-servers` come from the in-memory window, default 20, successful-only when `commandLogOnlySuccess: true`) — **without output**.
 - **Same-batch tool calls run concurrently — no ordering guarantee.** Dependent operations (upload → verify → restart) must be separate sequential tool calls. See `skills/2native-ssh-mcp-agent` → "Operational traps" (pgrep self-match, sudo without TTY, overwriting running binaries).
+
+#### Escaping: three ways to hand over a command
+
+A quoting mistake is **silent** — the outer shell eats `$1`, the command still exits 0 with plausible output. Pick a form instead of hand-quoting:
+
+| Form | Use when | What the remote runs | Audit record holds |
+|---|---|---|---|
+| `cmdString` | short command, clean arguments | the text as written | the text as written |
+| `cmdString` + `args` | any argument contains a space/quote/`$`/`\`/`*`, or comes from a variable | every element single-quoted by the server | the **readable equivalent** of the same command line (only the quoting a shell needs, e.g. `grep -rn 'foo bar' /etc`) |
+| `scriptFile` | anything past two or three lines | `sh /tmp/.2native-ssh-mcp-<name>-<rand>.sh` (the file itself when it has a shebang) | the script text itself, headed by a comment naming the source, the staged path and the interpreter |
+
+- The whitelist/blacklist, the destructive classifier, the approval prompt and the audit record all see the **readable equivalent** (the original argv, the script body) — never the quoted execution text, never a base64 wrapper. An auditor can copy the record and re-run it.
+- `scriptFile` is staged at `/tmp/.2native-ssh-mcp-<basename>-<rand>.sh` (mode 0700, written as `<target>.part` then renamed); `scriptCleanup: false` keeps it for debugging — it is a **remote** file.
+- Background mode behaves the same way: the cleanup is written as `(exit $rc)` in a subshell so the script's own exit code survives (a bare `exit` would skip the background starter's `echo $? > exitfile`).
+- Lint runs on `cmdString` (shell mode) only: argv mode is already quoted per argument and has no shell syntax left, and a script's syntax errors are reported by the remote interpreter itself, with a line number.
 
 ### file-transfer
 One tool, `action` param. Progress via `notifications/progress` when client sends `_meta.progressToken` (throttled ~100 ms, final 100% always).
@@ -52,6 +73,8 @@ One tool, `action` param. Progress via `notifications/progress` when client send
 
 ### list-servers
 No args. Returns **servers** (metadata, status, last few recorded commands) and **active sessions**. Call first to pick `connectionName` or `sessionName` — the recent-command history also helps resume context from a previous session. **readOnly**.
+
+Once a connection is established (within about a second) each entry gains a `capabilities=base64,jq` segment: the probe result for the remote `base64` and `jq`. The probe itself is a **readable one-line command** with no encoding. `$global.autoProbe: false` (or `autoProbe: false` on the connection) disables it and reports `capabilities=not probed (autoProbe=false)`. Use it to pick the tool that exists on that host when a payload needs to move past a quoting layer or JSON needs building, instead of failing once to find out.
 
 ### session
 One tool, `action` param. Exec-mode connections only.
@@ -126,6 +149,10 @@ session(action=close, sessionName=deploy)
     "outputSpillThreshold": 8192,          // full output at/above this goes to a local file; -1 disables
     "outputSpillDir": ".ssh-mcp-out",      // local spill directory (~ is expanded)
     "stripAnsi": true,
+    "scriptCleanup": true,                 // remove the staged scriptFile after it runs (an interrupted run may leave it)
+    "scriptInterpreter": "sh",             // interpreter for a staged script that has no shebang
+    "lintMode": "warn",                    // off / warn (default) / strict: structural check before the command is sent
+    "autoProbe": true,                     // probe remote base64/jq once after connecting (shown by list-servers); turn off when the remote logs every command
     "redactSecrets": false,                // opt-in: masks password=/token=/Bearer/PEM (~200ms per MiB of secret-bearing output)
     "commandTemplate": "sudo -n <quotedCommand>",
     "pty": false, "tryKeyboard": false

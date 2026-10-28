@@ -113,6 +113,12 @@ func errorResultFor(err error, res manager.CommandResult) *mcp.CallToolResult {
 				payload["clippedBytes"] = res.ClippedBytes
 			}
 		}
+		if len(res.Lint) > 0 {
+			payload["lint"] = res.Lint
+		}
+		if res.ScriptFile != nil {
+			payload["scriptFile"] = res.ScriptFile
+		}
 	}
 	text, _ := marshalResultJSON(payload)
 	return &mcp.CallToolResult{

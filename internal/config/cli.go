@@ -64,6 +64,15 @@ type GlobalConfig struct {
 	// SftpDedicatedConn is the global default for per-connection
 	// sftpDedicatedConn (SFTP over a dedicated SSH connection).
 	SftpDedicatedConn *bool `json:"sftpDedicatedConn,omitempty"`
+	// ScriptCleanup is the global default for per-connection scriptCleanup.
+	ScriptCleanup *bool `json:"scriptCleanup,omitempty"`
+	// ScriptInterpreter is the global default for per-connection
+	// scriptInterpreter.
+	ScriptInterpreter string `json:"scriptInterpreter,omitempty"`
+	// LintMode is the global default for per-connection lintMode.
+	LintMode string `json:"lintMode,omitempty"`
+	// AutoProbe is the global default for per-connection autoProbe.
+	AutoProbe *bool `json:"autoProbe,omitempty"`
 	// HistoryFromLog is the global default for per-connection
 	// historyFromLog (supplement sparse remote history from the MCP log).
 	HistoryFromLog *bool `json:"historyFromLog,omitempty"`
@@ -358,6 +367,18 @@ func ParseArgs(args []string) (*Options, error) {
 		if conf.Utf8Sanitize == nil {
 			conf.Utf8Sanitize = fileGlobal.Utf8Sanitize
 		}
+		if conf.ScriptCleanup == nil {
+			conf.ScriptCleanup = fileGlobal.ScriptCleanup
+		}
+		if conf.ScriptInterpreter == "" {
+			conf.ScriptInterpreter = fileGlobal.ScriptInterpreter
+		}
+		if conf.LintMode == "" {
+			conf.LintMode = fileGlobal.LintMode
+		}
+		if conf.AutoProbe == nil {
+			conf.AutoProbe = fileGlobal.AutoProbe
+		}
 		if err := conf.Normalize(); err != nil {
 			return nil, fmt.Errorf("invalid config for '%s': %w", conf.Name, err)
 		}
@@ -416,61 +437,87 @@ func loadConfigFile(path string) (map[string]*SSHConfig, *GlobalConfig, error) {
 	return configs, global, nil
 }
 
-// parseGlobalConfig fills global settings from the "$global" object.
+// parseGlobalConfig fills global settings from the "$global" object. Each key
+// is read by a small helper so that adding a setting is one line here.
 func parseGlobalConfig(raw any, global *GlobalConfig) error {
 	m, ok := raw.(map[string]any)
 	if !ok {
 		return fmt.Errorf("%s must be an object", GlobalConfigKey)
 	}
-	if v, ok := m["allowInsecureConfigPerms"]; ok {
-		b, err := ParseBool(v)
-		if err != nil {
-			return fmt.Errorf("%s.allowInsecureConfigPerms: %w", GlobalConfigKey, err)
+	readers := []func(map[string]any) error{
+		globalBool("allowInsecureConfigPerms", &global.AllowInsecureConfigPerms),
+		globalString("httpToken", &global.HTTPToken),
+		globalString("approvalMode", &global.ApprovalMode),
+		globalStringSlice("approvalPatterns", &global.ApprovalPatterns),
+		globalStringSlice("approvalExemptPatterns", &global.ApprovalExemptPatterns),
+		globalOptBool("sftpDedicatedConn", &global.SftpDedicatedConn),
+		globalOptBool("historyFromLog", &global.HistoryFromLog),
+		globalOptBool("utf8Sanitize", &global.Utf8Sanitize),
+		globalOptBool("scriptCleanup", &global.ScriptCleanup),
+		globalString("scriptInterpreter", &global.ScriptInterpreter),
+		globalString("lintMode", &global.LintMode),
+		globalOptBool("autoProbe", &global.AutoProbe),
+	}
+	for _, read := range readers {
+		if err := read(m); err != nil {
+			return err
 		}
-		global.AllowInsecureConfigPerms = b
-	}
-	if v, ok := m["httpToken"]; ok {
-		s, ok := v.(string)
-		if !ok {
-			return fmt.Errorf("%s.httpToken must be a string", GlobalConfigKey)
-		}
-		global.HTTPToken = s
-	}
-	if v, ok := m["approvalMode"]; ok {
-		s, ok := v.(string)
-		if !ok {
-			return fmt.Errorf("%s.approvalMode must be a string", GlobalConfigKey)
-		}
-		global.ApprovalMode = s
-	}
-	if v, ok := m["approvalPatterns"]; ok {
-		global.ApprovalPatterns = StringSlice(v)
-	}
-	if v, ok := m["approvalExemptPatterns"]; ok {
-		global.ApprovalExemptPatterns = StringSlice(v)
-	}
-	if v, ok := m["sftpDedicatedConn"]; ok {
-		b, err := ParseBool(v)
-		if err != nil {
-			return fmt.Errorf("%s.sftpDedicatedConn: %w", GlobalConfigKey, err)
-		}
-		global.SftpDedicatedConn = &b
-	}
-	if v, ok := m["historyFromLog"]; ok {
-		b, err := ParseBool(v)
-		if err != nil {
-			return fmt.Errorf("%s.historyFromLog: %w", GlobalConfigKey, err)
-		}
-		global.HistoryFromLog = &b
-	}
-	if v, ok := m["utf8Sanitize"]; ok {
-		b, err := ParseBool(v)
-		if err != nil {
-			return fmt.Errorf("%s.utf8Sanitize: %w", GlobalConfigKey, err)
-		}
-		global.Utf8Sanitize = &b
 	}
 	return nil
+}
+
+func globalBool(key string, dst *bool) func(map[string]any) error {
+	return func(m map[string]any) error {
+		v, ok := m[key]
+		if !ok {
+			return nil
+		}
+		b, err := ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("%s.%s: %w", GlobalConfigKey, key, err)
+		}
+		*dst = b
+		return nil
+	}
+}
+
+func globalOptBool(key string, dst **bool) func(map[string]any) error {
+	return func(m map[string]any) error {
+		v, ok := m[key]
+		if !ok {
+			return nil
+		}
+		b, err := ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("%s.%s: %w", GlobalConfigKey, key, err)
+		}
+		*dst = &b
+		return nil
+	}
+}
+
+func globalString(key string, dst *string) func(map[string]any) error {
+	return func(m map[string]any) error {
+		v, ok := m[key]
+		if !ok {
+			return nil
+		}
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("%s.%s must be a string", GlobalConfigKey, key)
+		}
+		*dst = s
+		return nil
+	}
+}
+
+func globalStringSlice(key string, dst *[]string) func(map[string]any) error {
+	return func(m map[string]any) error {
+		if v, ok := m[key]; ok {
+			*dst = StringSlice(v)
+		}
+		return nil
+	}
 }
 
 // parseSSHParam parses a single --ssh value: JSON or legacy key=value pairs.
@@ -542,6 +589,8 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 		CommandTemplate:        str(m["commandTemplate"]),
 		CommandLogDir:          expandEnvVars(str(m["commandLogDir"])),
 		OutputSpillDir:         expandEnvVars(str(m["outputSpillDir"])),
+		LintMode:               str(m["lintMode"]),
+		ScriptInterpreter:      str(m["scriptInterpreter"]),
 		ApprovalMode:           str(m["approvalMode"]),
 		ApprovalPatterns:       StringSlice(m["approvalPatterns"]),
 		ApprovalExemptPatterns: StringSlice(m["approvalExemptPatterns"]),
@@ -560,6 +609,20 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 			return nil, err
 		}
 		conf.TryKeyboard = b
+	}
+	if v, ok := m["scriptCleanup"]; ok {
+		b, err := ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("scriptCleanup: %w", err)
+		}
+		conf.ScriptCleanup = &b
+	}
+	if v, ok := m["autoProbe"]; ok {
+		b, err := ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("autoProbe: %w", err)
+		}
+		conf.AutoProbe = &b
 	}
 	if v, ok := m["commandLogOnlySuccess"]; ok {
 		b, err := ParseBool(v)

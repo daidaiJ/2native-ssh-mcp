@@ -249,7 +249,7 @@ func buildShellScript(commandID, cmdString, directory, commandTemplate string) s
 	beginMarker := "__MCP_BEGIN__" + commandID + "__"
 	endMarker := "__MCP_END__" + commandID + "__RC__"
 
-	body := cmdString
+	var body string
 	if directory != "" {
 		body = "cd -- " + shellQuote(directory) + " && { " + cmdString + "; }"
 	} else {

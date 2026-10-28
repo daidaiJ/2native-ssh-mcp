@@ -46,6 +46,10 @@ type SessionOpenOptions struct {
 	// Approval is the destructive-command gate outcome for the audit record
 	// of the detached command ("" means the gate did not need to ask).
 	Approval string
+	// AuditCommand is the readable equivalent of CmdString, used for the
+	// whitelist/blacklist check and the audit record when the executed text
+	// is a machine-generated rendering (argv mode, staged scriptFile).
+	AuditCommand string
 }
 
 // SessionOutput holds polled background session output.
@@ -94,7 +98,7 @@ func (m *Manager) OpenSessionWithOptions(ctx context.Context, sessionName, conne
 			fmt.Sprintf("session %q already exists (finished); close it first or read logPath=%s", sessionName, logPath), false)
 	}
 	m.mu.Unlock()
-	return m.startBackgroundCommand(ctx, sessionName, opts.CmdString, opts.Directory, opts.Pty, opts.Approval)
+	return m.startBackgroundCommand(ctx, sessionName, opts.CmdString, opts.Directory, opts.Pty, opts.Approval, opts.AuditCommand)
 }
 
 // openOrReuseSession is the core of OpenSession without background start.
@@ -173,7 +177,7 @@ func (m *Manager) openOrReuseSession(ctx context.Context, sessionName, connectio
 // channel: a fresh no-PTY exec runs a starter that setsid's the job into a
 // new session with stdio redirected to a remote log, then exits. The job
 // survives connection drops; read/stop re-attach via fresh exec channels.
-func (m *Manager) startBackgroundCommand(ctx context.Context, sessionName, cmdString, directory string, pty bool, approval string) (*SessionInfo, error) {
+func (m *Manager) startBackgroundCommand(ctx context.Context, sessionName, cmdString, directory string, pty bool, approval, auditCommand string) (*SessionInfo, error) {
 	m.mu.Lock()
 	ns, ok := m.sessions[sessionName]
 	m.mu.Unlock()
@@ -184,7 +188,8 @@ func (m *Manager) startBackgroundCommand(ctx context.Context, sessionName, cmdSt
 	m.beginOp(ns.connectionKey)
 	defer m.endOp(ns.connectionKey)
 
-	if err := m.validateCommand(cmdString, ns.connectionKey); err != nil {
+	auditText := auditTextFor(cmdString, auditCommand)
+	if err := m.validateCommand(auditText, ns.connectionKey); err != nil {
 		return nil, err
 	}
 
@@ -224,7 +229,7 @@ func (m *Manager) startBackgroundCommand(ctx context.Context, sessionName, cmdSt
 	ns.resetIdleTimer(m)
 	m.recordAudit(ns.connectionKey, AuditRecord{
 		Tool:     "execute-command",
-		Command:  "[background] " + cmdString,
+		Command:  "[background] " + auditText,
 		Session:  sessionName,
 		Approval: approval,
 		Success:  true,

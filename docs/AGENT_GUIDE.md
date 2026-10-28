@@ -11,14 +11,20 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 ### execute-command
 | Param | Type | Req | Notes |
 |---|---|---|---|
-| `cmdString` | string | ✅ | Command |
+| `cmdString` | string | ✅\* | shell 命令；argv 模式下是程序本身。`cmdString` 与 `scriptFile` 至少给一个 |
+| `args` | string[] | | argv 模式：每个参数由服务端逐字引用后交给程序，不经 shell 解析（空格/引号/`$`/反斜杠/`*` 原样送达）；与 `scriptFile` 互斥 |
+| `scriptFile` | string | | 本地脚本：读取后经 SFTP 暂存到远端 `/tmp` 再执行（有 shebang 直接运行，否则用 `scriptInterpreter`，默认 `sh`）；与 `cmdString`/`args` 互斥 |
+| `scriptCleanup` | boolean | | 执行完删除暂存的脚本（默认取连接的 `scriptCleanup`，再默认 true；被超时/输出上限打断时可能残留） |
+| `lintMode` | string | | 下发前的结构检查：`off` / `warn`（默认，报告且照常执行）/ `strict`（error 级 finding 直接拒绝，返回 `COMMAND_LINT_FAILED`）；不适用于 `args`/`scriptFile` |
 | `directory` | string | | Working dir (`cd -- '<dir>' && ...`) |
 | `connectionName` | string | | Name or alias from list-servers；**必填**，除非配置了名为 `default` 的连接 |
 | `timeout` | number | | ms; overrides `commandTimeoutMs` (default 30000) |
 | `keepAlive` | boolean | | Keep connection after command (default **true**) |
 | `keepAliveDuration` | number | | ms; idle TTL after command (default **600000** = 10 min) |
 
-- Whitelist/blacklist regexes per connection; rejected → `COMMAND_VALIDATION_FAILED`.
+\* `cmdString` 不再是 schema 必填项：`scriptFile` 单独调用时它为空，两个都不给会被拒（`COMMAND_VALIDATION_FAILED`）。
+
+- Whitelist/blacklist regexes per connection; rejected → `COMMAND_VALIDATION_FAILED`（argv 模式按**原始参数**拼出的命令行匹配，不受引用影响）。
 - **Non-zero exit is a normal result, not an error** — read `exitCode` from the text (`[exit code] N`). Errors are reserved for validation/connect failures, `COMMAND_TIMEOUT`, `OUTPUT_LIMIT_EXCEEDED`, and `SSH_CONNECTION_LOST`.
 - **Successful results render as sectioned text by default** — real newlines: `stdout`, then `[stderr]`, `[exit code] N`, and a spill notice when output was persisted. Set `"resultFormat": "json"` on a connection to switch successful results to the structured CommandResult JSON; error paths always stay JSON.
 - **省略 `connectionName`（走 `default` 连接）时，响应会带上实际命中的连接摘要**：文本格式首行为 `connection=default host=<ip> port=<port> aliases=<...>`（无别名则省略），JSON 格式则多出 `connection`/`host`/`port`/`aliases` 字段；后台任务启动响应同样带这一行。显式传了 `connectionName` 的调用不重复此信息。
@@ -29,6 +35,21 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 - Connections **lazy**; after command kept alive per keepAlive policy, idle expiry closes. `keepAlive: false` closes immediately.
 - 每条执行的命令都会追加到连接的审计日志文件（防篡改哈希链 JSONL；`list-servers` 展示的 `recent=` 最近 3 条来自内存窗口，默认 20 条，且 `commandLogOnlySuccess: true` 时只显示成功命令）——**不含输出**。
 - **同批次的工具调用是并发执行的——没有顺序保证。** 有依赖关系的操作（上传 → 验证 → 重启）必须拆成多次顺序调用。详见 `skills/2native-ssh-mcp-agent` 的 "Operational traps" 一节（pgrep 自匹配、sudo 无 TTY、覆盖运行中的二进制）。
+
+#### Escaping：三种交出命令的方式
+
+引号写错是**静默**的——外层 shell 吃掉 `$1`，命令照样 exit 0、输出看着合理。别手写嵌套引号，选形态：
+
+| 形态 | 什么时候用 | 远端实际执行 | 审计记录里存的是 |
+|---|---|---|---|
+| `cmdString` | 短命令、参数干净 | 原样文本 | 原样文本 |
+| `cmdString` + `args` | 任一参数含空格/引号/`$`/`\`/`*`，或参数来自变量 | 服务端逐参数单引号引用 | 同一命令行的**可读等效**（只加必要的引号，如 `grep -rn 'foo bar' /etc`） |
+| `scriptFile` | 超过两三行的脚本 | `sh /tmp/.2native-ssh-mcp-<name>-<rand>.sh`（有 shebang 时直接跑该文件） | 脚本正文本身，首行是注释头：来源、暂存路径、解释器 |
+
+- 白/黑名单、破坏性分类器、审批弹窗、审计记录看的都是**可读等效命令**（argv 的原始参数、脚本正文），不是引用后的执行串，也没有任何 base64 包装——审计日志里能直接照抄重跑。
+- `scriptFile` 暂存到 `/tmp/.2native-ssh-mcp-<basename>-<rand>.sh`（模式 0700，`<target>.part` + rename 原子落盘）；`scriptCleanup: false` 留档排查，注意它是**远端**文件。
+- 后台模式同样适用：清理写成 `(exit $rc)` 子壳，保住脚本自身的退出码（裸 `exit` 会跳过后台 starter 的 `echo $? > exitfile`）。
+- lint 只跑 `cmdString`（shell 模式）：argv 模式已经逐参数引用，不存在 shell 语法；脚本的语法错误由远端解释器自己报（带行号）。
 
 ### file-transfer
 One tool, `action` param. Progress via `notifications/progress` when client sends `_meta.progressToken` (throttled ~100 ms, final 100% always).
@@ -52,6 +73,8 @@ One tool, `action` param. Progress via `notifications/progress` when client send
 
 ### list-servers
 无参数。返回**服务器**（元数据、状态、最近几条已记录命令）与**活动会话**。先调它来选 `connectionName` 或 `sessionName`——最近命令历史也有助于从上一个会话恢复上下文。**readOnly**。
+
+连接建立后（约一秒内）会多一段 `capabilities=base64,jq`：远端 `base64` / `jq` 的探测结果（探测命令是**可读的单行命令**，不做任何编码；`$global.autoProbe: false` 或连接级 `autoProbe: false` 会关掉探测并显示 `capabilities=not probed (autoProbe=false)`）。用途：需要搬运含特殊字符的 payload 或拼 JSON 时，先看这台机器支持哪个，而不是失败一次再试。
 
 ### session
 One tool, `action` param. Exec-mode connections only.
@@ -126,6 +149,10 @@ session(action=close, sessionName=deploy)
     "outputSpillThreshold": 8192,          // full output at/above this goes to a local file; -1 disables
     "outputSpillDir": ".ssh-mcp-out",      // local spill directory (~ is expanded)
     "stripAnsi": true,
+    "scriptCleanup": true,                 // scriptFile 跑完删除远端暂存脚本（被打断时可能残留）
+    "scriptInterpreter": "sh",             // 无 shebang 的暂存脚本用哪个解释器
+    "lintMode": "warn",                    // off / warn(默认) / strict：命令下发前的结构检查
+    "autoProbe": true,                     // 连接建立后探一次远端 base64/jq（list-servers 展示）；远端会记录每条命令的连接可关掉
     "redactSecrets": false,                // opt-in: masks password=/token=/Bearer/PEM (~200ms per MiB of secret-bearing output)
     "commandTemplate": "sudo -n <quotedCommand>",
     "pty": false, "tryKeyboard": false

@@ -158,6 +158,7 @@ Admin API (`/__admin/*`) does not use this token and still restricts access to l
 |---|---|---|
 | `allowInsecureConfigPerms` | false | Skip permission checks for this configuration file (equivalent to `--allow-insecure-config-perms` on the command line, but declared inside the file; not recommended, for development only) |
 | `httpToken` | empty | Bearer token for `/mcp` (lower priority than `--http-token` and `SSH_MCP_HTTP_TOKEN`; supports `${VAR}` references) |
+| `scriptCleanup` / `scriptInterpreter` / `lintMode` / `autoProbe` | as above | Global defaults for the four per-connection settings above; a connection-level value wins |
 
 ## Connecting to local WSL
 
@@ -329,6 +330,10 @@ Server options:
 | `outputCompressLight` / `outputCompressThreshold` | true / 4096 | Compress large output at head/tail and threshold |
 | `outputSpillThreshold` / `outputSpillDir` | 8192 / `.ssh-mcp-out` | Spill output to a local directory at this threshold (`-1` disables) |
 | `stripAnsi` | true | Strip ANSI escape sequences from output (false preserves colors/progress bars) |
+| `scriptCleanup` | true | Remove the remote `/tmp` file that an `execute-command` `scriptFile` was staged to, once it finishes (a run interrupted by timeout or the output limit may leave it behind); overridable per call with `scriptCleanup` |
+| `scriptInterpreter` | `sh` | Interpreter for a staged script that has no shebang (a script with a shebang runs directly and ignores this) |
+| `lintMode` | `warn` | Structural check before a command is sent: `off` skips it / `warn` reports and still runs / `strict` refuses error-class findings (`COMMAND_LINT_FAILED`); applies to `cmdString` only, overridable per call with `lintMode` |
+| `autoProbe` | true | Probe the remote `base64`/`jq` once after connecting; the result shows as the `capabilities=` segment in `list-servers`. The probe is a plain one-line command, so turn it off on connections whose remote side records every command (bastion, session recording) |
 | `commandTemplate` | empty | Command wrapper template (`<command>` / `<quotedCommand>`) |
 | `pty` | false | Allocate a pseudo-terminal in exec mode (off by default; enable for interactive commands) |
 | `redactSecrets` | false | Output redaction (password/token/Bearer/PEM); enabling has scan cost |

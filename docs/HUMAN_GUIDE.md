@@ -158,6 +158,7 @@ Admin API（`/__admin/*`）不用这个 token，仍只限本机访问（loopback
 |---|---|---|
 | `allowInsecureConfigPerms` | false | 跳过本配置文件的权限检查（等价于命令行 `--allow-insecure-config-perms`，但声明在文件内部；不推荐，仅开发用） |
 | `httpToken` | 空 | `/mcp` 的 Bearer token（优先级低于 `--http-token` 和 `SSH_MCP_HTTP_TOKEN`；支持 `${VAR}` 引用） |
+| `scriptCleanup` / `scriptInterpreter` / `lintMode` / `autoProbe` | 同上表 | 这四个按连接配置项的全局默认值；连接级设置优先 |
 
 ## 连接本地 WSL
 
@@ -330,6 +331,10 @@ Server options:
 | `outputCompressLight` / `outputCompressThreshold` | true / 4096 | 大输出头尾压缩与阈值 |
 | `outputSpillThreshold` / `outputSpillDir` | 8192 / `.ssh-mcp-out` | 输出达到阈值落盘到本地目录（`-1` 关闭） |
 | `stripAnsi` | true | 输出剥离 ANSI 转义序列（false 保留颜色/进度条） |
+| `scriptCleanup` | true | `execute-command` 的 `scriptFile` 暂存脚本跑完后删除远端 `/tmp` 文件（被超时/输出上限打断时可能残留）；单次调用可用 `scriptCleanup` 覆盖 |
+| `scriptInterpreter` | `sh` | 无 shebang 的暂存脚本用哪个解释器（有 shebang 的脚本直接执行，忽略此项） |
+| `lintMode` | `warn` | 命令下发前的结构检查：`off` 不跑 / `warn` 报告并照常执行 / `strict` 拒绝 error 级问题（`COMMAND_LINT_FAILED`）；只作用于 `cmdString`，单次调用可用 `lintMode` 覆盖 |
+| `autoProbe` | true | 连接建立后探一次远端 `base64`/`jq` 能力，结果在 `list-servers` 的 `capabilities=` 段展示；探测命令是明文单行命令，远端会记录每条命令（堡垒机/会话录制）时建议关掉 |
 | `commandTemplate` | 空 | 命令包装模板（`<command>` / `<quotedCommand>`） |
 | `pty` | false | exec 模式分配伪终端（默认关闭，交互命令按需开启） |
 | `redactSecrets` | false | 输出脱敏（password/token/Bearer/PEM），开启有扫描开销 |

@@ -62,6 +62,14 @@ type CommandResult struct {
 	Host       string   `json:"host,omitempty"`
 	Port       int      `json:"port,omitempty"`
 	Aliases    []string `json:"aliases,omitempty"`
+	// Lint holds the pre-execution lint findings (lintMode warn) that did not
+	// block the command. Under lintMode strict an error-class finding returns
+	// COMMAND_LINT_FAILED instead, so a result never carries one.
+	Lint []string `json:"lint,omitempty"`
+	// ScriptFile is set when the command came from a scriptFile argument: the
+	// remote temp path the local script was staged to, the interpreter that
+	// ran it and whether the temp file was removed afterwards.
+	ScriptFile *ScriptRun `json:"scriptFile,omitempty"`
 }
 
 // Text renders the human-readable body for a normal (ok/exited) result.
@@ -83,6 +91,12 @@ func (r CommandResult) Text() string {
 		sections = append(sections, fmt.Sprintf(
 			"[output] full output written to %s (%d bytes, %d lines) — use local Read/Grep on this file; do not re-run the command or cat it remotely",
 			r.OutputFile, r.OutputFileBytes, r.OutputFileLines))
+	}
+	if len(r.Lint) > 0 {
+		sections = append(sections, "[lint]\n"+strings.Join(r.Lint, "\n"))
+	}
+	if r.ScriptFile != nil {
+		sections = append(sections, r.ScriptFile.Summary())
 	}
 	return strings.Join(sections, "\n")
 }

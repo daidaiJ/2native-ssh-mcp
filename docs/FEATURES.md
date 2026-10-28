@@ -63,6 +63,23 @@
 
 远程输出**从不假设是 UTF-8**（GBK/Big5/latin-1 服务器很常见）。输出先经有效性检查：无效序列逐字节转成 `\xNN` 转义——JSON 传输安全、原始字节可恢复，结果 JSON 带 `nonUtf8: true` 标记。需要可读文本时在远程 `iconv -f gbk` 转换；设 `false` 则原样返回原始字节（由调用方承担 JSON 兼容风险）。
 
+### 4. 命令形态与可审计等效命令 — `args` / `scriptFile` / `lintMode` / `scriptCleanup`
+
+**问题**：agent 手写嵌套引号时，错误是静默的——外层 shell 吃掉内层 `$1`，命令照样退出 0、输出看着合理（Ubuntu 24.04 实测）。事后审计也读不懂：整条命令 base64 包装后，日志里只剩一坨不可读的字符串。
+
+**机制**：`execute-command` 提供三种交出命令的形态，并让**审计记录始终保存可读等效命令**：
+
+| 形态 | 远端实际执行 | 审计记录 |
+|---|---|---|
+| `cmdString` | 原样文本 | 原样文本 |
+| `cmdString` + `args` | 服务端逐参数单引号引用后执行（不经 shell 解析） | 只加必要引号的同一命令行（如 `grep -rn 'foo bar' /etc`） |
+| `scriptFile` | SFTP 暂存到 `/tmp/.2native-ssh-mcp-<name>-<rand>.sh`（0700、`.part`+rename）后执行 | 脚本正文本身（首行注释标注来源、暂存路径、解释器） |
+
+- 白/黑名单、破坏性分类器、审批弹窗、审计哈希链记录的都是可读等效命令；argv 模式按**原始参数**匹配策略，引用不会掩盖命中。
+- `lintMode`（`off`/`warn` 默认/`strict`）在下发前做结构检查：只抓 shell 解析器看不见的那类问题（双引号脚本里的 `$1` 会被外层吃掉、未闭合引号/反引号/heredoc），不误报（`bash -n` 才是权威解析器，lint 不重复它）。`strict` 对 error 级 finding 返回 `COMMAND_LINT_FAILED`；argv/scriptFile 形态不适用（前者已逐参数引用，后者由远端解释器自己报语法错误）。
+- `scriptCleanup`（默认开）执行完删除暂存脚本；清理写成 `(exit $rc)` 子壳，**不破坏退出码**（裸 `exit` 会跳过后台 starter 的退出码落盘）。超时/输出上限打断时清理不执行，属已知取舍。
+- 连接建立后探一次远端 `base64`/`jq` 能力（`list-servers` 的 `capabilities=`），探测命令是明文单行命令；`autoProbe: false` 关闭——远端会记录每条命令（堡垒机、会话录制）时用得上。
+
 ## 已知限制
 
 - Go 的 `x/crypto/ssh` 不支持 SSH zlib 压缩（[golang/go#22795](https://github.com/golang/go/issues/22795)）；高延迟/低带宽场景建议依赖 TCP keepalive 与 SFTP 并发传输（`sftpConcurrency`）缓解

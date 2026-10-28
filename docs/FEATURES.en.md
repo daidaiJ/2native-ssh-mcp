@@ -63,6 +63,23 @@ Config: `"historyFromLog": true` (per connection or `$global`).
 
 Remote output is **never assumed to be UTF-8** (GBK/Big5/latin-1 servers are common). Output passes a validity check first: invalid sequences become per-byte `\xNN` escapes — safe for JSON transport, original bytes recoverable — and the result JSON carries `nonUtf8: true`. For readable text, convert remotely with `iconv -f gbk`; set `false` to get raw bytes back (caller accepts the JSON-compatibility risk).
 
+### 4. Command forms and the auditable equivalent — `args` / `scriptFile` / `lintMode` / `scriptCleanup`
+
+**Problem**: when an agent hand-writes nested quoting, the mistake is silent — the outer shell eats the inner `$1`, the command still exits 0 with plausible output (measured on Ubuntu 24.04). The audit trail is unreadable too: wrap the command in base64 and the log holds an opaque blob.
+
+**Mechanism**: `execute-command` accepts three command forms, and the **audit record always keeps a readable equivalent**:
+
+| Form | What runs remotely | Audit record |
+|---|---|---|
+| `cmdString` | the text as written | the text as written |
+| `cmdString` + `args` | each argument single-quoted by the server, with no shell parsing | the same command line with only the quoting a shell needs (e.g. `grep -rn 'foo bar' /etc`) |
+| `scriptFile` | staged to `/tmp/.2native-ssh-mcp-<name>-<rand>.sh` over SFTP (0700, `.part`+rename), then run | the script text itself, headed by a comment naming the source, the staged path and the interpreter |
+
+- The whitelist/blacklist, the destructive classifier, the approval prompt and the hash-chained audit record all see the readable equivalent; argv mode matches policy against the **original** arguments, so quoting cannot hide a hit.
+- `lintMode` (`off` / `warn` default / `strict`) checks structure before the command is sent, and covers only what a shell parser cannot see: a `$1` inside a double-quoted script that the outer shell swallows, unterminated quotes/backticks/heredocs. It is deliberately quiet — `bash -n` is the authoritative parser and the lint does not duplicate it. `strict` returns `COMMAND_LINT_FAILED` for error-class findings; `args`/`scriptFile` are not linted (the former is already quoted per argument, the latter is parsed by the remote interpreter itself).
+- `scriptCleanup` (default on) removes the staged script once it finishes; the cleanup is written as `(exit $rc)` in a subshell so it **cannot lose the exit code** (a bare `exit` would skip the background starter's exit-code write). A run interrupted by timeout or the output limit skips the cleanup — a known trade-off.
+- Once connected, the remote `base64`/`jq` capabilities are probed once (the `capabilities=` segment in `list-servers`). The probe is a plain one-line command; `autoProbe: false` turns it off for connections whose remote side records every command (bastion, session recording).
+
 ## Known Limitations
 
 - Go's `x/crypto/ssh` does not support SSH zlib compression ([golang/go#22795](https://github.com/golang/go/issues/22795)); for high-latency/low-bandwidth scenarios, rely on TCP keepalive and SFTP concurrent transfers (`sftpConcurrency`) to mitigate
