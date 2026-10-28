@@ -64,8 +64,10 @@ func TestTransferResultJSONDefaultConnectionSummary(t *testing.T) {
 	res := &manager.TransferResult{
 		Action: "upload", Bytes: 10,
 		Elapsed: 24 * time.Millisecond, SpeedBps: 400,
-		Connection: "default", Host: "203.0.113.5", Port: 22,
-		Aliases: []string{"web"},
+		ConnectionIdentity: manager.ConnectionIdentity{
+			Connection: "default", Host: "203.0.113.5", Port: 22,
+			Aliases: []string{"web"},
+		},
 	}
 	text := transferResultJSON(res).Content[0].(mcp.TextContent).Text
 	want := "connection=default host=203.0.113.5 port=22 aliases=web"

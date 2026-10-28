@@ -51,6 +51,7 @@ func registerFileTransfer(s *server.MCPServer, m *manager.Manager) {
 		}
 		sender := newProgressSender(s, server.ClientSessionFromContext(ctx), token)
 
+		id := lookupDefaultRoute(m.ConfigFor("", connectionName), connectionName, "")
 		result, err := m.TransferFile(ctx, action, localPath, remotePath, connectionName, force, sender.send)
 
 		// One audit record per transfer call (per call, not per file; the
@@ -65,23 +66,14 @@ func registerFileTransfer(s *server.MCPServer, m *manager.Manager) {
 		m.RecordFileTransfer(connectionName, action, remotePath, auditExit, auditOK, auditCode)
 
 		if err != nil {
-			return errorResult(err), nil
+			return errorResultFor(err, manager.CommandResult{ConnectionIdentity: id}), nil
 		}
 
 		// Always report the final 100% progress.
 		if token != nil && !result.Skipped {
 			sender.send(result.Bytes+result.ResumedFrom, result.Bytes+result.ResumedFrom)
 		}
-		if connectionName == "" {
-			// Default-routed call: stamp which connection actually served it
-			// so the agent can tell which host received the files.
-			if cfg := m.ConfigFor("", connectionName); cfg != nil {
-				result.Connection = "default"
-				result.Host = cfg.Host
-				result.Port = cfg.Port
-				result.Aliases = cfg.Aliases
-			}
-		}
+		result.ConnectionIdentity = id
 		return transferResultJSON(result), nil
 	})
 }

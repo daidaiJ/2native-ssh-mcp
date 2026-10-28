@@ -55,13 +55,10 @@ type CommandResult struct {
 	// HistorySupplemented counts command-log entries appended to sparse
 	// remote `history` output (historyFromLog, default off).
 	HistorySupplemented int `json:"historySupplemented,omitempty"`
-	// Connection/Host/Port/Aliases are populated only when the call omitted
+	// ConnectionIdentity is populated only when the call omitted
 	// connectionName and the default connection served it, so the agent can
 	// see which host actually ran the command.
-	Connection string   `json:"connection,omitempty"`
-	Host       string   `json:"host,omitempty"`
-	Port       int      `json:"port,omitempty"`
-	Aliases    []string `json:"aliases,omitempty"`
+	ConnectionIdentity
 	// Lint holds the pre-execution lint findings (lintMode warn) that did not
 	// block the command. Under lintMode strict an error-class finding returns
 	// COMMAND_LINT_FAILED instead, so a result never carries one.
@@ -70,6 +67,15 @@ type CommandResult struct {
 	// remote temp path the local script was staged to, the interpreter that
 	// ran it and whether the temp file was removed afterwards.
 	ScriptFile *ScriptRun `json:"scriptFile,omitempty"`
+}
+
+// ConnectionIdentity is the host a default-routed call actually reached.
+// Empty on calls that named a connection or session.
+type ConnectionIdentity struct {
+	Connection string   `json:"connection,omitempty"`
+	Host       string   `json:"host,omitempty"`
+	Port       int      `json:"port,omitzero"`
+	Aliases    []string `json:"aliases,omitempty"`
 }
 
 // Text renders the human-readable body for a normal (ok/exited) result.
@@ -143,12 +149,12 @@ func buildCommandResult(stdout, stderr string, exitCode int, status string, cfg 
 		}
 	}
 	return CommandResult{
-		Stdout:              FinalizeCommandOutput(stdout, compressOpts(cfg)),
-		Stderr:              FinalizeCommandOutput(stderr, compressOpts(cfg)),
-		ExitCode:            exitCode,
-		Status:              status,
-		Partial:             !replaySafe,
-		ReplaySafe:          replaySafe,
-		NonUTF8:             nonUtf8,
+		Stdout:     FinalizeCommandOutput(stdout, compressOpts(cfg)),
+		Stderr:     FinalizeCommandOutput(stderr, compressOpts(cfg)),
+		ExitCode:   exitCode,
+		Status:     status,
+		Partial:    !replaySafe,
+		ReplaySafe: replaySafe,
+		NonUTF8:    nonUtf8,
 	}
 }

@@ -66,10 +66,12 @@ func TestCommandResultDefaultConnectionSummary(t *testing.T) {
 		ExitCode:   0,
 		Status:     manager.StatusOK,
 		ReplaySafe: true,
-		Connection: "default",
-		Host:       cfg.Host,
-		Port:       cfg.Port,
-		Aliases:    cfg.Aliases,
+		ConnectionIdentity: manager.ConnectionIdentity{
+			Connection: "default",
+			Host:       cfg.Host,
+			Port:       cfg.Port,
+			Aliases:    cfg.Aliases,
+		},
 	}
 
 	text := resultText(t, commandResult(res, nil))
@@ -101,6 +103,33 @@ func TestConnectionSummary(t *testing.T) {
 	}
 }
 
+func TestLookupDefaultRoute(t *testing.T) {
+	cfg := &config.SSHConfig{Name: "default", Host: "203.0.113.5", Port: 22, Aliases: []string{"web"}}
+	id := lookupDefaultRoute(cfg, "", "")
+	if id.Connection != "default" || id.Host != "203.0.113.5" || id.Port != 22 {
+		t.Fatalf("omitted names must stamp the default route: %+v", id)
+	}
+	if len(id.Aliases) != 1 || id.Aliases[0] != "web" {
+		t.Fatalf("aliases: %v", id.Aliases)
+	}
+	id.Aliases[0] = "mutated"
+	if cfg.Aliases[0] != "web" {
+		t.Fatal("stamped aliases must not share the config slice")
+	}
+	if lookupDefaultRoute(cfg, "prod", "").Connection != "" {
+		t.Fatal("explicit connectionName must not stamp")
+	}
+	if lookupDefaultRoute(cfg, "", "deploy").Connection != "" {
+		t.Fatal("named session must not stamp — connectionName is ignored and the session already identifies the host")
+	}
+	if lookupDefaultRoute(nil, "", "").Connection != "" {
+		t.Fatal("nil config must not stamp")
+	}
+	if got := lookupDefaultRoute(&config.SSHConfig{Host: "h", Port: 22}, "", ""); got.Connection != "default" {
+		t.Fatalf("empty cfg.Name must still report connection=default, got %q", got.Connection)
+	}
+}
+
 // Error results from a default-routed call must carry the connection identity
 // so a retrying agent knows which host it was talking to.
 func TestErrorResultForCarriesConnectionIdentity(t *testing.T) {
@@ -108,9 +137,11 @@ func TestErrorResultForCarriesConnectionIdentity(t *testing.T) {
 		Status:     manager.StatusConnectionLost,
 		Partial:    true,
 		ReplaySafe: false,
-		Connection: "default",
-		Host:       "203.0.113.5",
-		Port:       22,
+		ConnectionIdentity: manager.ConnectionIdentity{
+			Connection: "default",
+			Host:       "203.0.113.5",
+			Port:       22,
+		},
 	}
 	out := errorResultFor(manager.NewToolError(manager.CodeSSHConnectionLost, "lost", true), res)
 	text := out.Content[0].(mcp.TextContent).Text
@@ -118,5 +149,25 @@ func TestErrorResultForCarriesConnectionIdentity(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("error result missing %s:\n%s", want, text)
 		}
+	}
+}
+
+// File-transfer and background-start failures have no CommandResult status;
+// identity must still ride on the error JSON.
+func TestErrorResultForIdentityWithoutStatus(t *testing.T) {
+	id := lookupDefaultRoute(&config.SSHConfig{Name: "default", Host: "203.0.113.5", Port: 22}, "", "")
+	text := resultText(t, errorResultFor(manager.NewToolError(manager.CodeSFTPError, "denied", false), manager.CommandResult{ConnectionIdentity: id}))
+	for _, want := range []string{`"connection": "default"`, `"host": "203.0.113.5"`, `"port": 22`, `"code": "SFTP_ERROR"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %s:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, `"status"`) {
+		t.Fatalf("identity-only error must not invent a command status:\n%s", text)
+	}
+
+	plain := resultText(t, errorResultFor(manager.NewToolError(manager.CodeSFTPError, "denied", false), manager.CommandResult{}))
+	if strings.Contains(plain, `"connection"`) {
+		t.Fatalf("zero identity must not add connection fields:\n%s", plain)
 	}
 }

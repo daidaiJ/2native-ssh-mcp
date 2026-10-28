@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,13 +28,13 @@ type SessionInfo struct {
 	// (and humans reading transcripts) never have to guess which host a
 	// session — especially one on the default connection — actually reaches.
 	Host        string   `json:"host,omitempty"`
-	Port        int      `json:"port,omitempty"`
+	Port        int      `json:"port,omitzero"`
 	Aliases     []string `json:"aliases,omitempty"`
 	CWD         string   `json:"cwd,omitempty"`
 	IdleSeconds int64    `json:"idleSeconds"`
-	Background     bool   `json:"background,omitempty"`
-	Running        bool   `json:"running,omitempty"`
-	BGCommand      string `json:"bgCommand,omitempty"`
+	Background  bool     `json:"background,omitempty"`
+	Running     bool     `json:"running,omitempty"`
+	BGCommand   string   `json:"bgCommand,omitempty"`
 	// LogPath is the remote log file of a background job; it survives the
 	// session so output can be re-read after a process restart.
 	LogPath string `json:"logPath,omitempty"`
@@ -272,7 +273,7 @@ func (m *Manager) sessionInfoLocked(ns *namedSession) *SessionInfo {
 	if cfg, ok := m.configs[ns.connectionKey]; ok {
 		info.Host = cfg.Host
 		info.Port = cfg.Port
-		info.Aliases = cfg.Aliases
+		info.Aliases = slices.Clone(cfg.Aliases)
 	}
 	return info
 }

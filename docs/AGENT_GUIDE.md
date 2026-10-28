@@ -27,7 +27,7 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 - Whitelist/blacklist regexes per connection; rejected → `COMMAND_VALIDATION_FAILED`（argv 模式按**原始参数**拼出的命令行匹配，不受引用影响）。
 - **Non-zero exit is a normal result, not an error** — read `exitCode` from the text (`[exit code] N`). Errors are reserved for validation/connect failures, `COMMAND_TIMEOUT`, `OUTPUT_LIMIT_EXCEEDED`, and `SSH_CONNECTION_LOST`.
 - **Successful results render as sectioned text by default** — real newlines: `stdout`, then `[stderr]`, `[exit code] N`, and a spill notice when output was persisted. Set `"resultFormat": "json"` on a connection to switch successful results to the structured CommandResult JSON; error paths always stay JSON.
-- **省略 `connectionName`（走 `default` 连接）时，响应会带上实际命中的连接摘要**：文本格式首行为 `connection=default host=<ip> port=<port> aliases=<...>`（无别名则省略），JSON 格式则多出 `connection`/`host`/`port`/`aliases` 字段；后台任务启动响应同样带这一行。显式传了 `connectionName` 的调用不重复此信息。
+- **省略 `connectionName`（走 `default` 连接）时，响应会带上实际命中的连接摘要**：文本格式首行为 `connection=default host=<ip> port=<port> aliases=<...>`（无别名则省略），JSON 格式则多出 `connection`/`host`/`port`/`aliases` 字段；后台任务启动响应同样带这一行，**失败结果**（后台启动失败、file-transfer 失败、参数校验失败）也带这些字段。传了 `connectionName` 或 `sessionName` 的调用不重复此信息（`sessionName` 生效时 `connectionName` 被忽略，会话自身已指明主机）。
 - `SSH_CONNECTION_LOST` (retriable=false): the connection dropped mid-command; the remote process may still be running. **Do not replay blindly** — the error JSON carries partial `stdout`/`stderr` and `replaySafe: false`.
 - Output cap `maxOutputBytes` (default 10 MB, **stdout+stderr combined**) → `OUTPUT_LIMIT_EXCEEDED`; timeout → `COMMAND_TIMEOUT`. For timeout/lost/limit the error message stays short; partial output is in the same result's `stdout`/`stderr` fields.
 - **Light compress** (default): outputs ≥ `outputCompressThreshold` (4096 B) get head/tail lines + dedup; disable with `"outputCompressLight": false`. See `skills/2native-ssh-mcp-agent` for agent-side habits.
@@ -67,7 +67,7 @@ One tool, `action` param. Progress via `notifications/progress` when client send
 - Concurrent SFTP (16×32 KB default; `sftpConcurrency`/`sftpChunkSize` per connection).
 - `sftpDedicatedConn: true`（每连接或 `$global`）：SFTP 单开一条 SSH 连接。sshd 前有影子容器/会话级 overlay 的网关会丢弃复用 shell 会话写入的文件，传输后文件消失时开这个；连接懒创建、空闲 5 分钟回收、复用前探活。
 - 重接会话恢复上下文时优先跑 `history`：连接开了 `historyFromLog` 的话，远程历史过少（<10 条，exec 模式通常为 0）会自动从 MCP 命令日志补齐（尾部去重，`historySupplemented` 字段计数）。
-- **省略 `connectionName`（走 `default` 连接）时**，成功响应与 execute-command 相同：文本首行为 `connection=default host=<ip> port=<port> aliases=<...>`，JSON 里多 `connection`/`host`/`port`/`aliases` 字段。
+- **省略 `connectionName`（走 `default` 连接）时**，成功响应与 execute-command 相同：文本首行为 `connection=default host=<ip> port=<port> aliases=<...>`，JSON 里多 `connection`/`host`/`port`/`aliases` 字段；传输失败的结果也带这些字段。
 - 输出里的 `\xNN` 转义和 `nonUtf8: true` 标记表示远程输出不是有效 UTF-8（如 GBK）；需要可读文本时远程 `iconv -f gbk` 转换。
 - Local path outside the `localPathMode` scope → `LOCAL_PATH_NOT_ALLOWED` with a scope message ("not within the allowed local paths for this connection"); a `..` escape is reported separately as "Path traversal rejected".
 

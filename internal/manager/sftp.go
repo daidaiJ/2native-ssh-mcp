@@ -79,13 +79,10 @@ type TransferResult struct {
 	// per-file errors as "<rel path>: <error>".
 	Files  int      `json:"files,omitempty"`
 	Failed []string `json:"failed,omitempty"`
-	// Connection/Host/Port/Aliases are populated only when the call omitted
+	// ConnectionIdentity is populated only when the call omitted
 	// connectionName and the default connection served it, so the agent can
 	// see which host actually received the files.
-	Connection string   `json:"connection,omitempty"`
-	Host       string   `json:"host,omitempty"`
-	Port       int      `json:"port,omitempty"`
-	Aliases    []string `json:"aliases,omitempty"`
+	ConnectionIdentity
 }
 
 // ProgressFunc reports transfer progress. total is -1 when the size is

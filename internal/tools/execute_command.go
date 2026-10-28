@@ -1,10 +1,12 @@
 package tools
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -46,9 +48,14 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 		connectionName, _ := args["connectionName"].(string)
 		background, _ := args["background"].(bool)
 
+		// Resolved before anything can fail: a request rejected during
+		// validation still names the host it was aimed at, and the same
+		// identity rides on the result of a call that ran.
+		id := lookupDefaultRoute(m.ConfigFor(sessionName, connectionName), connectionName, sessionName)
+
 		req, err := resolveExecuteRequest(ctx, m, args, sessionName, connectionName)
 		if err != nil {
-			return errorResult(err), nil
+			return errorResultFor(err, manager.CommandResult{ConnectionIdentity: id}), nil
 		}
 
 		opts := manager.RunOptions{
@@ -85,7 +92,7 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 
 		if background {
 			bgPty, _ := args["pty"].(bool)
-			res, err := handleBackgroundCommand(ctx, m, req, directory, sessionName, connectionName, bgPty, approval)
+			res, err := handleBackgroundCommand(ctx, m, req, id, directory, sessionName, connectionName, bgPty, approval)
 			return appendNote(res, note), err
 		}
 
@@ -99,7 +106,7 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 			result.ScriptFile = req.scriptRun
 		}
 		cfg := m.ConfigFor(sessionName, connectionName)
-		stampDefaultConnection(cfg, sessionName, connectionName, &result)
+		result.ConnectionIdentity = id
 		if err != nil {
 			return appendNote(errorResultFor(err, result), note), nil
 		}
@@ -110,8 +117,9 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 // handleBackgroundCommand detaches a command via the named-session background
 // machinery and returns immediately: the agent gets a session name and remote
 // log path to poll with session action=read instead of burning a long
-// synchronous timeout.
-func handleBackgroundCommand(ctx context.Context, m *manager.Manager, req *executeRequest, directory, sessionName, connectionName string, pty bool, approval string) (*mcp.CallToolResult, error) {
+// synchronous timeout. id is the caller's default-route identity, resolved
+// before the throwaway session name below is generated.
+func handleBackgroundCommand(ctx context.Context, m *manager.Manager, req *executeRequest, id manager.ConnectionIdentity, directory, sessionName, connectionName string, pty bool, approval string) (*mcp.CallToolResult, error) {
 	if sessionName == "" {
 		sessionName = randomSessionName()
 	}
@@ -124,7 +132,7 @@ func handleBackgroundCommand(ctx context.Context, m *manager.Manager, req *execu
 		AuditCommand: req.auditCommand,
 	})
 	if err != nil {
-		return errorResult(err), nil
+		return errorResultFor(err, manager.CommandResult{ConnectionIdentity: id}), nil
 	}
 	raw, _ := marshalResultJSON(info)
 	text := fmt.Sprintf(
@@ -133,26 +141,26 @@ func handleBackgroundCommand(ctx context.Context, m *manager.Manager, req *execu
 	if req.scriptRun != nil {
 		text = req.scriptRun.Summary() + "\n" + text
 	}
-	if connectionName == "" {
-		// Default-routed call: surface which connection the job runs on.
-		if cfg := m.ConfigFor("", connectionName); cfg != nil {
-			text = connectionSummary("default", cfg.Host, cfg.Port, cfg.Aliases) + "\n\n" + text
-		}
+	if id.Connection != "" {
+		text = connectionSummary(id.Connection, id.Host, id.Port, id.Aliases) + "\n\n" + text
 	}
 	return mcp.NewToolResultText(text), nil
 }
 
-// stampDefaultConnection records which connection actually served a call that
-// omitted connectionName, on success and on error alike (a retrying agent must
-// know which host it was talking to).
-func stampDefaultConnection(cfg *config.SSHConfig, sessionName, connectionName string, result *manager.CommandResult) {
-	if cfg == nil || connectionName != "" || sessionName != "" {
-		return
+// lookupDefaultRoute returns the host a call reached because connectionName
+// was omitted (the configured "default" connection). The zero value means
+// the caller already named a connection or a session, and the identity
+// must not be restated.
+func lookupDefaultRoute(cfg *config.SSHConfig, connectionName, sessionName string) manager.ConnectionIdentity {
+	if connectionName != "" || sessionName != "" || cfg == nil {
+		return manager.ConnectionIdentity{}
 	}
-	result.Connection = "default"
-	result.Host = cfg.Host
-	result.Port = cfg.Port
-	result.Aliases = cfg.Aliases
+	return manager.ConnectionIdentity{
+		Connection: cmp.Or(cfg.Name, "default"),
+		Host:       cfg.Host,
+		Port:       cfg.Port,
+		Aliases:    slices.Clone(cfg.Aliases),
+	}
 }
 
 // connectionSummary renders a connection's host identity, e.g.
