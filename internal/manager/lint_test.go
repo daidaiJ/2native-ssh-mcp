@@ -38,6 +38,8 @@ func TestLintShellCorpus(t *testing.T) {
 		{"heredoc-data", "cat <<EOF\n$1 and \"quotes\"\nEOF", "", "", "unquoted heredoc body is data"},
 		{"heredoc-tabs", "cat <<-EOF\n\ttabbed\n\tEOF", "", "", "<<- strips leading tabs"},
 		{"heredoc-spaced-opener", "cat << EOF\nbash -c \"echo $1\"\nEOF", "", "", "spaced heredoc opener: the body is data"},
+{"heredoc-spaced-single-char", "cat << X\nbash -c \"echo $1\"\nX", "", "", "spaced opener with a one-char delimiter — the case the pre-fix build flagged"},
+{"heredoc-spaced-two-spaces", "cat <<  XY\nbash -c \"echo $1\"\nXY", "", "", "spaced opener where the skipped whitespace matches the delimiter length"},
 		{"trailing-backslash", `echo hi \`, "", "", "trailing backslash is literal, not an error (verified)"},
 		{"base64-wrapper", `echo 'ZWNobyBh' | base64 -d | bash`, "", "", "base64 wrapper"},
 		{"quote-dance", `bash -c 'echo "user=$USER" | awk '"'"'{print $1}'"'"''`, "", "", "nested shell, single-quoted"},
