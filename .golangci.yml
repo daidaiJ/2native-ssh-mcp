@@ -1,0 +1,82 @@
+# Complexity gate. Runs in CI on every push and PR (see .github/workflows/ci.yml)
+# and locally with: golangci-lint run ./...
+#
+# The thresholds are about structure, not style: a function that does not fit
+# on a screen, or branches too many ways to hold in your head, is where bugs
+# hide. Formatting is left to gofmt. complexity_test.go enforces the same
+# limits as part of `go test ./...`, so the gate holds even without this tool.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gocyclo
+    - gocognit
+    - funlen
+  settings:
+    gocyclo:
+      min-complexity: 20
+    gocognit:
+      min-complexity: 25
+    funlen:
+      lines: 100
+      statements: 60
+      ignore-comments: true
+  exclusions:
+    generated: lax
+    rules:
+      # Grandfathered debt: these functions predate the gate. Split them when
+      # you next touch them. Do not add entries — a new long function must fail
+      # CI. The gocyclo/funlen list is mirrored in complexity_test.go.
+      - path: internal/config/cli\.go
+        text: "(ParseArgs|normalizeConfig|buildSingleHostConfig)"
+        linters: [funlen, gocyclo, gocognit]
+      - path: internal/config/config\.go
+        text: "Normalize"
+        linters: [funlen, gocyclo, gocognit]
+      - path: internal/manager/sftp\.go
+        text: "(upload|download|TransferFile)"
+        linters: [funlen, gocyclo, gocognit]
+      - path: internal/manager/session\.go
+        text: "runShellScriptOnce"
+        linters: [funlen, gocyclo, gocognit]
+      - path: internal/manager/exec\.go
+        text: "runExecCommand"
+        linters: [funlen, gocyclo, gocognit]
+      - path: internal/manager/status\.go
+        text: "collectStatus"
+        linters: [funlen, gocyclo, gocognit]
+      # gocognit-only debt (no gocyclo/funlen finding): deep nesting that a
+      # split would clarify. Same rule — shrink, never grow.
+      - path: internal/config/config\.go
+        text: "ValidateVias"
+        linters: [gocognit]
+      - path: internal/manager/kbdint\.go
+        text: "keyboardInteractive"
+        linters: [gocognit]
+      - path: internal/manager/manager\.go
+        text: "func `New`"
+        linters: [gocognit]
+      - path: internal/manager/sftp\.go
+        text: "copyConcurrent"
+        linters: [gocognit]
+      - path: internal/sshconfig/parser\.go
+        text: "parseConfigFile"
+        linters: [gocognit]
+      - path: internal/tools/list_servers\.go
+        text: "formatServerList"
+        linters: [gocognit]
+      - path: internal/tools/session\.go
+        text: "handleSessionTool"
+        linters: [gocognit]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

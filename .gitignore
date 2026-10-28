@@ -30,3 +30,6 @@ plan/README.md
 .ssh-mcp-logs/
 .codegraph/
 .gtmp/
+
+# Session handoff records (project-local, never committed)
+.handoff/

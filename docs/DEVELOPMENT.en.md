@@ -57,7 +57,13 @@ go test -tags integration ./internal/manager/ -run ProxyJump -v
 # The remaining integration tests use a reachable connection from the
 # repo-root config.json (e.g. a WSL sshd)
 go test -tags integration ./internal/manager/ -run ExecKill -v
+
+# When config.json is not at the repo root (e.g. you reuse the MCP client's
+# copy), point the tests at it
+SSH_MCP_TEST_CONFIG=/path/to/config.json go test -tags integration ./internal/manager/ -v
 ```
+
+`escape_integration_test.go` covers the escaping work: argv delivered byte-for-byte (against the naive join's splitting/globbing), `scriptFile` staging + run + cleanup, the background exit code surviving the cleanup subshell, lint warn/strict behavior, the readable equivalent in the audit record, and the capability probe (including `autoProbe: false`).
 
 ### Benchmarks
 

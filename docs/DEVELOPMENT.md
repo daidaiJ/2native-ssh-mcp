@@ -46,6 +46,35 @@ go build ./...
 go test -race ./...
 ```
 
+### 提交前必做：`make check`
+
+```bash
+make check   # = make lint && make test
+```
+
+两道门禁，CI（`.github/workflows/ci.yml`）跑同样的两道：
+
+| 步骤 | 命令 | 拦住什么 |
+|---|---|---|
+| `lint` | `golangci-lint run ./...` | govet / staticcheck / ineffassign / unused，以及复杂度 |
+| `test` | `go test ./...` | 功能，以及**结构门禁** |
+
+结构门禁在 `complexity_test.go` 里，跟着 `go test` 走，所以不装任何外部工具也生效：单文件 ≤ 700 行、单函数 ≤ 100 行、圈复杂度 ≤ 20。`golangci-lint` 的 `gocyclo`/`funlen` 用同一套阈值和同一份豁免名单（`.golangci.yml`）。
+
+历史遗留的超长文件/函数列在 `grandfatheredFiles` / `grandfatheredFuncs`（以及 `.golangci.yml` 的 `exclusions.rules`）里。**这份名单只能变短**：拆分某个文件或函数时，在同一个提交里删掉它的条目；新代码必须直接达标。
+
+需要 `golangci-lint` v2：
+
+```bash
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
+```
+
+### gofmt（尚未进门禁）
+
+`make fmt-report` 会列出 `gofmt` 想要改动的文件。当前有 25 个（结构体字段对齐、import 分组、缺结尾换行）——它们早于任何 gofmt 门禁。**建议单独一个提交把这些文件格式化**，然后把 `fmt-report` 提升为 `check` 的一环并加进 CI；在那之前不要把它放进门禁，否则 CI 会红。
+
+注意 Windows 工作区若开了 `core.autocrlf`，整棵树都是 CRLF，`gofmt -l .` 会列出所有文件。`make fmt-report` 两侧都剥掉 CR，所以只报真实差异；Linux CI 检出本身就是 LF，不受影响。
+
 ### 集成测试（需要真实环境）
 
 ```bash
@@ -55,7 +84,12 @@ go test -tags integration ./internal/manager/ -run ProxyJump -v
 
 # 其余 integration 测试走仓库根 config.json 里的可达连接（如 WSL sshd）
 go test -tags integration ./internal/manager/ -run ExecKill -v
+
+# config.json 不在仓库根时（例如复用 MCP 客户端那份），用环境变量指过去
+SSH_MCP_TEST_CONFIG=/path/to/config.json go test -tags integration ./internal/manager/ -v
 ```
+
+`escape_integration_test.go` 覆盖转义相关工作：argv 逐字节还原（对照 naive join 的拆分/展开）、`scriptFile` 暂存+执行+清理、后台模式经清理子壳保住退出码、lint 的 warn/strict 行为、审计记录里的可读等效命令、能力探测（含 `autoProbe: false`）。
 
 ### 基准测试
 

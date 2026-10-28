@@ -1,6 +1,10 @@
 # CI: race-enabled tests on Linux (CGO available). The release workflow
 # keeps CGO_ENABLED=0 for static binaries; -race is not run on Windows
 # runners (needs a C toolchain there).
+#
+# The structure gate (complexity_test.go: file length, function length,
+# cyclomatic complexity) runs inside `go test`, so the test job enforces it
+# without extra tooling. The lint job adds the remaining checks.
 
 name: CI
 
@@ -31,3 +35,21 @@ jobs:
 
       - name: Test with race detector
         run: go test -race ./...
+
+  lint:
+    name: lint (golangci-lint)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
+
+      - name: golangci-lint
+        run: golangci-lint run --timeout 5m ./...
