@@ -20,13 +20,13 @@ import (
 // has sha256sum.
 func registerFileTransfer(s *server.MCPServer, m *manager.Manager) {
 	tool := mcp.NewTool("file-transfer",
-		mcp.WithDescription("Upload or download a file OR a directory (transferred recursively) between the local machine and the connected server. Single-file uploads are atomic (remote <target>.part + rename after a sha256 check) and never truncate an existing target on failure; transfers are deduplicated (skipped when the destination already matches) and resumed from an existing .part unless force is set. Progress is reported via MCP progress notifications to the requesting client when the client requests them."),
+		mcp.WithDescription("Upload or download a file or a directory (recursive) between the local machine and the connected server. Uploads are atomic (<target>.part + rename after a sha256 check), deduplicated, and resumed from an existing .part unless force is set."),
 		mutatingAnnotation("Transfer file via SFTP", true),
 		mcp.WithString("action", mcp.Required(), mcp.Description("Operation to perform"), mcp.Enum("upload", "download")),
 		mcp.WithString("localPath", mcp.Required(), mcp.Description("Local path (a directory transfers recursively)")),
-		mcp.WithString("remotePath", mcp.Required(), mcp.Description("Remote path (absolute POSIX path; a directory transfers recursively)")),
-		mcp.WithString("connectionName", mcp.Description("SSH connection name or alias from list-servers (required unless a connection named 'default' is configured; omitting it without a 'default' connection fails with the list of available names)")),
-		mcp.WithBoolean("force", mcp.Description("Skip the dedup check and transfer the full file from scratch (default: false)")),
+		mcp.WithString("remotePath", mcp.Required(), mcp.Description("Remote absolute POSIX path (a directory transfers recursively)")),
+		mcp.WithString("connectionName", mcp.Description("SSH connection name or alias from list-servers; optional when a connection named 'default' is configured")),
+		mcp.WithBoolean("force", mcp.Description("Transfer the full file from scratch, skipping the dedup and resume checks")),
 	)
 
 	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {

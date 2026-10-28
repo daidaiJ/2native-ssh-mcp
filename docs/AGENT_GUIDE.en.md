@@ -14,13 +14,11 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 | `cmdString` | string | ✅\* | Shell command; in argv mode, the program itself. `cmdString` or `scriptFile` — at least one |
 | `args` | string[] | | argv mode: the server quotes each argument byte-for-byte before handing it to the program, with no shell parsing (spaces, quotes, `$`, backslashes and `*` arrive literally); mutually exclusive with `scriptFile` |
 | `scriptFile` | string | | Local script: read, staged to remote `/tmp` over SFTP, then run (its shebang decides the interpreter, otherwise `scriptInterpreter`, default `sh`); mutually exclusive with `cmdString`/`args` |
-| `scriptCleanup` | boolean | | Remove the staged script once it finishes (default: the connection's `scriptCleanup`, itself default true; a run killed by timeout or the output limit may leave it behind) |
-| `lintMode` | string | | Pre-execution structural check: `off` / `warn` (default; report and run) / `strict` (error-class findings refuse the command with `COMMAND_LINT_FAILED`); not applicable to `args`/`scriptFile` |
-| `directory` | string | | Working dir (`cd -- '<dir>' && ...`) |
+| `directory` | string | | Working dir (`cd -- '<dir>' && ...`); the only way to set the CWD in argv mode |
 | `connectionName` | string | | Name or alias from list-servers; **required** unless a connection named `default` exists |
-| `timeout` | number | | ms; overrides `commandTimeoutMs` (default 30000) |
-| `keepAlive` | boolean | | Keep connection after command (default **true**) |
-| `keepAliveDuration` | number | | ms; idle TTL after command (default **600000** = 10 min) |
+| `timeout` | number | | ms; overrides `commandTimeoutMs` (default 120000) |
+
+`lintMode`, `scriptCleanup`, `pty` and the keep-alive window are **connection settings** (see the config table in [HUMAN_GUIDE](HUMAN_GUIDE.en.md)), not tool parameters: they are configured once and stay put, so passing them per call only costs tokens.
 
 \* `cmdString` is no longer schema-required: it is empty on a `scriptFile`-only call, and a call with neither is rejected (`COMMAND_VALIDATION_FAILED`).
 
@@ -32,7 +30,7 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 - Output cap `maxOutputBytes` (default 10 MB, **stdout+stderr combined**) → `OUTPUT_LIMIT_EXCEEDED`; timeout → `COMMAND_TIMEOUT`. For timeout/lost/limit the error message stays short; partial output is in the same result's `stdout`/`stderr` fields.
 - **Light compress** (default): outputs ≥ `outputCompressThreshold` (4096 B) get head/tail lines + dedup; disable with `"outputCompressLight": false`. See `skills/2native-ssh-mcp-agent` for agent-side habits.
 - **ANSI stripped by default**: colors/progress escapes are removed from all output (exec, shell, background reads); disable per connection with `"stripAnsi": false`.
-- Connections **lazy**; after command kept alive per keepAlive policy, idle expiry closes. `keepAlive: false` closes immediately.
+- Connections **lazy**; after command kept alive per the connection's `keepAliveMs` (default 10 minutes; `-1` closes right after each command), idle expiry closes.
 - Executed commands appended to the connection's audit log file (tamper-evident hash-chained JSONL; the `recent=` last 3 shown by `list-servers` come from the in-memory window, default 20, successful-only when `commandLogOnlySuccess: true`) — **without output**.
 - **Same-batch tool calls run concurrently — no ordering guarantee.** Dependent operations (upload → verify → restart) must be separate sequential tool calls. See `skills/2native-ssh-mcp-agent` → "Operational traps" (pgrep self-match, sudo without TTY, overwriting running binaries).
 
@@ -47,7 +45,7 @@ A quoting mistake is **silent** — the outer shell eats `$1`, the command still
 | `scriptFile` | anything past two or three lines | `sh /tmp/.2native-ssh-mcp-<name>-<rand>.sh` (the file itself when it has a shebang) | the script text itself, headed by a comment naming the source, the staged path and the interpreter |
 
 - The whitelist/blacklist, the destructive classifier, the approval prompt and the audit record all see the **readable equivalent** (the original argv, the script body) — never the quoted execution text, never a base64 wrapper. An auditor can copy the record and re-run it.
-- `scriptFile` is staged at `/tmp/.2native-ssh-mcp-<basename>-<rand>.sh` (mode 0700, written as `<target>.part` then renamed). The upload runs after the approval gate and the whitelist/blacklist, so a refused call never leaves a remote file. `scriptCleanup: false` keeps it for debugging — it is a **remote** file.
+- `scriptFile` is staged at `/tmp/.2native-ssh-mcp-<basename>-<rand>.sh` (mode 0700, written as `<target>.part` then renamed). The upload runs after the approval gate and the whitelist/blacklist, so a refused call never leaves a remote file. The connection's `scriptCleanup: false` keeps it for debugging — it is a **remote** file.
 - Background mode behaves the same way: the cleanup is written as `(exit $rc)` in a subshell so the script's own exit code survives (a bare `exit` would skip the background starter's `echo $? > exitfile`).
 - Lint runs on `cmdString` (shell mode) only: argv mode is already quoted per argument and has no shell syntax left, and a script's syntax errors are reported by the remote interpreter itself, with a line number.
 
@@ -88,7 +86,7 @@ One tool, `action` param. Exec-mode connections only.
 
 Session summaries and the `open`/`list` responses carry the actual host (`host=<ip>:<port>`, plus `host`/`port`/`aliases` JSON fields) — even a session on the default connection shows which machine it lives on.
 
-**Long tasks: `execute-command` with `background: true`** detaches the command via a background session and returns `sessionName` + `logPath` immediately (a random `bg-*` session is created if none given). Poll with `session action=read` (`waitMs` blocks for new output instead of returning empty). Equivalent: `session action=open` with `background=true` + `cmdString`. Add `pty: true` for jobs that require a TTY (wrapped in `script`, exit code preserved). Do NOT `nohup ... &` or `setsid` through a foreground `execute-command` — those die with the exec channel. Background jobs are started detached (no PTY, new session) and **survive connection drops**; after a drop the session shows `disconnected=true` and `read`/`execute-command` reconnect automatically. Only `action=close` kills the remote job.
+**Long tasks: `execute-command` with `background: true`** detaches the command via a background session and returns `sessionName` + `logPath` immediately (a random `bg-*` session is created if none given). Poll with `session action=read` (`waitMs` blocks for new output instead of returning empty). Equivalent: `session action=open` with `background=true` + `cmdString`. Add the connection's `"pty": true` for jobs that require a TTY (wrapped in `script`, exit code preserved). Do NOT `nohup ... &` or `setsid` through a foreground `execute-command` — those die with the exec channel. Background jobs are started detached (no PTY, new session) and **survive connection drops**; after a drop the session shows `disconnected=true` and `read`/`execute-command` reconnect automatically. Only `action=close` kills the remote job.
 
 **Finished background jobs keep their session** (and remote log) for 60 min — `close` it to release. `read` returns `logPath` (remote log) and `exitCode` once the job finished; `offset=0` re-reads from the start. Sessions live in memory only: a stdio process exit loses them (the remote log survives at `logPath`); a resident HTTP daemon keeps them across conversations. Re-opening `background=true` on a finished session is rejected with the `logPath` — `close` first, or read the old log. **If the connection is down, `close` cannot confirm the remote job stopped**: the session stays listed with `orphaned=true` and the close returns a retriable error — retry `close` after the connection is back. BG log/pid/exit files use a one-time random suffix (`/tmp/.2native-ssh-mcp-<name>-<id>.log`); always use the returned `logPath`, never guess a fixed path.
 
@@ -96,7 +94,7 @@ Session summaries and the `open`/`list` responses carry the actual host (`host=<
 | Param | Notes |
 |---|---|
 | `sessionName` | When set, runs in named session (CWD persists); use `session action=open` first |
-| … | Same as before: `cmdString`, `directory`, `connectionName`, `timeout`, `keepAlive` |
+| … | Same as before: `cmdString`, `args`, `scriptFile`, `directory`, `connectionName`, `timeout`, `background` |
 
 **Background workflow:**
 ```
@@ -142,7 +140,7 @@ session(action=close, sessionName=deploy)
     "hostKeyCheck": "accept-new",            // or "strict" / "none"
     "knownHostsFile": "~/.ssh/known_hosts",
     "keepaliveIntervalMs": 10000, "keepaliveCountMax": 3,
-    "commandTimeoutMs": 30000, "connectionTimeoutMs": 30000, "sftpTimeoutMs": 300000,
+    "commandTimeoutMs": 120000, "connectionTimeoutMs": 30000, "sftpTimeoutMs": 300000,
     "maxOutputBytes": 10485760,
     "outputCompressLight": true,
     "outputCompressThreshold": 4096,
@@ -151,7 +149,8 @@ session(action=close, sessionName=deploy)
     "stripAnsi": true,
     "scriptCleanup": true,                 // remove the staged scriptFile after it runs (an interrupted run may leave it)
     "scriptInterpreter": "sh",             // interpreter for a staged script that has no shebang
-    "lintMode": "warn",                    // off / warn (default) / strict: structural check before the command is sent
+    "lintMode": "warn",                    // off / warn (default) / strict: structural check before the command is sent (config file only)
+    "keepAliveMs": 600000,                 // keep the connection after a command (default 600000 = 10 min; -1 = close right after each command)
     "autoProbe": true,                     // probe remote base64/jq once after connecting (shown by list-servers); turn off when the remote logs every command
     "redactSecrets": false,                // opt-in: masks password=/token=/Bearer/PEM (~200ms per MiB of secret-bearing output)
     "commandTemplate": "sudo -n <quotedCommand>",
@@ -167,8 +166,8 @@ Auth: password | privateKey (+passphrase, `SSH_MCP_PASSPHRASE` env) | agent (`SS
 - **For `tryKeyboard` connections, the 2FA prompt only appears on the call that establishes the connection**: while the connection stays warm (idle disconnect defaults to 10 minutes) reuse does not prompt again; after an idle reconnect or a dropped link the next execute-command prompts again. Unattended/background flows (heartbeats, automatic reconnect after idle expiry) have no prompt context and go straight to the `SSH_MCP_2FA_CODE` fallback — keep that variable set for long-running tasks.
 - **Connections shown as `via=<name>` in list-servers are not directly reachable**: they ride the jump host's direct-tcpip tunnel (OpenSSH ProxyJump); no direct TCP path to the target ever exists. A dead jump host yields an error naming the jump host — retrying reconnects it first. This is a different mechanism from `commandTemplate: "ssh jumphost …"` (a remote ssh exec on the jump host); do not mix them.
 
-- **Foreground `timeout` must exceed the real runtime** — the default `commandTimeoutMs=30000` still applies; a long build needs `timeout` ≥ its duration or it will be cut off with `COMMAND_TIMEOUT`. On timeout the remote process group is killed by PID (channel Signal is only a fallback — OpenSSH often ignores it), so timed-out commands do not leak remote processes.
-- **exec runs without a PTY by default** — a PTY makes tools like docker/npm behave as if interactive and can cause SIGHUP issues on long tasks, so it is opt-in: connection `"pty": true` or the `execute-command` `pty` parameter. Background jobs never use a PTY regardless.
+- **Foreground `timeout` must exceed the real runtime** — the connection's `commandTimeoutMs` (default 120000) applies otherwise; a longer build needs `timeout` ≥ its duration or it will be cut off with `COMMAND_TIMEOUT`. On timeout the remote process group is killed by PID (channel Signal is only a fallback — OpenSSH often ignores it), so timed-out commands do not leak remote processes.
+- **exec runs without a PTY by default** — a PTY makes tools like docker/npm behave as if interactive and can cause SIGHUP issues on long tasks, so it is opt-in via the connection's `"pty": true`. Background jobs never use a PTY unless that setting is on.
 - **Non-zero exit is a normal result** — check `exitCode`; do not treat `[exit code] 1` as a transport failure.
 - **Connections with `approvalMode: "ask-destructive"`**: `list-servers` marks `approval=ask-destructive` and whether this client supports elicitation. When the destructive classifier matches, a prompt asks the user (it shows the connection name and the actual host:port) — declining/cancelling skips execution and returns `"executed": false`; do not retry. If the client does not support elicitation the command runs anyway (fail-open) with a trailing note — ask the user before destructive commands.
 - **`SSH_CONNECTION_LOST` is not replay-safe** — the command may have partially executed; inspect the partial `stdout` before deciding to retry.

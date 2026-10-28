@@ -20,21 +20,16 @@ import (
 // registerExecuteCommand registers the execute-command tool.
 func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 	tool := mcp.NewTool("execute-command",
-		mcp.WithDescription("Execute a command on a configured SSH server and return its output. Use list-servers first to pick connectionName. Set sessionName to run inside a named session (CWD persists); open the session first with session action=open. Large output is spilled to a local file — Grep/Read that file instead of re-running the command. Three ways to pass the command: cmdString (a shell command, run as written), cmdString + args (argv mode: the program and each argument verbatim, no shell parsing — use it instead of hand-quoting), or scriptFile (a local script, staged to the remote host and run — one call instead of write-file + file-transfer + execute-command)."),
+		mcp.WithDescription("Execute a command on a configured SSH server and return its output. Use list-servers first to pick connectionName. Pass the command as cmdString, as cmdString+args (argv mode), or as a local scriptFile. Large output is spilled to a local file — Grep/Read that file instead of re-running the command."),
 		mutatingAnnotation("Execute remote command", true),
-		mcp.WithString("cmdString", mcp.Description("Command to execute. In argv mode (args set) this is the program itself, e.g. \"grep\". Mutually exclusive with scriptFile")),
-		mcp.WithArray("args", mcp.WithStringItems(), mcp.Description("argv mode: arguments for cmdString, each passed to the program byte-for-byte with no shell interpretation (spaces, quotes, $, backslashes and * stay literal). Use it whenever an argument contains characters you would otherwise have to quote. Mutually exclusive with scriptFile")),
-		mcp.WithString("scriptFile", mcp.Description("Local script to run on the remote host: the file is read locally, staged to /tmp over SFTP and executed (its shebang decides the interpreter, otherwise scriptInterpreter, default sh). Mutually exclusive with cmdString/args")),
-		mcp.WithBoolean("scriptCleanup", mcp.Description("Remove the staged scriptFile from the remote host once it finishes (default: the connection's scriptCleanup, itself default true; a run killed by timeout or the output limit may leave the file behind)")),
-		mcp.WithString("lintMode", mcp.Description("Pre-execution structural lint for cmdString: \"off\", \"warn\" (default; findings are reported in the result and the command still runs) or \"strict\" (error-class findings refuse the command with COMMAND_LINT_FAILED). Defaults to the connection's lintMode. Not applicable to args/scriptFile")),
-		mcp.WithString("directory", mcp.Description("Working directory for command execution")),
-		mcp.WithString("sessionName", mcp.Description("Optional named session (from session action=open); when set, connectionName is ignored")),
-		mcp.WithString("connectionName", mcp.Description("SSH connection name or alias from list-servers (required unless a connection named 'default' is configured; omitting it without a 'default' connection fails with the list of available names)")),
-		mcp.WithNumber("timeout", mcp.Description("Command execution timeout in milliseconds (optional; overrides the connection's commandTimeoutMs, which defaults to 30000ms)")),
-		mcp.WithBoolean("background", mcp.Description("Run the command detached as a background job and return immediately with sessionName/logPath; poll with session action=read (minutes-long work belongs here, not in a bigger timeout)")),
-		mcp.WithBoolean("pty", mcp.Description("Allocate a remote pseudo-terminal (default: false; opt in for interactive commands like sudo or vim; with background=true it wraps the detached job in a TTY)")),
-		mcp.WithBoolean("keepAlive", mcp.Description("Keep the SSH connection alive after the command finishes (default: true; ignored for named sessions — the connection may host other sessions)")),
-		mcp.WithNumber("keepAliveDuration", mcp.Description("How long to keep the connection alive after the command finishes, in milliseconds (default: 600000, i.e. 10 minutes)")),
+		mcp.WithString("cmdString", mcp.Description("Command to run. In argv mode (args set) this is the program itself. Mutually exclusive with scriptFile")),
+		mcp.WithArray("args", mcp.WithStringItems(), mcp.Description("argv mode: arguments for cmdString, each passed to the program byte-for-byte with no shell parsing (spaces, quotes, $, backslashes and * stay literal)")),
+		mcp.WithString("scriptFile", mcp.Description("Local script to run on the remote host: staged to /tmp over SFTP and executed (shebang decides the interpreter, otherwise the connection's scriptInterpreter). Mutually exclusive with cmdString/args")),
+		mcp.WithString("directory", mcp.Description("Working directory for the command")),
+		mcp.WithString("sessionName", mcp.Description("Run inside a named session (from session action=open) so the CWD persists; connectionName is ignored")),
+		mcp.WithString("connectionName", mcp.Description("SSH connection name or alias from list-servers; optional when a connection named 'default' is configured")),
+		mcp.WithNumber("timeout", mcp.Description("Timeout in milliseconds (default: the connection's commandTimeoutMs)")),
+		mcp.WithBoolean("background", mcp.Description("Run the command detached and return immediately with sessionName/logPath; poll with session action=read")),
 	)
 
 	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -66,15 +61,6 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 		if v, ok := args["timeout"].(float64); ok && v > 0 {
 			opts.Timeout = time.Duration(v) * time.Millisecond
 		}
-		if v, ok := args["pty"].(bool); ok {
-			opts.Pty = &v
-		}
-		if v, ok := args["keepAlive"].(bool); ok {
-			opts.KeepAlive = &v
-		}
-		if v, ok := args["keepAliveDuration"].(float64); ok && v > 0 {
-			opts.KeepAliveDuration = time.Duration(v) * time.Millisecond
-		}
 
 		// Destructive-command approval gate (issue #5). Runs before both the
 		// background and foreground paths: a detached job is exactly the case
@@ -92,8 +78,7 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 		opts.Approval = approval
 
 		if background {
-			bgPty, _ := args["pty"].(bool)
-			res, err := handleBackgroundCommand(ctx, m, req, id, directory, sessionName, connectionName, bgPty, approval)
+			res, err := handleBackgroundCommand(ctx, m, req, id, directory, sessionName, connectionName, approval)
 			return appendNote(res, note), err
 		}
 
@@ -120,7 +105,7 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 // log path to poll with session action=read instead of burning a long
 // synchronous timeout. id is the caller's default-route identity, resolved
 // before the throwaway session name below is generated.
-func handleBackgroundCommand(ctx context.Context, m *manager.Manager, req *executeRequest, id manager.ConnectionIdentity, directory, sessionName, connectionName string, pty bool, approval string) (*mcp.CallToolResult, error) {
+func handleBackgroundCommand(ctx context.Context, m *manager.Manager, req *executeRequest, id manager.ConnectionIdentity, directory, sessionName, connectionName string, approval string) (*mcp.CallToolResult, error) {
 	if sessionName == "" {
 		sessionName = randomSessionName()
 	}
@@ -128,7 +113,6 @@ func handleBackgroundCommand(ctx context.Context, m *manager.Manager, req *execu
 		Background:   true,
 		CmdString:    req.execCommand,
 		Directory:    directory,
-		Pty:          pty,
 		Approval:     approval,
 		AuditCommand: req.auditCommand,
 		LintMode:     req.lintMode,

@@ -71,6 +71,8 @@ type GlobalConfig struct {
 	ScriptInterpreter string `json:"scriptInterpreter,omitempty"`
 	// LintMode is the global default for per-connection lintMode.
 	LintMode string `json:"lintMode,omitempty"`
+	// KeepAliveMs is the global default for per-connection keepAliveMs.
+	KeepAliveMs *int `json:"keepAliveMs,omitempty"`
 	// AutoProbe is the global default for per-connection autoProbe.
 	AutoProbe *bool `json:"autoProbe,omitempty"`
 	// HistoryFromLog is the global default for per-connection
@@ -376,6 +378,9 @@ func ParseArgs(args []string) (*Options, error) {
 		if conf.LintMode == "" {
 			conf.LintMode = fileGlobal.LintMode
 		}
+		if conf.KeepAliveMs == 0 && fileGlobal.KeepAliveMs != nil {
+			conf.KeepAliveMs = *fileGlobal.KeepAliveMs
+		}
 		if conf.AutoProbe == nil {
 			conf.AutoProbe = fileGlobal.AutoProbe
 		}
@@ -456,6 +461,7 @@ func parseGlobalConfig(raw any, global *GlobalConfig) error {
 		globalOptBool("scriptCleanup", &global.ScriptCleanup),
 		globalString("scriptInterpreter", &global.ScriptInterpreter),
 		globalString("lintMode", &global.LintMode),
+		globalOptInt("keepAliveMs", &global.KeepAliveMs),
 		globalOptBool("autoProbe", &global.AutoProbe),
 	}
 	for _, read := range readers {
@@ -507,6 +513,21 @@ func globalString(key string, dst *string) func(map[string]any) error {
 			return fmt.Errorf("%s.%s must be a string", GlobalConfigKey, key)
 		}
 		*dst = s
+		return nil
+	}
+}
+
+func globalOptInt(key string, dst **int) func(map[string]any) error {
+	return func(m map[string]any) error {
+		v, ok := m[key]
+		if !ok || v == nil || v == "" {
+			return nil
+		}
+		n, err := ParseInt(v, key)
+		if err != nil {
+			return fmt.Errorf("%s.%s: %w", GlobalConfigKey, key, err)
+		}
+		*dst = &n
 		return nil
 	}
 }
@@ -699,6 +720,7 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 		"outputSpillThreshold":    &conf.OutputSpillThreshold,
 		"keepaliveIntervalMs":     &conf.KeepaliveIntervalMs,
 		"keepaliveCountMax":       &conf.KeepaliveCountMax,
+		"keepAliveMs":             &conf.KeepAliveMs,
 		"sftpConcurrency":         &conf.SftpConcurrency,
 		"sftpChunkSize":           &conf.SftpChunkSize,
 	}

@@ -12,17 +12,16 @@ import (
 
 func registerSession(s *server.MCPServer, m *manager.Manager) {
 	tool := mcp.NewTool("session",
-		mcp.WithDescription("Manage named SSH sessions on exec-mode connections. action=open creates a session (optionally starts a background job with background+cmdString); action=read polls background output; action=close stops background jobs and releases the shell; action=list shows all sessions. Use execute-command with sessionName to run commands with persistent CWD."),
+		mcp.WithDescription("Manage named SSH sessions: action=open creates one (optionally starting a background job with background+cmdString), action=read polls background output, action=close stops background jobs and releases the shell, action=list shows all sessions. Use execute-command with sessionName to run commands with a persistent CWD."),
 		mcp.WithString("action", mcp.Required(), mcp.Description("Session operation"), mcp.Enum("open", "read", "close", "list")),
-		mcp.WithString("sessionName", mcp.Description("Unique session name (letters, digits, '.', '-', '_'); required for open/read/close")),
+		mcp.WithString("sessionName", mcp.Description("Session name (letters, digits, '.', '-', '_'); required for open/read/close")),
 		mcp.WithString("connectionName", mcp.Description("Required for action=open on a new session; optional filter for action=list")),
-		mcp.WithBoolean("background", mcp.Description("For action=open: run cmdString as a background job")),
+		mcp.WithBoolean("background", mcp.Description("For action=open: run cmdString detached instead of opening a shell")),
 		mcp.WithString("cmdString", mcp.Description("For action=open with background=true")),
 		mcp.WithString("directory", mcp.Description("Working directory when opening a background job")),
-		mcp.WithBoolean("pty", mcp.Description("For action=open with background=true: wrap the job in a pseudo-terminal (default false; for programs that need a TTY)")),
 		mcp.WithNumber("maxBytes", mcp.Description("For action=read: max bytes (default 65536)")),
 		mcp.WithNumber("offset", mcp.Description("For action=read: byte offset (default: continue from last read)")),
-		mcp.WithNumber("waitMs", mcp.Description("For action=read: block up to this many milliseconds when there is nothing new and the job is still running (default 0 = return immediately; capped at 30000)")),
+		mcp.WithNumber("waitMs", mcp.Description("For action=read: block up to this many milliseconds when there is nothing new (default 0 = return immediately; capped at 30000)")),
 		mutatingAnnotation("Manage SSH session", false),
 	)
 	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -67,12 +66,10 @@ func handleSessionTool(ctx context.Context, m *manager.Manager, args map[string]
 		background, _ := args["background"].(bool)
 		cmdString, _ := args["cmdString"].(string)
 		directory, _ := args["directory"].(string)
-		bgPty, _ := args["pty"].(bool)
 		info, err := m.OpenSessionWithOptions(ctx, sessionName, connectionName, manager.SessionOpenOptions{
 			Background: background,
 			CmdString:  cmdString,
 			Directory:  directory,
-			Pty:        bgPty,
 			Approval:   approval,
 		})
 		if err != nil {

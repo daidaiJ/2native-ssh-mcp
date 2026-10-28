@@ -14,13 +14,11 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 | `cmdString` | string | ✅\* | shell 命令；argv 模式下是程序本身。`cmdString` 与 `scriptFile` 至少给一个 |
 | `args` | string[] | | argv 模式：每个参数由服务端逐字引用后交给程序，不经 shell 解析（空格/引号/`$`/反斜杠/`*` 原样送达）；与 `scriptFile` 互斥 |
 | `scriptFile` | string | | 本地脚本：读取后经 SFTP 暂存到远端 `/tmp` 再执行（有 shebang 直接运行，否则用 `scriptInterpreter`，默认 `sh`）；与 `cmdString`/`args` 互斥 |
-| `scriptCleanup` | boolean | | 执行完删除暂存的脚本（默认取连接的 `scriptCleanup`，再默认 true；被超时/输出上限打断时可能残留） |
-| `lintMode` | string | | 下发前的结构检查：`off` / `warn`（默认，报告且照常执行）/ `strict`（error 级 finding 直接拒绝，返回 `COMMAND_LINT_FAILED`）；不适用于 `args`/`scriptFile` |
-| `directory` | string | | Working dir (`cd -- '<dir>' && ...`) |
+| `directory` | string | | Working dir (`cd -- '<dir>' && ...`)；argv 模式下改工作目录的唯一手段 |
 | `connectionName` | string | | Name or alias from list-servers；**必填**，除非配置了名为 `default` 的连接 |
-| `timeout` | number | | ms; overrides `commandTimeoutMs` (default 30000) |
-| `keepAlive` | boolean | | Keep connection after command (default **true**) |
-| `keepAliveDuration` | number | | ms; idle TTL after command (default **600000** = 10 min) |
+| `timeout` | number | | ms; overrides `commandTimeoutMs` (default 120000) |
+
+`lintMode`、`scriptCleanup`、`pty`、保活时长都是**连接配置项**（见 [HUMAN_GUIDE](HUMAN_GUIDE.md) 的配置表），不作为工具参数暴露：这些值配一次就长期有效，agent 每次显式传只是徒增 token。
 
 \* `cmdString` 不再是 schema 必填项：`scriptFile` 单独调用时它为空，两个都不给会被拒（`COMMAND_VALIDATION_FAILED`）。
 
@@ -32,7 +30,7 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 - Output cap `maxOutputBytes` (default 10 MB, **stdout+stderr combined**) → `OUTPUT_LIMIT_EXCEEDED`; timeout → `COMMAND_TIMEOUT`. For timeout/lost/limit the error message stays short; partial output is in the same result's `stdout`/`stderr` fields.
 - **Light compress** (default): outputs ≥ `outputCompressThreshold` (4096 B) get head/tail lines + dedup; disable with `"outputCompressLight": false`. See `skills/2native-ssh-mcp-agent` for agent-side habits.
 - **ANSI stripped by default**: colors/progress escapes are removed from all output (exec, shell, background reads); disable per connection with `"stripAnsi": false`.
-- Connections **lazy**; after command kept alive per keepAlive policy, idle expiry closes. `keepAlive: false` closes immediately.
+- Connections **lazy**; after command kept alive per the connection's `keepAliveMs`（默认 10 分钟，`-1` 表示执行完即断），idle expiry closes.
 - 每条执行的命令都会追加到连接的审计日志文件（防篡改哈希链 JSONL；`list-servers` 展示的 `recent=` 最近 3 条来自内存窗口，默认 20 条，且 `commandLogOnlySuccess: true` 时只显示成功命令）——**不含输出**。
 - **同批次的工具调用是并发执行的——没有顺序保证。** 有依赖关系的操作（上传 → 验证 → 重启）必须拆成多次顺序调用。详见 `skills/2native-ssh-mcp-agent` 的 "Operational traps" 一节（pgrep 自匹配、sudo 无 TTY、覆盖运行中的二进制）。
 
@@ -47,7 +45,7 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 | `scriptFile` | 超过两三行的脚本 | `sh /tmp/.2native-ssh-mcp-<name>-<rand>.sh`（有 shebang 时直接跑该文件） | 脚本正文本身，首行是注释头：来源、暂存路径、解释器 |
 
 - 白/黑名单、破坏性分类器、审批弹窗、审计记录看的都是**可读等效命令**（argv 的原始参数、脚本正文），不是引用后的执行串，也没有任何 base64 包装——审计日志里能直接照抄重跑。
-- `scriptFile` 暂存到 `/tmp/.2native-ssh-mcp-<basename>-<rand>.sh`（模式 0700，`<target>.part` + rename 原子落盘）；上传发生在审批和白/黑名单通过之后，拒绝的调用不会在远端留下文件。`scriptCleanup: false` 留档排查，注意它是**远端**文件。
+- `scriptFile` 暂存到 `/tmp/.2native-ssh-mcp-<basename>-<rand>.sh`（模式 0700，`<target>.part` + rename 原子落盘）；上传发生在审批和白/黑名单通过之后，拒绝的调用不会在远端留下文件。连接的 `scriptCleanup: false` 留档排查，注意它是**远端**文件。
 - 后台模式同样适用：清理写成 `(exit $rc)` 子壳，保住脚本自身的退出码（裸 `exit` 会跳过后台 starter 的 `echo $? > exitfile`）。
 - lint 只跑 `cmdString`（shell 模式）：argv 模式已经逐参数引用，不存在 shell 语法；脚本的语法错误由远端解释器自己报（带行号）。
 
@@ -88,7 +86,7 @@ One tool, `action` param. Exec-mode connections only.
 
 会话摘要与 `open`/`list` 响应均带实际主机（`host=<ip>:<port>`，JSON 的 `host`/`port`/`aliases` 字段）——default 连接上的会话也能一眼看出在哪台机器。
 
-**Long tasks: `execute-command` with `background: true`** detaches the command via a background session and returns `sessionName` + `logPath` immediately (a random `bg-*` session is created if none given). Poll with `session action=read` (`waitMs` blocks for new output instead of returning empty). Equivalent: `session action=open` with `background=true` + `cmdString`. Add `pty: true` for jobs that require a TTY (wrapped in `script`, exit code preserved). Do NOT `nohup ... &` or `setsid` through a foreground `execute-command` — those die with the exec channel. Background jobs are started detached (no PTY, new session) and **survive connection drops**; after a drop the session shows `disconnected=true` and `read`/`execute-command` reconnect automatically. Only `action=close` kills the remote job.
+**Long tasks: `execute-command` with `background: true`** detaches the command via a background session and returns `sessionName` + `logPath` immediately (a random `bg-*` session is created if none given). Poll with `session action=read` (`waitMs` blocks for new output instead of returning empty). Equivalent: `session action=open` with `background=true` + `cmdString`. Add the connection's `"pty": true` for jobs that require a TTY (wrapped in `script`, exit code preserved). Do NOT `nohup ... &` or `setsid` through a foreground `execute-command` — those die with the exec channel. Background jobs are started detached (no PTY, new session) and **survive connection drops**; after a drop the session shows `disconnected=true` and `read`/`execute-command` reconnect automatically. Only `action=close` kills the remote job.
 
 **Finished background jobs keep their session** (and remote log) for 60 min — `close` it to release. `read` returns `logPath` (remote log) and `exitCode` once the job finished; `offset=0` re-reads from the start. Sessions live in memory only: a stdio process exit loses them (the remote log survives at `logPath`); a resident HTTP daemon keeps them across conversations. Re-opening `background=true` on a finished session is rejected with the `logPath` — `close` first, or read the old log. **If the connection is down, `close` cannot confirm the remote job stopped**: the session stays listed with `orphaned=true` and the close returns a retriable error — retry `close` after the connection is back. BG log/pid/exit files use a one-time random suffix (`/tmp/.2native-ssh-mcp-<name>-<id>.log`); always use the returned `logPath`, never guess a fixed path.
 
@@ -96,7 +94,7 @@ One tool, `action` param. Exec-mode connections only.
 | Param | Notes |
 |---|---|
 | `sessionName` | When set, runs in named session (CWD persists); use `session action=open` first |
-| … | Same as before: `cmdString`, `directory`, `connectionName`, `timeout`, `keepAlive` |
+| … | Same as before: `cmdString`, `args`, `scriptFile`, `directory`, `connectionName`, `timeout`, `background` |
 
 **Background workflow:**
 ```
@@ -142,7 +140,7 @@ session(action=close, sessionName=deploy)
     "hostKeyCheck": "accept-new",            // or "strict" / "none"
     "knownHostsFile": "~/.ssh/known_hosts",
     "keepaliveIntervalMs": 10000, "keepaliveCountMax": 3,
-    "commandTimeoutMs": 30000, "connectionTimeoutMs": 30000, "sftpTimeoutMs": 300000,
+    "commandTimeoutMs": 120000, "connectionTimeoutMs": 30000, "sftpTimeoutMs": 300000,
     "maxOutputBytes": 10485760,
     "outputCompressLight": true,
     "outputCompressThreshold": 4096,
@@ -151,7 +149,8 @@ session(action=close, sessionName=deploy)
     "stripAnsi": true,
     "scriptCleanup": true,                 // scriptFile 跑完删除远端暂存脚本（被打断时可能残留）
     "scriptInterpreter": "sh",             // 无 shebang 的暂存脚本用哪个解释器
-    "lintMode": "warn",                    // off / warn(默认) / strict：命令下发前的结构检查
+    "lintMode": "warn",                    // off / warn(默认) / strict：命令下发前的结构检查（只有配置文件能改）
+    "keepAliveMs": 600000,                 // 执行完保活多久（默认 600000 = 10 分钟；-1 = 执行完即断）
     "autoProbe": true,                     // 连接建立后探一次远端 base64/jq（list-servers 展示）；远端会记录每条命令的连接可关掉
     "redactSecrets": false,                // opt-in: masks password=/token=/Bearer/PEM (~200ms per MiB of secret-bearing output)
     "commandTemplate": "sudo -n <quotedCommand>",
@@ -167,8 +166,8 @@ Auth: password | privateKey (+passphrase, `SSH_MCP_PASSPHRASE` env) | agent (`SS
 - **`tryKeyboard` 的连接，2FA 弹窗只出现在建立连接的那次调用**：连接保活期内（默认空闲 10 分钟断开）复用连接不会再弹；一旦空闲重连或连接掉线，下一次 execute-command 会重新弹窗。无人值守/后台任务（心跳、空闲过期后的自动重连）没有弹窗上下文，直接走 `SSH_MCP_2FA_CODE` 兜底——长任务建议该环境变量始终配置。
 - **`list-servers` 显示 `via=<name>` 的连接不可直连**：它经跳板连接的 direct-tcpip 隧道（OpenSSH ProxyJump），本机到目标的 TCP 从不存在；跳板挂掉会报带跳板名的错误，重试即自动重连跳板。这与 `commandTemplate: "ssh jumphost …"`（远端再 exec 一层 ssh）是两条路，不要混用。
 
-- **Foreground `timeout` must exceed the real runtime** — the default `commandTimeoutMs=30000` still applies; a long build needs `timeout` ≥ its duration or it will be cut off with `COMMAND_TIMEOUT`. On timeout the remote process group is killed by PID (channel Signal is only a fallback — OpenSSH often ignores it), so timed-out commands do not leak remote processes.
-- **exec runs without a PTY by default** — a PTY makes tools like docker/npm behave as if interactive and can cause SIGHUP issues on long tasks, so it is opt-in: connection `"pty": true` or the `execute-command` `pty` parameter. Background jobs never use a PTY regardless.
+- **Foreground `timeout` must exceed the real runtime** — the connection's `commandTimeoutMs` (default 120000) applies otherwise; a longer build needs `timeout` ≥ its duration or it will be cut off with `COMMAND_TIMEOUT`. On timeout the remote process group is killed by PID (channel Signal is only a fallback — OpenSSH often ignores it), so timed-out commands do not leak remote processes.
+- **exec runs without a PTY by default** — a PTY makes tools like docker/npm behave as if interactive and can cause SIGHUP issues on long tasks, so it is opt-in via the connection's `"pty": true`. Background jobs never use a PTY unless that setting is on.
 - **Non-zero exit is a normal result** — check `exitCode`; do not treat `[exit code] 1` as a transport failure.
 - **`approvalMode: "ask-destructive"` 的连接**：`list-servers` 会标注 `approval=ask-destructive` 与本客户端是否支持 elicitation。命中破坏性分类器时会弹窗征询用户（提示中带连接名与实际 host:port）——拒绝/取消则命令不执行，返回 `"executed": false`，不要重试；客户端不支持 elicitation 时命令照常执行（fail-open），结果尾部带提示，此时应先征询用户再发破坏性命令。
 - **`SSH_CONNECTION_LOST` is not replay-safe** — the command may have partially executed; inspect the partial `stdout` before deciding to retry.

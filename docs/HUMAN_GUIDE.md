@@ -160,7 +160,7 @@ Admin API（`/__admin/*`）不用这个 token，仍只限本机访问（loopback
 |---|---|---|
 | `allowInsecureConfigPerms` | false | 跳过本配置文件的权限检查（等价于命令行 `--allow-insecure-config-perms`，但声明在文件内部；不推荐，仅开发用） |
 | `httpToken` | 空 | `/mcp` 的 Bearer token（优先级低于 `--http-token` 和 `SSH_MCP_HTTP_TOKEN`；支持 `${VAR}` 引用） |
-| `scriptCleanup` / `scriptInterpreter` / `lintMode` / `autoProbe` | 同上表 | 这四个按连接配置项的全局默认值；连接级设置优先 |
+| `scriptCleanup` / `scriptInterpreter` / `lintMode` / `keepAliveMs` / `autoProbe` | 同上表 | 这五个按连接配置项的全局默认值；连接级设置优先 |
 
 ## 连接本地 WSL
 
@@ -200,11 +200,10 @@ Admin API（`/__admin/*`）不用这个 token，仍只限本机访问（loopback
 | `cmdString` | ✅ | 要执行的命令 |
 | `directory` | | 工作目录 |
 | `connectionName` | | 连接名或 list-servers 中的别名 |
-| `timeout` | | 超时（毫秒），默认 30000；超时后按远端 PID 杀掉进程组 |
-| `pty` | | 分配伪终端，默认 `false`（交互命令按需开启；`background=true` 时用 `script` 包裹后台任务） |
+| `timeout` | | 超时（毫秒），默认取连接的 `commandTimeoutMs`（120000）；超时后按远端 PID 杀掉进程组 |
 | `background` | | `true` 时命令转入后台会话立即返回 `sessionName`/`logPath`，用 `session read` 轮询（分钟级任务用它，别调大 timeout） |
-| `keepAlive` | | 执行后是否保活连接，默认 `true`（named session 忽略 `false`） |
-| `keepAliveDuration` | | 保活时长（毫秒），默认 600000（10 分钟） |
+
+`pty`、`keepAlive`/`keepAliveDuration` 等「配一次长期不变」的开关已下推到连接配置（见配置表）：它们不再出现在工具参数里。
 
 ### file-transfer
 
@@ -236,7 +235,7 @@ Admin API（`/__admin/*`）不用这个 token，仍只限本机访问（loopback
 
 | action | 说明 |
 |---|---|
-| `open` | 打开会话；`background=true` + `cmdString` 启动后台任务（`pty=true` 为后台任务包一层 TTY） |
+| `open` | 打开会话；`background=true` + `cmdString` 启动后台任务（连接配了 `"pty": true` 时为后台任务包一层 TTY） |
 | `read` | 轮询后台会话输出（`offset` 省略/负值=续读，`0`=从头重读；`waitMs` 无新输出时最多阻塞 30s 等数据或作业结束） |
 | `close` | 关闭会话并停止后台进程（**幂等**，可重复调用） |
 | `list` | 列出所有会话（可选 `connectionName` 过滤） |
@@ -256,9 +255,9 @@ Admin API（`/__admin/*`）不用这个 token，仍只限本机访问（loopback
 **命令结果说明：**
 - 非 0 退出码是**正常结果**（不是错误）：成功结果是 JSON，看 `exitCode` / `status`（`ok`/`exited`）/ `stdout` / `stderr` 字段；只有校验失败、连不上、超时、输出超限、连接中断才报错误 JSON（带 `code`/`message`/`retriable` + 部分 `stdout`/`stderr`）
 - 连接中断报 `SSH_CONNECTION_LOST`（`retriable=false`），远端进程可能还在跑，**不要盲目重放**；错误 JSON 里带部分 `stdout`/`stderr` 和 `replaySafe: false`
-- 前台命令的 `timeout` 必须大于真实耗时（默认 `commandTimeoutMs=30000` 仍然生效）；超时后会按远端 PID 杀掉整个进程组（channel Signal 仅作补充），不会留下远端泄漏进程
+- 前台命令的 `timeout` 必须大于真实耗时（连接的 `commandTimeoutMs` 默认 120000 仍然生效）；超时后会按远端 PID 杀掉整个进程组（channel Signal 仅作补充），不会留下远端泄漏进程
 - 输出 ≥8KB（`outputSpillThreshold`，`-1` 关闭）会把完整输出落到本地 `.ssh-mcp-out/`（`outputSpillDir` 可改，保留最近 32 个，Unix 0600），结果只带通知+短预览；Agent 应该 Grep/Read 本地文件，不要远程重跑同一命令
-- exec 默认**不分配 PTY**（避免 docker/npm 等误以为有交互终端）；交互命令用连接配置 `"pty": true` 或 `execute-command` 的 `pty` 参数显式开启
+- exec 默认**不分配 PTY**（避免 docker/npm 等误以为有交互终端）；交互命令用连接配置 `"pty": true` 开启（后台任务同样按此配置决定是否包 `script`）
 
 **Agent 安装 Skill**：仓库内 [`skills/2native-ssh-mcp-helper/SKILL.md`](../skills/2native-ssh-mcp-helper/SKILL.md) 可复制到 `.cursor/skills/` 后说「帮我配置 2native-ssh-mcp」。
 
@@ -328,14 +327,15 @@ Server options:
 | `hostKeyCheck` | `accept-new` | 主机密钥校验：`accept-new`（未知记录后接受）/ `strict`（未知拒绝）/ `none`（不校验）；`known_hosts` 文件及其目录（如 `~/.ssh`）不存在时自动创建 |
 | `knownHostsFile` | `~/.ssh/known_hosts` | 主机密钥校验用的 known_hosts 文件 |
 | `keepaliveIntervalMs` / `keepaliveCountMax` | 10000 / 3 | SSH 心跳 |
-| `commandTimeoutMs` / `connectionTimeoutMs` / `sftpTimeoutMs` | 30000 / 30000 / 300000 | 各类超时（`sftpTimeoutMs` 为无进展超时，进度每刷新一次就重新计时） |
+| `commandTimeoutMs` / `connectionTimeoutMs` / `sftpTimeoutMs` | 120000 / 30000 / 300000 | 各类超时（`commandTimeoutMs` 是前台命令超时；`sftpTimeoutMs` 为无进展超时，进度每刷新一次就重新计时） |
 | `maxOutputBytes` | 10485760 | 单命令 stdout+stderr 合计输出上限，0 为不限 |
 | `outputCompressLight` / `outputCompressThreshold` | true / 4096 | 大输出头尾压缩与阈值 |
 | `outputSpillThreshold` / `outputSpillDir` | 8192 / `.ssh-mcp-out` | 输出达到阈值落盘到本地目录（`-1` 关闭） |
 | `stripAnsi` | true | 输出剥离 ANSI 转义序列（false 保留颜色/进度条） |
-| `scriptCleanup` | true | `execute-command` 的 `scriptFile` 暂存脚本跑完后删除远端 `/tmp` 文件（被超时/输出上限打断时可能残留）；单次调用可用 `scriptCleanup` 覆盖 |
+| `scriptCleanup` | true | `execute-command` 的 `scriptFile` 暂存脚本跑完后删除远端 `/tmp` 文件（被超时/输出上限打断时可能残留） |
 | `scriptInterpreter` | `sh` | 无 shebang 的暂存脚本用哪个解释器（有 shebang 的脚本直接执行，忽略此项） |
-| `lintMode` | `warn` | 命令下发前的结构检查：`off` 不跑 / `warn` 报告并照常执行 / `strict` 拒绝 error 级问题（`COMMAND_LINT_FAILED`）；只作用于 `cmdString`，单次调用可用 `lintMode` 覆盖 |
+| `lintMode` | `warn` | 命令下发前的结构检查：`off` 不跑 / `warn` 报告并照常执行 / `strict` 拒绝 error 级问题（`COMMAND_LINT_FAILED`）；只作用于 `cmdString`（argv/scriptFile 形态不适用），只有配置文件能改 |
+| `keepAliveMs` | 600000 | 执行完保活连接多久（毫秒）；`-1` 表示执行完立即断开。named session 始终占住连接，不受此项影响 |
 | `autoProbe` | true | 连接建立后探一次远端 `base64`/`jq` 能力，结果在 `list-servers` 的 `capabilities=` 段展示；探测命令是明文单行命令，远端会记录每条命令（堡垒机/会话录制）时建议关掉 |
 | `commandTemplate` | 空 | 命令包装模板（`<command>` / `<quotedCommand>`） |
 | `pty` | false | exec 模式分配伪终端（默认关闭，交互命令按需开启） |

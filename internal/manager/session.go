@@ -189,16 +189,10 @@ func (m *Manager) RunInSession(ctx context.Context, sessionName, cmdString, dire
 
 	ns.resetIdleTimer(m)
 
-	keepAlive := true
-	if opts.KeepAlive != nil {
-		keepAlive = *opts.KeepAlive
-	}
-	duration := opts.KeepAliveDuration
-	if duration <= 0 {
-		duration = DefaultKeepAliveDuration
-	}
-	if keepAlive {
-		m.Touch(ns.connectionKey, duration)
+	// The session holds its connection (close is explicit or via the idle
+	// TTL), so the connection's keepAliveMs only feeds the touch window.
+	if keepAliveMs := cfg.GetKeepAliveMs(); keepAliveMs > 0 {
+		m.Touch(ns.connectionKey, time.Duration(keepAliveMs)*time.Millisecond)
 	}
 
 	return result, err

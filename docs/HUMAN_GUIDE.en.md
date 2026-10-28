@@ -160,7 +160,7 @@ Admin API (`/__admin/*`) does not use this token and still restricts access to l
 |---|---|---|
 | `allowInsecureConfigPerms` | false | Skip permission checks for this configuration file (equivalent to `--allow-insecure-config-perms` on the command line, but declared inside the file; not recommended, for development only) |
 | `httpToken` | empty | Bearer token for `/mcp` (lower priority than `--http-token` and `SSH_MCP_HTTP_TOKEN`; supports `${VAR}` references) |
-| `scriptCleanup` / `scriptInterpreter` / `lintMode` / `autoProbe` | as above | Global defaults for the four per-connection settings above; a connection-level value wins |
+| `scriptCleanup` / `scriptInterpreter` / `lintMode` / `keepAliveMs` / `autoProbe` | as above | Global defaults for the five per-connection settings above; a connection-level value wins |
 
 ## Connecting to local WSL
 
@@ -200,11 +200,10 @@ Notes:
 | `cmdString` | ✅ | The command to execute |
 | `directory` | | Working directory |
 | `connectionName` | | Connection name or alias from list-servers |
-| `timeout` | | Timeout in milliseconds, default 30000; on timeout the remote process group is killed by PID |
-| `pty` | | Allocate a pseudo-terminal, default `false` (enable for interactive commands; with `background=true`, wraps the job in `script` when the program requires a TTY) |
+| `timeout` | | Timeout in milliseconds, default from the connection's `commandTimeoutMs` (120000); on timeout the remote process group is killed by PID |
 | `background` | | When `true`, the command is moved to a background session and immediately returns `sessionName`/`logPath`; poll with `session read` (use this for minute-scale jobs instead of raising timeout) |
-| `keepAlive` | | Whether to keep the connection alive after execution, default `true` (named sessions ignore `false`) |
-| `keepAliveDuration` | | Keep-alive duration in milliseconds, default 600000 (10 minutes) |
+
+`pty`, `keepAlive`/`keepAliveDuration` and similar set-once switches live in the connection config (see the config table): they are no longer tool parameters.
 
 ### file-transfer
 
@@ -236,7 +235,7 @@ Lists all connections and active sessions: server metadata, connection status, s
 
 | action | Description |
 |---|---|
-| `open` | Open a session; `background=true` + `cmdString` starts a background task (`pty=true` wraps the job in a TTY) |
+| `open` | Open a session; `background=true` + `cmdString` starts a background task (with `"pty": true` on the connection the job is wrapped in a TTY) |
 | `read` | Poll output from a background session (`offset` omitted/negative = continue reading, `0` = reread from beginning; `waitMs` blocks up to 30s for data or job exit when there is no new output) |
 | `close` | Close the session and stop the background process (**idempotent**, can be called repeatedly) |
 | `list` | List all sessions (optionally filtered by `connectionName`) |
@@ -256,9 +255,9 @@ Adds an optional `sessionName` parameter: executes in an already opened named se
 **Command result notes**:
 - Non-zero exit codes are **normal results** (not errors): successful results are JSON — look at `exitCode` / `status` (`ok`/`exited`) / `stdout` / `stderr`; only validation failures, connection failures, timeouts, output limits exceeded, and connection interruptions are reported as error JSON (`code`/`message`/`retriable` plus partial `stdout`/`stderr`)
 - Connection interruptions report `SSH_CONNECTION_LOST` (`retriable=false`), the remote process may still be running, **do not blindly retry**; the error JSON includes partial `stdout`/`stderr` and `replaySafe: false`
-- The `timeout` for foreground commands must be greater than the actual execution time (the default `commandTimeoutMs=30000` still applies); on timeout the remote process group is killed by PID (channel Signal is only a fallback), so timed-out commands do not leak remote processes
+- The `timeout` for foreground commands must be greater than the actual execution time (the connection's `commandTimeoutMs`, default 120000, applies otherwise); on timeout the remote process group is killed by PID (channel Signal is only a fallback), so timed-out commands do not leak remote processes
 - Output ≥8KB (`outputSpillThreshold`, `-1` to disable) spills the full output to local `.ssh-mcp-out/` (`outputSpillDir` configurable, keeps the newest 32, Unix 0600); the result carries only a notice + short preview; Agent should Grep/Read that local file, not re-run the command remotely
-- exec **does not allocate a PTY by default** (avoids docker/npm treating the session as interactive); enable it with connection `"pty": true` or the `execute-command` `pty` parameter
+- exec **does not allocate a PTY by default** (avoids docker/npm treating the session as interactive); enable it with the connection's `"pty": true` (background jobs follow the same setting when deciding whether to wrap the job in `script`)
 
 **Agent Skill Installation**: You can copy [`skills/2native-ssh-mcp-helper/SKILL.md`](../skills/2native-ssh-mcp-helper/SKILL.md) from this repository to `.cursor/skills/` and then ask "help me configure 2native-ssh-mcp".
 
@@ -327,14 +326,15 @@ Server options:
 | `hostKeyCheck` | `accept-new` | Host key verification: `accept-new` (accept after unknown record) / `strict` (reject unknown) / `none` (no verification); automatically creates `known_hosts` file and its directory (e.g., `~/.ssh`) if they don't exist |
 | `knownHostsFile` | `~/.ssh/known_hosts` | known_hosts file for host key verification |
 | `keepaliveIntervalMs` / `keepaliveCountMax` | 10000 / 3 | SSH keepalive |
-| `commandTimeoutMs` / `connectionTimeoutMs` / `sftpTimeoutMs` | 30000 / 30000 / 300000 | Various timeouts (`sftpTimeoutMs` is a no-progress timeout; each progress refresh restarts the timer) |
+| `commandTimeoutMs` / `connectionTimeoutMs` / `sftpTimeoutMs` | 120000 / 30000 / 300000 | Various timeouts (`commandTimeoutMs` is the foreground command timeout; `sftpTimeoutMs` is a no-progress timeout, each progress refresh restarts the timer) |
 | `maxOutputBytes` | 10485760 | Maximum combined stdout+stderr output per single command, 0 means unlimited |
 | `outputCompressLight` / `outputCompressThreshold` | true / 4096 | Compress large output at head/tail and threshold |
 | `outputSpillThreshold` / `outputSpillDir` | 8192 / `.ssh-mcp-out` | Spill output to a local directory at this threshold (`-1` disables) |
 | `stripAnsi` | true | Strip ANSI escape sequences from output (false preserves colors/progress bars) |
-| `scriptCleanup` | true | Remove the remote `/tmp` file that an `execute-command` `scriptFile` was staged to, once it finishes (a run interrupted by timeout or the output limit may leave it behind); overridable per call with `scriptCleanup` |
+| `scriptCleanup` | true | Remove the remote `/tmp` file that an `execute-command` `scriptFile` was staged to, once it finishes (a run interrupted by timeout or the output limit may leave it behind) |
 | `scriptInterpreter` | `sh` | Interpreter for a staged script that has no shebang (a script with a shebang runs directly and ignores this) |
-| `lintMode` | `warn` | Structural check before a command is sent: `off` skips it / `warn` reports and still runs / `strict` refuses error-class findings (`COMMAND_LINT_FAILED`); applies to `cmdString` only, overridable per call with `lintMode` |
+| `lintMode` | `warn` | Structural check before a command is sent: `off` skips it / `warn` reports and still runs / `strict` refuses error-class findings (`COMMAND_LINT_FAILED`); applies to `cmdString` only (argv/scriptFile are exempt), config file only |
+| `keepAliveMs` | 600000 | How long the connection is kept after a command, in milliseconds; `-1` closes it right after each command. Named sessions hold their connection regardless |
 | `autoProbe` | true | Probe the remote `base64`/`jq` once after connecting; the result shows as the `capabilities=` segment in `list-servers`. The probe is a plain one-line command, so turn it off on connections whose remote side records every command (bastion, session recording) |
 | `commandTemplate` | empty | Command wrapper template (`<command>` / `<quotedCommand>`) |
 | `pty` | false | Allocate a pseudo-terminal in exec mode (off by default; enable for interactive commands) |

@@ -44,7 +44,6 @@ func TestResolveExecuteRequestArgvMode(t *testing.T) {
 	args := map[string]any{
 		"cmdString": "grep",
 		"args":      []any{"-rn", "foo bar", "$HOME", "*"},
-		"lintMode":  config.LintStrict,
 	}
 	req, err := resolveExecuteRequest(requestManager(t), args, "", "")
 	if err != nil {
@@ -143,7 +142,7 @@ func TestResolveExecuteRequestScriptFileDoesNotUpload(t *testing.T) {
 	if err := os.WriteFile(script, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	req, err := resolveExecuteRequest(m, map[string]any{"scriptFile": script, "lintMode": config.LintStrict}, "", "")
+	req, err := resolveExecuteRequest(m, map[string]any{"scriptFile": script}, "", "")
 	if err != nil {
 		t.Fatalf("a readable local script must resolve without connecting: %v", err)
 	}

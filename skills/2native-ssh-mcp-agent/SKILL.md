@@ -41,7 +41,7 @@ Habits that remove the class:
 5. **Never paste a JSON body or a config file into `cmdString`.** `jq -n --rawfile v /path '{key:$v}'` builds valid JSON from a file with no shell quoting at all; `jq -c -Rs .` does the same from stdin. A hand-written `{"a":"b"}` with inner quotes fails to parse. `list-servers` reports `capabilities=base64,jq` once connected, so you know which of the two exists before you compose.
 6. **Reaching for backslashes to protect `$` is the signal** — that is the point to switch to `args` or a file.
 
-The server also lints `cmdString` before sending it (`lintMode`, default `warn`): findings arrive in the result as `[lint] …` lines and the command still runs; `lintMode: "strict"` refuses error-class findings with `COMMAND_LINT_FAILED`. A finding is a hint that the command will fail or — worse — succeed with the wrong output, so fix it rather than switching the lint off. `args` and `scriptFile` are not linted: they have no shell syntax left to get wrong.
+The server also lints `cmdString` before sending it (`lintMode` is a connection setting, default `warn`): findings arrive in the result as `[lint] …` lines and the command still runs; a connection set to `"strict"` refuses error-class findings with `COMMAND_LINT_FAILED`. A finding is a hint that the command will fail or — worse — succeed with the wrong output, so fix it rather than asking the owner to switch the lint off. `args` and `scriptFile` are not linted: they have no shell syntax left to get wrong.
 
 Before sending, scan for: an odd number of quotes, a command ending in a bare `\`, a heredoc with no closing delimiter line, or a `$` inside a double-quoted `<shell> -c` string (the outer shell expands it first). If a base64-wrapped command returns **empty output with exit code 0**, the remote's base64 implementation did not accept the payload — some (`openssl base64 -d` on OpenSSL 3.0.13) produce empty output and exit 0 when the input lacks a trailing newline. Re-run without the wrapper instead of trusting the empty result.
 
@@ -106,8 +106,8 @@ session(action=close, sessionName=logs)
 
 - **Non-zero exit is a normal result** — read `[exit code] N` from the text; do not treat it as a transport failure.
 - **`SSH_CONNECTION_LOST` (retriable=false)**: the connection dropped mid-command; the remote process may still be running. **Do not replay blindly** — inspect the partial `stdout` in the error JSON (`replaySafe: false`).
-- Foreground `timeout` must exceed the real runtime (default `commandTimeoutMs=30000`). On timeout the remote process group is killed by PID, so nothing is left running remotely.
-- exec runs **without a PTY by default**; interactive commands need `"pty": true` (connection config) or the `pty` tool parameter.
+- Foreground `timeout` must exceed the real runtime (the connection's `commandTimeoutMs`, default 120000, applies otherwise). On timeout the remote process group is killed by PID, so nothing is left running remotely.
+- exec runs **without a PTY by default**; interactive commands need the connection's `"pty": true` (a config change for the owner — ask, or find a non-interactive path such as `sudo -S`).
 - **"jump host [X] is unreachable" / "target authentication … rejected"** — two different failure layers on `via=` connections: the first is the jump host (retry — it may be a transient network issue), the second is the target's own credentials (do not retry; report).
 
 ## Operational traps (verified on real hosts)

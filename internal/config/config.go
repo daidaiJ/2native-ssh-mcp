@@ -16,7 +16,14 @@ const (
 	DefaultPort                = 22
 	DefaultTransportMode       = "exec"
 	DefaultShellReadyTimeoutMs = 10000
-	DefaultCommandTimeoutMs    = 30000
+	// DefaultCommandTimeoutMs is the per-command timeout for exec-mode
+	// commands (and for shell-mode commands, see shellCommandTimeoutMs).
+	// Agents override a 30s timeout on almost every call, so the default
+	// matches what they ask for instead.
+	DefaultCommandTimeoutMs = 120000
+	// DefaultKeepAliveMs is how long a connection stays alive after a
+	// command finishes.
+	DefaultKeepAliveMs         = 600000
 	DefaultConnectionTimeoutMs = 30000
 	DefaultSftpTimeoutMs       = 300000
 	DefaultMaxOutputBytes      = 10 * 1024 * 1024
@@ -151,6 +158,10 @@ type SSHConfig struct {
 	// string: "off", "warn" (default; findings are reported and the command
 	// still runs) or "strict" (error-class findings refuse the command).
 	LintMode string `json:"lintMode,omitempty"`
+	// KeepAliveMs is how long the connection stays alive after a command
+	// finishes (default 600000 = 10 minutes). -1 closes it right after each
+	// command; named sessions keep their connection regardless.
+	KeepAliveMs int `json:"keepAliveMs,omitempty"`
 	// AutoProbe enables the one-off remote capability probe (base64/jq) that
 	// runs when the connection is established (default: true when unset).
 	// Turn it off for connections whose remote side records every command and
@@ -367,6 +378,12 @@ func (c *SSHConfig) Normalize() error {
 	default:
 		return fmt.Errorf("lintMode must be 'off', 'warn' or 'strict', got: %s", c.LintMode)
 	}
+	if c.KeepAliveMs == 0 {
+		c.KeepAliveMs = DefaultKeepAliveMs
+	}
+	if c.KeepAliveMs < -1 {
+		return fmt.Errorf("keepAliveMs must be -1 (close the connection after each command) or a positive duration in milliseconds, got: %d", c.KeepAliveMs)
+	}
 	if c.KnownHostsFile != "" {
 		c.KnownHostsFile = ExpandHome(c.KnownHostsFile)
 	}
@@ -498,10 +515,10 @@ func ValidateVias(configs map[string]*SSHConfig) error {
 // behave interactively and die with the channel (SIGHUP). Interactive
 // commands must opt in via "pty": true or the execute-command pty parameter.
 func (c *SSHConfig) GetPty() bool {
-	if c.Pty != nil {
-		return *c.Pty
+	if c == nil || c.Pty == nil {
+		return false
 	}
-	return false
+	return *c.Pty
 }
 
 // GetStripAnsi returns whether ANSI escape sequences should be stripped from
@@ -585,6 +602,15 @@ func (c *SSHConfig) GetScriptInterpreter() string {
 		return v
 	}
 	return "sh"
+}
+
+// GetKeepAliveMs returns how long the connection stays alive after a command
+// finishes (default 600000). -1 means close it right after each command.
+func (c *SSHConfig) GetKeepAliveMs() int {
+	if c == nil || c.KeepAliveMs == 0 {
+		return DefaultKeepAliveMs
+	}
+	return c.KeepAliveMs
 }
 
 // GetLintMode returns the pre-execution lint mode (default: warn). Unknown

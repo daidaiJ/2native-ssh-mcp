@@ -43,7 +43,6 @@ func (r *executeRequest) gateText() string {
 func resolveExecuteRequest(m *manager.Manager, args map[string]any, sessionName, connectionName string) (*executeRequest, error) {
 	cmdString, _ := args["cmdString"].(string)
 	scriptFile, _ := args["scriptFile"].(string)
-	lintMode, _ := args["lintMode"].(string)
 	argvArgs, err := stringArrayArg(args["args"])
 	if err != nil {
 		return nil, err
@@ -60,10 +59,10 @@ func resolveExecuteRequest(m *manager.Manager, args map[string]any, sessionName,
 		return nil, manager.NewToolError(manager.CodeCommandValidationFailed,
 			"args cannot be combined with scriptFile: the script's arguments belong inside the script", false)
 	}
-	req := &executeRequest{lintMode: lintMode}
+	req := &executeRequest{}
 	switch {
 	case strings.TrimSpace(scriptFile) != "":
-		return resolveScriptRequest(m, req, scriptFile, args, sessionName, connectionName)
+		return resolveScriptRequest(m, req, scriptFile, sessionName, connectionName)
 	case len(argvArgs) > 0:
 		execText, auditText, err := manager.JoinArgv(cmdString, argvArgs)
 		if err != nil {
@@ -85,7 +84,7 @@ func resolveExecuteRequest(m *manager.Manager, args map[string]any, sessionName,
 // approval gate and whitelist/blacklist, so a rejected call never leaves a
 // temp file on the remote host.
 func resolveScriptRequest(m *manager.Manager, req *executeRequest,
-	scriptFile string, args map[string]any, sessionName, connectionName string) (*executeRequest, error) {
+	scriptFile string, sessionName, connectionName string) (*executeRequest, error) {
 	key, err := m.ResolveConnection(sessionName, connectionName)
 	if err != nil {
 		return nil, err
@@ -97,9 +96,6 @@ func resolveScriptRequest(m *manager.Manager, req *executeRequest,
 	cfg := m.ConfigFor(sessionName, connectionName)
 	interpreter := cfg.GetScriptInterpreter()
 	cleanup := cfg.GetScriptCleanup()
-	if v, ok := args["scriptCleanup"].(bool); ok {
-		cleanup = v
-	}
 	execCommand, auditCommand, run := manager.PrepareScript(scriptFile, content, interpreter, cleanup)
 	req.execCommand = execCommand
 	req.auditCommand = auditCommand

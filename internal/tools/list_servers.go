@@ -16,7 +16,7 @@ import (
 // registerListServers registers the list-servers tool.
 func registerListServers(s *server.MCPServer, m *manager.Manager) {
 	tool := mcp.NewTool("list-servers",
-		mcp.WithDescription("List configured SSH servers (metadata, connection status, system info, last few recorded commands) and active named sessions. Call this first to pick connectionName or sessionName — the recent commands help resume context from a previous session."),
+		mcp.WithDescription("List configured SSH servers (status, system info, recent commands) and active named sessions. Call this first to pick connectionName or sessionName."),
 		readOnlyAnnotation("List SSH servers and sessions"),
 	)
 

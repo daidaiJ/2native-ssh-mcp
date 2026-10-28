@@ -266,14 +266,17 @@ func TestSessionReadWaitMs(t *testing.T) {
 }
 
 // TestBackgroundPTY verifies the opt-in PTY wrapper for background jobs:
-// the detached process sees a TTY on stdout (issue #3 Slice C).
+// the detached process sees a TTY on stdout (issue #3 Slice C). The knob is
+// the connection's pty setting, with the manager-level override left for
+// internal callers.
 func TestBackgroundPTY(t *testing.T) {
 	m := loadTestManager(t)
 	name := "bgpty"
 	_ = m.CloseSession(context.Background(), name)
+	pty := true
 	_, err := m.OpenSessionWithOptions(context.Background(), name, "ubuntu", SessionOpenOptions{
 		Background: true,
-		Pty:        true,
+		Pty:        &pty,
 		CmdString:  "sleep 2; if [ -t 1 ]; then echo BG_PTY_YES; else echo BG_PTY_NO; fi",
 	})
 	if err != nil {

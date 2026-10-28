@@ -16,11 +16,11 @@ import (
 
 // RunOptions controls a single command execution.
 type RunOptions struct {
-	Timeout           time.Duration // overrides the connection's command timeout
-	KeepAlive         *bool         // keep the connection alive after the command (default: true; named sessions ignore false because the connection may host other sessions)
-	KeepAliveDuration time.Duration // idle duration after the command (default: 10 minutes)
+	Timeout time.Duration // overrides the connection's command timeout
 	// Pty overrides the connection's pty setting for this exec command
-	// (default: connection config, which itself defaults to no PTY).
+	// (default: connection config, which itself defaults to no PTY). Not
+	// reachable from the tool schema: the agent-visible knob is the
+	// connection's pty setting.
 	Pty          *bool
 	Prevalidated bool // skip whitelist/blacklist (internal commands)
 	// Approval is the destructive-command gate outcome for the audit log
@@ -114,20 +114,13 @@ func (m *Manager) ExecuteCommand(ctx context.Context, cmdString, directory, name
 		result.Lint = lintFindings
 	}
 
-	// Keepalive policy: keep the connection alive (default 10 minutes) or
-	// close it right away.
-	keepAlive := true
-	if opts.KeepAlive != nil {
-		keepAlive = *opts.KeepAlive
-	}
-	duration := opts.KeepAliveDuration
-	if duration <= 0 {
-		duration = DefaultKeepAliveDuration
-	}
-	if keepAlive {
-		m.Touch(key, duration)
-	} else {
+	// Keep-alive policy belongs to the connection: a positive value is the
+	// idle window after the command, -1 closes the connection right away.
+	// Named sessions hold their connection regardless (see RunInSession).
+	if keepAliveMs := cfg.GetKeepAliveMs(); keepAliveMs < 0 {
 		m.Disconnect(key)
+	} else {
+		m.Touch(key, time.Duration(keepAliveMs)*time.Millisecond)
 	}
 
 	return result, err

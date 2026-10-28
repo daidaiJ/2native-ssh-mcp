@@ -40,9 +40,10 @@ type SessionOpenOptions struct {
 	CmdString  string
 	Directory  string
 	// Pty wraps the detached job in a pseudo-terminal (util-linux `script`).
-	// Off by default; opt in for programs that refuse to run without a TTY
-	// (their line buffering also disappears, on top of PYTHONUNBUFFERED).
-	Pty bool
+	// Nil uses the connection's pty setting; opt in for programs that refuse
+	// to run without a TTY (their line buffering also disappears, on top of
+	// PYTHONUNBUFFERED).
+	Pty *bool
 	// Approval is the destructive-command gate outcome for the audit record
 	// of the detached command ("" means the gate did not need to ask).
 	Approval string
@@ -175,7 +176,13 @@ func (m *Manager) openOrReuseSession(ctx context.Context, sessionName, connectio
 	m.mu.Unlock()
 
 	m.recordSessionEvent(connKey, sessionName, "open")
-	m.Touch(connKey, DefaultKeepAliveDuration)
+	// A session holds its connection until it is closed or idles out, so
+	// keepAliveMs: -1 does not apply here.
+	if keepAliveMs := cfg.GetKeepAliveMs(); keepAliveMs > 0 {
+		m.Touch(connKey, time.Duration(keepAliveMs)*time.Millisecond)
+	} else {
+		m.Touch(connKey, DefaultKeepAliveDuration)
+	}
 	return info, nil
 }
 
@@ -222,7 +229,11 @@ func (m *Manager) startBackgroundCommand(ctx context.Context, sessionName string
 		return nil, err
 	}
 
-	script := buildBGStarterScript(ns.bgLogPath, ns.bgPIDPath, ns.bgExitPath, body, opts.Pty)
+	usePty := cfg.GetPty()
+	if opts.Pty != nil {
+		usePty = *opts.Pty
+	}
+	script := buildBGStarterScript(ns.bgLogPath, ns.bgPIDPath, ns.bgExitPath, body, usePty)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	output, err := m.runDetachedExec(ctx, client, script, 15*time.Second)
