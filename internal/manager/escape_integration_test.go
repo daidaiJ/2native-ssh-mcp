@@ -141,12 +141,11 @@ func TestIntegrationBackgroundStagedScriptKeepsExitCode(t *testing.T) {
 		t.Fatal(err)
 	}
 	session := "bg-script-check"
-	_, err = m.OpenSessionWithOptions(context.Background(), session, integrationConn, SessionOpenOptions{
+	if _, err := m.OpenSessionWithOptions(context.Background(), session, integrationConn, SessionOpenOptions{
 		Background:   true,
 		CmdString:    ScriptCommand(remotePath, content, "sh", true),
 		AuditCommand: ScriptAuditText(local, remotePath, "sh", content, true),
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("background start failed: %v", err)
 	}
 	defer m.CloseSession(context.Background(), session)
