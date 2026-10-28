@@ -226,7 +226,7 @@ go build -o 2native-ssh-mcp.new.exe -ldflags "-X main.version=vX.Y.Z" .
 # 3. swap binaries (keep the old one as .exe~)
 mv 2native-ssh-mcp.exe 2native-ssh-mcp.exe~ && mv 2native-ssh-mcp.new.exe 2native-ssh-mcp.exe
 # 4. restart hidden — `start` is a blocking owner-lease command, never foreground it
-cscript //nologo autostart.vbs        # Windows; elsewhere: nohup 2native-ssh-mcp start ... &
+wscript autostart.vbs                 # Windows (WMI launch: the daemon has no console window); elsewhere: nohup 2native-ssh-mcp start ... &
 # 5. verify
 2native-ssh-mcp status && curl -s http://127.0.0.1:8338/__admin/health
 ```
@@ -239,7 +239,7 @@ mv 2native-ssh-mcp.exe 2native-ssh-mcp.exe~ && mv 2native-ssh-mcp.new.exe 2nativ
 ```
 Then restart the MCP server from the client (restart the session / reconnect the MCP server); each client process runs its own server. Verify with a test tool call through the client.
 
-Gotchas: `install` rewrites `autostart.vbs` and **drops a manually added `--http-addr`** — re-add it after running install. `config.json` lives in the deploy dir and is never touched by an upgrade. If `stop` hangs on guest leases, `kill` is the hard fallback.
+Gotchas: `install` rewrites `autostart.vbs` and **drops a manually added `--http-addr`** — re-add it after running install. The generated `autostart.vbs` starts the daemon through WMI so the process has **no console window** (a hidden `WshShell.Run` window is still a console window and shows up as a black window when the launcher owns a console). `config.json` lives in the deploy dir and is never touched by an upgrade. If `stop` hangs on guest leases, `kill` is the hard fallback.
 
 ## Release workflow
 

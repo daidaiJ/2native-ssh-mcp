@@ -95,6 +95,8 @@ MCP 客户端配置里只出现配置文件路径：
 2native-ssh-mcp.exe uninstall
 ```
 
+`install` 生成的 `autostart.vbs` 经 WMI 创建 daemon 进程，进程**完全没有控制台窗口**（`WshShell.Run` 的隐藏窗口仍会分配一个控制台窗口，在 cscript / `start` / 资源管理器这类自带控制台的启动上下文里可能显形）；WMI 调用失败时回退到隐藏窗口启动。手工重启 daemon 用 `wscript autostart.vbs`，不要用 `cscript`。
+
 **引用计数与租约**：第一个 `start` 是 owner（与 daemon 进程同寿，永不过期）；额外的 `start` 是 **guest 租约**，空闲 **15 分钟**没有 `/mcp` 请求就会被回收（计数自动 -1）。任何通过鉴权的 `/mcp` 请求（无论来自哪个客户端/凭证、无论 MCP 层是否成功）都会**刷新全部** guest 租约的到期时间——只要 daemon 还在被用，任何 guest 都不会掉。`stop` 优先减一个 guest，没有 guest 才减 owner；计数归零 daemon 退出。daemon 进程本身不会因空闲退出（owner 不过期）。`kill` / Ctrl-C 直接关，不看计数。
 
 MCP 客户端配置：

@@ -95,6 +95,8 @@ After preparing `config.json` using one of the secure configuration methods abov
 2native-ssh-mcp.exe uninstall
 ```
 
+The `autostart.vbs` written by `install` creates the daemon through WMI, so the process has **no console window at all** (`WshShell.Run`'s hidden window still allocates a console window, which a launch context that owns a console — cscript, `start`, Explorer — can surface). If the WMI call fails, it falls back to a hidden-window launch. Restart the daemon manually with `wscript autostart.vbs`, not `cscript`.
+
 **Reference Counting and Leases**: The first `start` creates an owner (lives as long as the daemon process, never expires); additional `start` commands create **guest leases** that are automatically reclaimed (count -1) after 15 minutes of idleness with no `/mcp` requests. Any authenticated `/mcp` request (regardless of client/credentials or MCP layer success) **refreshes the expiration time of ALL** guest leases — as long as the daemon is still in use, no guest will be reclaimed. `stop` decrements a guest first, and only decrements the owner if there are no guests left; the daemon exits when the count reaches zero. The daemon process itself never exits due to idleness (owner never expires). `kill` / Ctrl-C shuts down immediately, ignoring reference count.
 
 MCP client configuration:
