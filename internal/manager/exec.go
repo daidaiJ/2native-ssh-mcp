@@ -21,7 +21,7 @@ type RunOptions struct {
 	KeepAliveDuration time.Duration // idle duration after the command (default: 10 minutes)
 	// Pty overrides the connection's pty setting for this exec command
 	// (default: connection config, which itself defaults to no PTY).
-	Pty *bool
+	Pty          *bool
 	Prevalidated bool // skip whitelist/blacklist (internal commands)
 	// Approval is the destructive-command gate outcome for the audit log
 	// ("accepted"/"fail-open"; "" means the gate did not need to ask).
@@ -36,6 +36,9 @@ type RunOptions struct {
 	// LintMode overrides the connection's lintMode for this call
 	// ("off"/"warn"/"strict"); empty means use the connection's setting.
 	LintMode string
+	// Script is uploaded after whitelist/blacklist and lint pass, and
+	// before the command runs, so a rejected call never leaves a temp file.
+	Script *ScriptUpload
 }
 
 // ExecuteCommand runs a command on the named connection and returns a
@@ -88,6 +91,10 @@ func (m *Manager) ExecuteCommand(ctx context.Context, cmdString, directory, name
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
+	}
+
+	if err := m.stageUpload(ctx, key, opts.Script); err != nil {
+		return CommandResult{}, err
 	}
 
 	client, err := m.EnsureConnected(ctx, name)

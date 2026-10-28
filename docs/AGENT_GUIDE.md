@@ -47,7 +47,7 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 | `scriptFile` | 超过两三行的脚本 | `sh /tmp/.2native-ssh-mcp-<name>-<rand>.sh`（有 shebang 时直接跑该文件） | 脚本正文本身，首行是注释头：来源、暂存路径、解释器 |
 
 - 白/黑名单、破坏性分类器、审批弹窗、审计记录看的都是**可读等效命令**（argv 的原始参数、脚本正文），不是引用后的执行串，也没有任何 base64 包装——审计日志里能直接照抄重跑。
-- `scriptFile` 暂存到 `/tmp/.2native-ssh-mcp-<basename>-<rand>.sh`（模式 0700，`<target>.part` + rename 原子落盘）；`scriptCleanup: false` 留档排查，注意它是**远端**文件。
+- `scriptFile` 暂存到 `/tmp/.2native-ssh-mcp-<basename>-<rand>.sh`（模式 0700，`<target>.part` + rename 原子落盘）；上传发生在审批和白/黑名单通过之后，拒绝的调用不会在远端留下文件。`scriptCleanup: false` 留档排查，注意它是**远端**文件。
 - 后台模式同样适用：清理写成 `(exit $rc)` 子壳，保住脚本自身的退出码（裸 `exit` 会跳过后台 starter 的 `echo $? > exitfile`）。
 - lint 只跑 `cmdString`（shell 模式）：argv 模式已经逐参数引用，不存在 shell 语法；脚本的语法错误由远端解释器自己报（带行号）。
 

@@ -87,8 +87,8 @@ func TestIntegrationStagedScriptRunsAndCleansUp(t *testing.T) {
 	if err := os.WriteFile(local, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	remotePath, err := m.StageScript(context.Background(), integrationConn, local, content)
-	if err != nil {
+	remotePath := scriptTempPath(local)
+	if err := m.StageScript(context.Background(), integrationConn, remotePath, content); err != nil {
 		t.Fatalf("staging failed: %v", err)
 	}
 	if !strings.HasPrefix(remotePath, "/tmp/.2native-ssh-mcp-") || strings.Contains(remotePath, " ") {
@@ -115,8 +115,8 @@ func TestIntegrationStagedScriptKeptWhenCleanupOff(t *testing.T) {
 
 	local := filepath.Join(t.TempDir(), "keep.sh")
 	content := []byte("echo kept\n")
-	remotePath, err := m.StageScript(context.Background(), integrationConn, local, content)
-	if err != nil {
+	remotePath := scriptTempPath(local)
+	if err := m.StageScript(context.Background(), integrationConn, remotePath, content); err != nil {
 		t.Fatal(err)
 	}
 	res := runIntegration(t, m, ScriptCommand(remotePath, content, "sh", false), RunOptions{})
@@ -136,8 +136,8 @@ func TestIntegrationBackgroundStagedScriptKeepsExitCode(t *testing.T) {
 
 	local := filepath.Join(t.TempDir(), "bg.sh")
 	content := []byte("sleep 2\nexit 5\n")
-	remotePath, err := m.StageScript(context.Background(), integrationConn, local, content)
-	if err != nil {
+	remotePath := scriptTempPath(local)
+	if err := m.StageScript(context.Background(), integrationConn, remotePath, content); err != nil {
 		t.Fatal(err)
 	}
 	session := "bg-script-check"

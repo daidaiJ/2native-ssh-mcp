@@ -47,7 +47,7 @@ A quoting mistake is **silent** — the outer shell eats `$1`, the command still
 | `scriptFile` | anything past two or three lines | `sh /tmp/.2native-ssh-mcp-<name>-<rand>.sh` (the file itself when it has a shebang) | the script text itself, headed by a comment naming the source, the staged path and the interpreter |
 
 - The whitelist/blacklist, the destructive classifier, the approval prompt and the audit record all see the **readable equivalent** (the original argv, the script body) — never the quoted execution text, never a base64 wrapper. An auditor can copy the record and re-run it.
-- `scriptFile` is staged at `/tmp/.2native-ssh-mcp-<basename>-<rand>.sh` (mode 0700, written as `<target>.part` then renamed); `scriptCleanup: false` keeps it for debugging — it is a **remote** file.
+- `scriptFile` is staged at `/tmp/.2native-ssh-mcp-<basename>-<rand>.sh` (mode 0700, written as `<target>.part` then renamed). The upload runs after the approval gate and the whitelist/blacklist, so a refused call never leaves a remote file. `scriptCleanup: false` keeps it for debugging — it is a **remote** file.
 - Background mode behaves the same way: the cleanup is written as `(exit $rc)` in a subshell so the script's own exit code survives (a bare `exit` would skip the background starter's `echo $? > exitfile`).
 - Lint runs on `cmdString` (shell mode) only: argv mode is already quoted per argument and has no shell syntax left, and a script's syntax errors are reported by the remote interpreter itself, with a line number.
 

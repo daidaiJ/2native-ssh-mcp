@@ -75,8 +75,8 @@
 | `cmdString` + `args` | 服务端逐参数单引号引用后执行（不经 shell 解析） | 只加必要引号的同一命令行（如 `grep -rn 'foo bar' /etc`） |
 | `scriptFile` | SFTP 暂存到 `/tmp/.2native-ssh-mcp-<name>-<rand>.sh`（0700、`.part`+rename）后执行 | 脚本正文本身（首行注释标注来源、暂存路径、解释器） |
 
-- 白/黑名单、破坏性分类器、审批弹窗、审计哈希链记录的都是可读等效命令；argv 模式按**原始参数**匹配策略，引用不会掩盖命中。
-- `lintMode`（`off`/`warn` 默认/`strict`）在下发前做结构检查：只抓 shell 解析器看不见的那类问题（双引号脚本里的 `$1` 会被外层吃掉、未闭合引号/反引号/heredoc），不误报（`bash -n` 才是权威解析器，lint 不重复它）。`strict` 对 error 级 finding 返回 `COMMAND_LINT_FAILED`；argv/scriptFile 形态不适用（前者已逐参数引用，后者由远端解释器自己报语法错误）。
+- 白/黑名单、破坏性分类器、审批弹窗、审计哈希链记录的都是可读等效命令；argv 模式按**原始参数**匹配策略，引用不会掩盖命中。`scriptFile` 在审批和白/黑名单通过之后才上传，拒绝的调用不会在远端留下暂存文件。
+- `lintMode`（`off`/`warn` 默认/`strict`）在下发前做结构检查：抓外层 shell 会静默吃掉的 `$1`（`sh -n` 看不见），以及未闭合引号/反引号/heredoc（`strict` 据此直接拒绝，避免一次注定失败的远端往返）。`strict` 对 error 级 finding 返回 `COMMAND_LINT_FAILED`；argv/scriptFile 形态不适用（前者已逐参数引用，后者由远端解释器自己报语法错误）。后台模式同样走 lint。
 - `scriptCleanup`（默认开）执行完删除暂存脚本；清理写成 `(exit $rc)` 子壳，**不破坏退出码**（裸 `exit` 会跳过后台 starter 的退出码落盘）。超时/输出上限打断时清理不执行，属已知取舍。
 - 连接建立后探一次远端 `base64`/`jq` 能力（`list-servers` 的 `capabilities=`），探测命令是明文单行命令；`autoProbe: false` 关闭——远端会记录每条命令（堡垒机、会话录制）时用得上。
 

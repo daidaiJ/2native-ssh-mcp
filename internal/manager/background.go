@@ -50,6 +50,12 @@ type SessionOpenOptions struct {
 	// whitelist/blacklist check and the audit record when the executed text
 	// is a machine-generated rendering (argv mode, staged scriptFile).
 	AuditCommand string
+	// LintMode overrides the connection's lintMode for this detached command
+	// ("off"/"warn"/"strict"); empty means use the connection's setting.
+	LintMode string
+	// Script is uploaded after whitelist/blacklist and lint pass, and
+	// before the detached job starts.
+	Script *ScriptUpload
 }
 
 // SessionOutput holds polled background session output.
@@ -98,7 +104,7 @@ func (m *Manager) OpenSessionWithOptions(ctx context.Context, sessionName, conne
 			fmt.Sprintf("session %q already exists (finished); close it first or read logPath=%s", sessionName, logPath), false)
 	}
 	m.mu.Unlock()
-	return m.startBackgroundCommand(ctx, sessionName, opts.CmdString, opts.Directory, opts.Pty, opts.Approval, opts.AuditCommand)
+	return m.startBackgroundCommand(ctx, sessionName, opts)
 }
 
 // openOrReuseSession is the core of OpenSession without background start.
@@ -177,7 +183,7 @@ func (m *Manager) openOrReuseSession(ctx context.Context, sessionName, connectio
 // channel: a fresh no-PTY exec runs a starter that setsid's the job into a
 // new session with stdio redirected to a remote log, then exits. The job
 // survives connection drops; read/stop re-attach via fresh exec channels.
-func (m *Manager) startBackgroundCommand(ctx context.Context, sessionName, cmdString, directory string, pty bool, approval, auditCommand string) (*SessionInfo, error) {
+func (m *Manager) startBackgroundCommand(ctx context.Context, sessionName string, opts SessionOpenOptions) (*SessionInfo, error) {
 	m.mu.Lock()
 	ns, ok := m.sessions[sessionName]
 	m.mu.Unlock()
@@ -188,15 +194,24 @@ func (m *Manager) startBackgroundCommand(ctx context.Context, sessionName, cmdSt
 	m.beginOp(ns.connectionKey)
 	defer m.endOp(ns.connectionKey)
 
-	auditText := auditTextFor(cmdString, auditCommand)
+	auditText := auditTextFor(opts.CmdString, opts.AuditCommand)
 	if err := m.validateCommand(auditText, ns.connectionKey); err != nil {
 		return nil, err
 	}
 
 	cfg := m.configs[ns.connectionKey]
-	body := cmdString
-	if directory != "" {
-		body = "cd -- " + shellQuote(directory) + " && " + cmdString
+	lintFindings, lintErr := m.checkCommandLint(opts.CmdString, LintModeFor(cfg, opts.LintMode))
+	if lintErr != nil {
+		return nil, lintErr
+	}
+
+	if err := m.stageUpload(ctx, ns.connectionKey, opts.Script); err != nil {
+		return nil, err
+	}
+
+	body := opts.CmdString
+	if opts.Directory != "" {
+		body = "cd -- " + shellQuote(opts.Directory) + " && " + opts.CmdString
 	}
 	if cfg != nil && cfg.CommandTemplate != "" {
 		body = applyCommandTemplate(cfg.CommandTemplate, body)
@@ -207,7 +222,7 @@ func (m *Manager) startBackgroundCommand(ctx context.Context, sessionName, cmdSt
 		return nil, err
 	}
 
-	script := buildBGStarterScript(ns.bgLogPath, ns.bgPIDPath, ns.bgExitPath, body, pty)
+	script := buildBGStarterScript(ns.bgLogPath, ns.bgPIDPath, ns.bgExitPath, body, opts.Pty)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	output, err := m.runDetachedExec(ctx, client, script, 15*time.Second)
@@ -222,7 +237,7 @@ func (m *Manager) startBackgroundCommand(ctx context.Context, sessionName, cmdSt
 
 	m.mu.Lock()
 	ns.background = true
-	ns.bgCommand = cmdString
+	ns.bgCommand = opts.CmdString
 	ns.bgOffset = 0
 	ns.bgRunning = true
 	m.mu.Unlock()
@@ -231,13 +246,14 @@ func (m *Manager) startBackgroundCommand(ctx context.Context, sessionName, cmdSt
 		Tool:     "execute-command",
 		Command:  "[background] " + auditText,
 		Session:  sessionName,
-		Approval: approval,
+		Approval: opts.Approval,
 		Success:  true,
 	}, true)
 
 	m.mu.Lock()
 	info := m.sessionInfoLocked(ns)
 	m.mu.Unlock()
+	info.Lint = lintFindings
 	return info, nil
 }
 

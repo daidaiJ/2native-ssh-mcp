@@ -25,12 +25,12 @@ const (
 
 // LintShell runs cheap structural checks over a shell command string.
 //
-// It deliberately covers only what a shell parser cannot see. Everything a
-// parser does see — unbalanced quotes, unterminated heredocs, `| |`, unclosed
-// blocks — is left to the remote shell's own `-n` preflight, which is
-// authoritative and has no false positives. The check here is the one `-n` is
-// blind to: quoting that is valid for the outer shell but silently changes
-// what an inner shell receives.
+// Nested-positional detection is the check a remote `sh -n` is blind to:
+// quoting that is valid for the outer shell but silently empties `$1` before
+// an inner shell runs. Unterminated quotes, backticks and heredocs are also
+// reported so lintMode=strict can refuse the command without a remote round
+// trip; they overlap what `sh -n` would catch, and are kept because the
+// alternative is sending a command that cannot work.
 func LintShell(cmd string) []LintFinding {
 	var out []LintFinding
 	for _, t := range shellTokens(cmd) {
@@ -564,11 +564,15 @@ func readQuoted(cmd string, i int) (shellToken, int) {
 
 // skipHeredoc returns the offset just past a heredoc opener and its body.
 func skipHeredoc(cmd string, i int) (int, bool) {
-	_, delim, tabs, ok := parseHeredocDelim(cmd, i)
+	pos, delim, tabs, ok := parseHeredocDelim(cmd, i)
 	if !ok {
 		return i, false
 	}
-	i += len(delim) + 2
+	end := pos + len(delim)
+	if end < len(cmd) && (cmd[end] == '\'' || cmd[end] == '"') {
+		end++
+	}
+	i = end
 	for i <= len(cmd) {
 		var line string
 		if j := strings.IndexByte(cmd[i:], '\n'); j >= 0 {
@@ -601,7 +605,7 @@ func markNestedShellArgs(toks []shellToken) {
 		if t.kind != tokQuote || t.quote != '"' || k == 0 {
 			continue
 		}
-		if prev := toks[k-1]; prev.kind == tokWord && prev.text == "-c" {
+		if prev := toks[k-1]; prev.kind == tokWord && isShellCFlag(prev.text) {
 			if shellWordBefore(toks, k-2) {
 				toks[k].nestedShellArg = true
 			}
@@ -627,6 +631,16 @@ func shellWordBefore(toks []shellToken, from int) bool {
 		}
 	}
 	return false
+}
+
+// isShellCFlag reports whether w is a clustered short-option word that
+// includes -c (`-c`, `-lc`, `-ic`), the form that hands the next argument to
+// a nested shell.
+func isShellCFlag(w string) bool {
+	if !strings.HasPrefix(w, "-") || strings.HasPrefix(w, "--") {
+		return false
+	}
+	return strings.ContainsRune(w[1:], 'c')
 }
 
 // shellWord reports whether a word looks like a shell that takes -c.

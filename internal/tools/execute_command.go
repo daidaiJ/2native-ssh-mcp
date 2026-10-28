@@ -53,7 +53,7 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 		// identity rides on the result of a call that ran.
 		id := lookupDefaultRoute(m.ConfigFor(sessionName, connectionName), connectionName, sessionName)
 
-		req, err := resolveExecuteRequest(ctx, m, args, sessionName, connectionName)
+		req, err := resolveExecuteRequest(m, args, sessionName, connectionName)
 		if err != nil {
 			return errorResultFor(err, manager.CommandResult{ConnectionIdentity: id}), nil
 		}
@@ -61,6 +61,7 @@ func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 		opts := manager.RunOptions{
 			AuditCommand: req.auditCommand,
 			LintMode:     req.lintMode,
+			Script:       req.script,
 		}
 		if v, ok := args["timeout"].(float64); ok && v > 0 {
 			opts.Timeout = time.Duration(v) * time.Millisecond
@@ -130,6 +131,8 @@ func handleBackgroundCommand(ctx context.Context, m *manager.Manager, req *execu
 		Pty:          pty,
 		Approval:     approval,
 		AuditCommand: req.auditCommand,
+		LintMode:     req.lintMode,
+		Script:       req.script,
 	})
 	if err != nil {
 		return errorResultFor(err, manager.CommandResult{ConnectionIdentity: id}), nil
@@ -138,6 +141,9 @@ func handleBackgroundCommand(ctx context.Context, m *manager.Manager, req *execu
 	text := fmt.Sprintf(
 		"Background job started: session=%q logPath=%s\nPoll with session action=read (sessionName=%q, waitMs blocks for new output); stop with session action=close.\n\n%s",
 		info.Name, info.LogPath, info.Name, raw)
+	if len(info.Lint) > 0 {
+		text = "[lint]\n" + strings.Join(info.Lint, "\n") + "\n" + text
+	}
 	if req.scriptRun != nil {
 		text = req.scriptRun.Summary() + "\n" + text
 	}

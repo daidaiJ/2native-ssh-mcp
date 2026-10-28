@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,8 @@ const scriptAuditMaxBytes = 16 * 1024
 // server stages in /tmp carries one recognizable prefix.
 const scriptTempPrefix = "/tmp/.2native-ssh-mcp-"
 
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
 // ScriptRun describes a scriptFile execution: where the local script was
 // staged, what ran it, and whether the temp file was removed afterwards.
 type ScriptRun struct {
@@ -34,6 +37,14 @@ type ScriptRun struct {
 	Bytes       int    `json:"bytes"`
 	Cleanup     bool   `json:"cleanup"`
 	Shebang     bool   `json:"shebang,omitempty"`
+}
+
+// ScriptUpload is a local script that is written to the remote host after
+// policy checks pass and before the command runs, so a rejected call never
+// leaves a temp file behind.
+type ScriptUpload struct {
+	RemotePath string
+	Content    []byte
 }
 
 // Summary is the one-line description of a staged-script run, shown in the
@@ -51,9 +62,29 @@ func (s ScriptRun) Summary() string {
 		s.LocalPath, s.Bytes, s.RemotePath, runner, cleaned)
 }
 
+// PrepareScript builds the remote path, the command that runs the staged
+// file, the audit-visible equivalent and the ScriptRun metadata. The file
+// itself is not uploaded; StageScript is called after policy checks pass.
+func PrepareScript(localPath string, content []byte, interpreter string, cleanup bool) (execCommand, auditCommand string, run *ScriptRun) {
+	remotePath := scriptTempPath(localPath)
+	run = &ScriptRun{
+		LocalPath:   localPath,
+		RemotePath:  remotePath,
+		Interpreter: interpreter,
+		Bytes:       len(content),
+		Cleanup:     cleanup,
+		Shebang:     scriptHasShebang(content),
+	}
+	return ScriptCommand(remotePath, content, interpreter, cleanup),
+		ScriptAuditText(localPath, remotePath, interpreter, content, cleanup),
+		run
+}
+
 // ReadScriptFile reads a local script for a scriptFile execution, applying the
 // same localPathMode rules as file-transfer (the source is read, so it is
-// validated as a read path and must exist).
+// validated as a read path and must exist). CRLF line endings and a UTF-8 BOM
+// are stripped so a Windows-authored script still has a working shebang on a
+// POSIX host.
 func (m *Manager) ReadScriptFile(localPath, connectionName string) ([]byte, error) {
 	resolved, err := m.validateLocalPath(localPath, connectionName, "read")
 	if err != nil {
@@ -73,11 +104,23 @@ func (m *Manager) ReadScriptFile(localPath, connectionName string) ([]byte, erro
 			fmt.Sprintf("scriptFile is %d bytes; the limit is %d bytes. Split the script or run it with cmdString instead.",
 				info.Size(), maxScriptFileBytes), false)
 	}
-	content, err := os.ReadFile(resolved)
+	f, err := os.Open(resolved)
 	if err != nil {
 		return nil, newToolError(CodeLocalFileReadFailed,
 			fmt.Sprintf("Failed to read local script: %v", err), false)
 	}
+	defer f.Close()
+	content, err := io.ReadAll(io.LimitReader(f, maxScriptFileBytes+1))
+	if err != nil {
+		return nil, newToolError(CodeLocalFileReadFailed,
+			fmt.Sprintf("Failed to read local script: %v", err), false)
+	}
+	if len(content) > maxScriptFileBytes {
+		return nil, newToolError(CodeLocalFileReadFailed,
+			fmt.Sprintf("scriptFile is %d bytes; the limit is %d bytes. Split the script or run it with cmdString instead.",
+				len(content), maxScriptFileBytes), false)
+	}
+	content = normalizeScriptContent(content)
 	if len(bytes.TrimSpace(content)) == 0 {
 		return nil, newToolError(CodeLocalFileReadFailed,
 			fmt.Sprintf("scriptFile is empty: %s", localPath), false)
@@ -85,39 +128,50 @@ func (m *Manager) ReadScriptFile(localPath, connectionName string) ([]byte, erro
 	return content, nil
 }
 
-// StageScript uploads a script to the connection's remote /tmp under a
-// one-time random name (atomic: <target>.part then rename, mode 0700) and
-// returns the remote path. Nothing about the upload is hidden from the audit
-// trail: the record for the run carries the script text itself.
-func (m *Manager) StageScript(ctx context.Context, connectionName, localPath string, content []byte) (string, error) {
+// StageScript uploads content to remotePath (atomic: <target>.part then
+// rename, mode 0700). The path is chosen by PrepareScript so the approval
+// prompt and the audit record name the file that will actually be written.
+func (m *Manager) StageScript(ctx context.Context, connectionName, remotePath string, content []byte) error {
 	key := m.resolveName(connectionName)
 	client, err := m.EnsureConnected(ctx, key)
 	if err != nil {
-		return "", err
+		return err
 	}
 	cfg := m.configs[key]
 	sftpClient, sshClient, err := m.acquireSftp(ctx, client, key, cfg, false)
 	if err != nil {
-		return "", err
+		return err
 	}
-	remotePath := scriptTempPath(localPath)
 	partPath := remotePath + uploadPartSuffix
 	if err := writeRemoteFile(sftpClient, partPath, remotePath, content); err != nil {
 		_ = sftpClient.Remove(partPath)
 		// A failed upload leaves the pooled client in an unknown state for
 		// the next user: close it instead of returning it to the pool.
 		_ = sftpClient.Close()
-		return "", classifySftpError("upload", localPath, remotePath, err)
+		return classifySftpError("upload", remotePath, remotePath, err)
 	}
 	m.releaseSftp(key, cfg, false, sftpClient, sshClient)
-	return remotePath, nil
+	return nil
+}
+
+func (m *Manager) stageUpload(ctx context.Context, key string, up *ScriptUpload) error {
+	if up == nil {
+		return nil
+	}
+	return m.StageScript(ctx, key, up.RemotePath, up.Content)
 }
 
 // writeRemoteFile writes content to partPath, makes it executable and moves it
-// onto remotePath, so a reader never sees a half-written script.
+// onto remotePath, so a reader never sees a half-written script. Mode 0700 is
+// set before the body is written so a shared /tmp cannot read the script
+// between create and chmod.
 func writeRemoteFile(sftpClient *sftp.Client, partPath, remotePath string, content []byte) error {
 	f, err := sftpClient.Create(partPath)
 	if err != nil {
+		return err
+	}
+	if err := sftpClient.Chmod(partPath, 0o700); err != nil {
+		f.Close()
 		return err
 	}
 	if _, err := f.Write(content); err != nil {
@@ -125,9 +179,6 @@ func writeRemoteFile(sftpClient *sftp.Client, partPath, remotePath string, conte
 		return err
 	}
 	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := sftpClient.Chmod(partPath, 0o700); err != nil {
 		return err
 	}
 	return sftpClient.Rename(partPath, remotePath)
@@ -141,12 +192,26 @@ func writeRemoteFile(sftpClient *sftp.Client, partPath, remotePath string, conte
 func ScriptCommand(remotePath string, content []byte, interpreter string, cleanup bool) string {
 	run := shellQuote(remotePath)
 	if !scriptHasShebang(content) {
-		run = interpreter + " " + run
+		run = quoteInterpreter(interpreter) + " " + run
 	}
 	if !cleanup {
 		return run
 	}
 	return run + "; __mcp_script_rc=$?; rm -f " + shellQuote(remotePath) + "; (exit $__mcp_script_rc)"
+}
+
+// quoteInterpreter quotes each whitespace-separated field of the interpreter
+// so a configured value cannot inject extra shell syntax into the run line.
+func quoteInterpreter(interpreter string) string {
+	fields := strings.Fields(interpreter)
+	if len(fields) == 0 {
+		fields = []string{"sh"}
+	}
+	quoted := make([]string, len(fields))
+	for i, f := range fields {
+		quoted[i] = shellQuote(f)
+	}
+	return strings.Join(quoted, " ")
 }
 
 // ScriptAuditText renders the readable equivalent of a staged-script run for
@@ -167,8 +232,8 @@ func ScriptAuditText(localPath, remotePath, interpreter string, content []byte, 
 	}
 	body := content
 	if len(body) > scriptAuditMaxBytes {
-		body = append(append([]byte{}, body[:scriptAuditMaxBytes]...),
-			[]byte(fmt.Sprintf("\n# ... [audit copy truncated: the script is %d bytes in total]\n", len(content)))...)
+		body = append(bytes.Clone(body[:scriptAuditMaxBytes]),
+			fmt.Appendf(nil, "\n# ... [audit copy truncated: the script is %d bytes in total]\n", len(content))...)
 	}
 	return header + "\n" + string(body)
 }
@@ -177,6 +242,14 @@ func ScriptAuditText(localPath, remotePath, interpreter string, content []byte, 
 // such a script runs directly, everything else runs through scriptInterpreter.
 func scriptHasShebang(content []byte) bool {
 	return bytes.HasPrefix(content, []byte("#!"))
+}
+
+// normalizeScriptContent strips a UTF-8 BOM and converts CRLF/CR newlines to
+// LF, so a script saved on Windows still has a usable shebang on POSIX.
+func normalizeScriptContent(content []byte) []byte {
+	content = bytes.TrimPrefix(content, utf8BOM)
+	content = bytes.ReplaceAll(content, []byte("\r\n"), []byte("\n"))
+	return bytes.ReplaceAll(content, []byte("\r"), []byte("\n"))
 }
 
 // scriptTempPath builds the remote temp path for a staged script: the shared

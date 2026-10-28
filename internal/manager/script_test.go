@@ -9,8 +9,8 @@ import (
 func TestScriptCommandWithoutShebangUsesInterpreter(t *testing.T) {
 	content := []byte("echo hi\n")
 	got := ScriptCommand("/tmp/.2native-ssh-mcp-x.sh", content, "sh", false)
-	if got != "sh '/tmp/.2native-ssh-mcp-x.sh'" {
-		t.Fatalf("staged script should run through the interpreter, got: %s", got)
+	if got != "'sh' '/tmp/.2native-ssh-mcp-x.sh'" {
+		t.Fatalf("staged script should run through the quoted interpreter, got: %s", got)
 	}
 }
 
@@ -87,6 +87,45 @@ func TestScriptTempPathIsUnpredictableAndLegible(t *testing.T) {
 	}
 	if strings.ContainsAny(a, " \\:") {
 		t.Fatalf("temp path must be a clean POSIX path: %s", a)
+	}
+}
+
+func TestQuoteInterpreterSplitsAndQuotesFields(t *testing.T) {
+	got := ScriptCommand("/tmp/x.sh", []byte("echo hi\n"), "python3 -u", false)
+	if got != "'python3' '-u' '/tmp/x.sh'" {
+		t.Fatalf("interpreter flags must be quoted per field, got: %s", got)
+	}
+	got = ScriptCommand("/tmp/x.sh", []byte("echo hi\n"), "sh;rm", false)
+	if got != "'sh;rm' '/tmp/x.sh'" {
+		t.Fatalf("metacharacters in the interpreter must stay inside quotes, got: %s", got)
+	}
+}
+
+func TestNormalizeScriptContentStripsBOMAndCRLF(t *testing.T) {
+	raw := append(append([]byte{}, utf8BOM...), []byte("#!/bin/sh\r\necho hi\r\n")...)
+	got := normalizeScriptContent(raw)
+	if !scriptHasShebang(got) {
+		t.Fatalf("a Windows shebang must still be recognized after normalize, got %q", got)
+	}
+	if strings.Contains(string(got), "\r") {
+		t.Fatalf("CRLF must become LF, got %q", got)
+	}
+	if ScriptCommand("/tmp/x.sh", got, "sh", false) != "'/tmp/x.sh'" {
+		t.Fatalf("normalized shebang script must run directly, got %s", ScriptCommand("/tmp/x.sh", got, "sh", false))
+	}
+}
+
+func TestPrepareScriptDoesNotUpload(t *testing.T) {
+	content := []byte("echo hi\n")
+	exec, audit, run := PrepareScript("/local/deploy.sh", content, "sh", true)
+	if run.RemotePath == "" || !strings.HasPrefix(run.RemotePath, scriptTempPrefix) {
+		t.Fatalf("PrepareScript must pick a remote path, got %s", run.RemotePath)
+	}
+	if !strings.Contains(exec, run.RemotePath) {
+		t.Fatalf("exec command must name the same path, got %s", exec)
+	}
+	if !strings.Contains(audit, "echo hi") || !strings.Contains(audit, run.RemotePath) {
+		t.Fatalf("audit text must name the path and carry the body:\n%s", audit)
 	}
 }
 

@@ -37,6 +37,7 @@ func TestLintShellCorpus(t *testing.T) {
 		{"heredoc-odd-quote", "cat <<'EOF'\nit's\nEOF", "", "", "heredoc body with odd quote — FP trap"},
 		{"heredoc-data", "cat <<EOF\n$1 and \"quotes\"\nEOF", "", "", "unquoted heredoc body is data"},
 		{"heredoc-tabs", "cat <<-EOF\n\ttabbed\n\tEOF", "", "", "<<- strips leading tabs"},
+		{"heredoc-spaced-opener", "cat << EOF\nbash -c \"echo $1\"\nEOF", "", "", "spaced heredoc opener: the body is data"},
 		{"trailing-backslash", `echo hi \`, "", "", "trailing backslash is literal, not an error (verified)"},
 		{"base64-wrapper", `echo 'ZWNobyBh' | base64 -d | bash`, "", "", "base64 wrapper"},
 		{"quote-dance", `bash -c 'echo "user=$USER" | awk '"'"'{print $1}'"'"''`, "", "", "nested shell, single-quoted"},
@@ -47,6 +48,7 @@ func TestLintShellCorpus(t *testing.T) {
 
 		// --- must warn: positional parameter eaten by the outer shell ---
 		{"nested-positional-1", `bash -c "echo \"user=$USER\" | awk '{print $1}'"`, "", CodeLintNestedPositional, "measured silent failure"},
+		{"nested-positional-lc", `bash -lc "echo $1"`, "", CodeLintNestedPositional, "clustered -lc still hands the next arg to a nested shell"},
 		{"nested-positional-su", `su root -c "cd -- '/d' && ls $1"`, "", CodeLintNestedPositional, "su -c form"},
 		{"nested-positional-ssh", `ssh host "echo $1"`, "", CodeLintNestedPositional, "ssh host \"…\" form"},
 		{"nested-positional-at", `sh -c "printf '%s' '$@'"`, "", CodeLintNestedPositional, "$@ form"},

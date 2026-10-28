@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,7 +24,7 @@ func requestManager(t *testing.T) *manager.Manager {
 }
 
 func TestResolveExecuteRequestShellMode(t *testing.T) {
-	req, err := resolveExecuteRequest(context.Background(), requestManager(t),
+	req, err := resolveExecuteRequest(requestManager(t),
 		map[string]any{"cmdString": "ls -la"}, "", "")
 	if err != nil {
 		t.Fatalf("shell mode must resolve: %v", err)
@@ -47,7 +46,7 @@ func TestResolveExecuteRequestArgvMode(t *testing.T) {
 		"args":      []any{"-rn", "foo bar", "$HOME", "*"},
 		"lintMode":  config.LintStrict,
 	}
-	req, err := resolveExecuteRequest(context.Background(), requestManager(t), args, "", "")
+	req, err := resolveExecuteRequest(requestManager(t), args, "", "")
 	if err != nil {
 		t.Fatalf("argv mode must resolve: %v", err)
 	}
@@ -67,7 +66,7 @@ func TestResolveExecuteRequestArgvMode(t *testing.T) {
 }
 
 func TestResolveExecuteRequestAcceptsStringSliceArgs(t *testing.T) {
-	req, err := resolveExecuteRequest(context.Background(), requestManager(t),
+	req, err := resolveExecuteRequest(requestManager(t),
 		map[string]any{"cmdString": "echo", "args": []string{"a b"}}, "", "")
 	if err != nil {
 		t.Fatalf("[]string args must be accepted: %v", err)
@@ -93,7 +92,7 @@ func TestResolveExecuteRequestRejectsConflictingArguments(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := resolveExecuteRequest(context.Background(), m, tc.args, "", "")
+			_, err := resolveExecuteRequest(m, tc.args, "", "")
 			if err == nil {
 				t.Fatalf("expected a validation error for %v", tc.args)
 			}
@@ -116,18 +115,54 @@ func TestResolveExecuteRequestScriptFileReadsLocally(t *testing.T) {
 	}
 	// The path scope must allow the temp dir, exactly as a configured
 	// connection with localPathMode=any would.
-	if _, err := resolveExecuteRequest(context.Background(), m,
+	if _, err := resolveExecuteRequest(m,
 		map[string]any{"scriptFile": script}, "", ""); err == nil {
 		t.Fatal("a script outside the allowed local paths must be rejected")
 	}
 
 	missing := filepath.Join(dir, "nope.sh")
-	_, err := resolveExecuteRequest(context.Background(), m,
+	_, err := resolveExecuteRequest(m,
 		map[string]any{"scriptFile": missing}, "", "")
 	if err == nil {
 		t.Fatal("a missing script must be reported before anything is staged")
 	}
 	if code := manager.AsToolError(err).Code; code != manager.CodeLocalPathNotAllowed && code != manager.CodeLocalFileReadFailed {
 		t.Fatalf("unexpected error code for a missing script: %s", code)
+	}
+}
+
+func TestResolveExecuteRequestScriptFileDoesNotUpload(t *testing.T) {
+	m, err := manager.New(map[string]*config.SSHConfig{
+		"default": {Name: "default", Host: "example.invalid", Port: 22, Username: "tester", LocalPathMode: config.LocalPathModeAny},
+	}, "")
+	if err != nil {
+		t.Fatalf("manager: %v", err)
+	}
+	script := filepath.Join(t.TempDir(), "deploy.sh")
+	content := []byte("#!/bin/sh\necho hi\n")
+	if err := os.WriteFile(script, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req, err := resolveExecuteRequest(m, map[string]any{"scriptFile": script, "lintMode": config.LintStrict}, "", "")
+	if err != nil {
+		t.Fatalf("a readable local script must resolve without connecting: %v", err)
+	}
+	if req.script == nil || req.script.RemotePath == "" || req.scriptRun == nil {
+		t.Fatal("resolution must prepare the upload, not skip it")
+	}
+	if req.scriptRun.RemotePath != req.script.RemotePath {
+		t.Fatalf("audit path and upload path must match: %s vs %s", req.scriptRun.RemotePath, req.script.RemotePath)
+	}
+	if !strings.Contains(req.execCommand, req.script.RemotePath) {
+		t.Fatalf("exec command must name the staged path, got %s", req.execCommand)
+	}
+	if !strings.Contains(req.auditCommand, "echo hi") {
+		t.Fatalf("audit text must carry the script body, got %s", req.auditCommand)
+	}
+	if req.lintMode != config.LintOff {
+		t.Fatalf("scriptFile must switch the lint off, got %q", req.lintMode)
+	}
+	if req.scriptRun.Shebang != true {
+		t.Fatal("a shebang script must be marked as such")
 	}
 }

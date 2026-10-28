@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
@@ -18,13 +17,15 @@ import (
 //   - cmdString + args (argv mode): every argument is quoted by the server, so
 //     execCommand is quoted text while auditCommand is the same command line
 //     with only the quoting a shell actually needs.
-//   - scriptFile: the local script is staged to the remote host and run, so
-//     execCommand is `sh /tmp/....sh` while auditCommand is the script text
-//     itself with a header naming the source and the staged path.
+//   - scriptFile: the local script is prepared for staging (uploaded only
+//     after policy checks pass) so execCommand is `sh /tmp/....sh` while
+//     auditCommand is the script text itself with a header naming the source
+//     and the staged path.
 type executeRequest struct {
 	execCommand  string
 	auditCommand string
 	scriptRun    *manager.ScriptRun
+	script       *manager.ScriptUpload
 	lintMode     string
 }
 
@@ -39,7 +40,7 @@ func (r *executeRequest) gateText() string {
 
 // resolveExecuteRequest validates the execute-command arguments and prepares
 // everything that must happen before the command is gated and run.
-func resolveExecuteRequest(ctx context.Context, m *manager.Manager, args map[string]any, sessionName, connectionName string) (*executeRequest, error) {
+func resolveExecuteRequest(m *manager.Manager, args map[string]any, sessionName, connectionName string) (*executeRequest, error) {
 	cmdString, _ := args["cmdString"].(string)
 	scriptFile, _ := args["scriptFile"].(string)
 	lintMode, _ := args["lintMode"].(string)
@@ -62,7 +63,7 @@ func resolveExecuteRequest(ctx context.Context, m *manager.Manager, args map[str
 	req := &executeRequest{lintMode: lintMode}
 	switch {
 	case strings.TrimSpace(scriptFile) != "":
-		return resolveScriptRequest(ctx, m, req, scriptFile, args, sessionName, connectionName)
+		return resolveScriptRequest(m, req, scriptFile, args, sessionName, connectionName)
 	case len(argvArgs) > 0:
 		execText, auditText, err := manager.JoinArgv(cmdString, argvArgs)
 		if err != nil {
@@ -79,9 +80,11 @@ func resolveExecuteRequest(ctx context.Context, m *manager.Manager, args map[str
 	return req, nil
 }
 
-// resolveScriptRequest stages a local script on the remote host and fills the
-// request with the command that runs it plus the audit-visible equivalent.
-func resolveScriptRequest(ctx context.Context, m *manager.Manager, req *executeRequest,
+// resolveScriptRequest reads a local script and prepares the command that
+// will run it. The file is not uploaded here: staging happens after the
+// approval gate and whitelist/blacklist, so a rejected call never leaves a
+// temp file on the remote host.
+func resolveScriptRequest(m *manager.Manager, req *executeRequest,
 	scriptFile string, args map[string]any, sessionName, connectionName string) (*executeRequest, error) {
 	key, err := m.ResolveConnection(sessionName, connectionName)
 	if err != nil {
@@ -97,20 +100,14 @@ func resolveScriptRequest(ctx context.Context, m *manager.Manager, req *executeR
 	if v, ok := args["scriptCleanup"].(bool); ok {
 		cleanup = v
 	}
-	remotePath, err := m.StageScript(ctx, key, scriptFile, content)
-	if err != nil {
-		return nil, err
-	}
-	req.execCommand = manager.ScriptCommand(remotePath, content, interpreter, cleanup)
-	req.auditCommand = manager.ScriptAuditText(scriptFile, remotePath, interpreter, content, cleanup)
-	req.scriptRun = &manager.ScriptRun{
-		LocalPath:   scriptFile,
-		RemotePath:  remotePath,
-		Interpreter: interpreter,
-		Bytes:       len(content),
-		Cleanup:     cleanup,
-		Shebang:     strings.HasPrefix(string(content), "#!"),
-	}
+	execCommand, auditCommand, run := manager.PrepareScript(scriptFile, content, interpreter, cleanup)
+	req.execCommand = execCommand
+	req.auditCommand = auditCommand
+	req.scriptRun = run
+	req.script = &manager.ScriptUpload{RemotePath: run.RemotePath, Content: content}
+	// A staged script is parsed by the remote interpreter itself; linting
+	// the generated wrapper would duplicate that less precisely.
+	req.lintMode = config.LintOff
 	return req, nil
 }
 

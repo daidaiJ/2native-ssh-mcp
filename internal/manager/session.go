@@ -48,6 +48,9 @@ type SessionInfo struct {
 	// background job stopped (connection unavailable); the session stays
 	// visible until a later close succeeds.
 	Orphaned bool `json:"orphaned,omitempty"`
+	// Lint holds pre-execution lint findings (lintMode warn) from the
+	// command that started a background job. Set on the start response only.
+	Lint []string `json:"lint,omitempty"`
 }
 
 // namedSession is a persistent shell scoped by name; CWD and environment
@@ -168,6 +171,10 @@ func (m *Manager) RunInSession(ctx context.Context, sessionName, cmdString, dire
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
+	}
+
+	if err := m.stageUpload(ctx, ns.connectionKey, opts.Script); err != nil {
+		return CommandResult{}, err
 	}
 
 	if _, err := m.ensureShell(ctx, ns); err != nil {

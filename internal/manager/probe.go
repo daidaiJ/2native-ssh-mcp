@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"2native-ssh-mcp/internal/logger"
 )
 
@@ -52,35 +54,40 @@ var capabilityExpect = map[string]string{
 // the probe is a remote command, and on a connection that is audited or
 // recorded remotely the server should not add commands of its own.
 func (m *Manager) scheduleCapabilityProbe(key string) {
+	m.mu.Lock()
+	client := m.clients[key]
+	m.mu.Unlock()
 	cfg := m.configs[key]
 	if cfg != nil && !cfg.GetAutoProbe() {
-		m.setCapabilities(key, &RemoteCapabilities{Skipped: "autoProbe=false"})
+		m.setCapabilities(key, client, &RemoteCapabilities{Skipped: "autoProbe=false"})
 		logger.Info("Capability probe disabled for [%s] (autoProbe=false)", key)
 		return
 	}
-	go m.collectCapabilities(key)
+	go m.collectCapabilities(key, client)
 }
 
-// collectCapabilities runs the probes and caches the result.
-func (m *Manager) collectCapabilities(key string) {
+// collectCapabilities runs the probes and caches the result. client is the
+// SSH client this probe was scheduled against: a result is discarded if the
+// connection was replaced or torn down before the probe finished.
+func (m *Manager) collectCapabilities(key string, client *ssh.Client) {
 	caps := &RemoteCapabilities{ProbedAt: time.Now().Format(time.RFC3339)}
 	marker := fmt.Sprintf("__MCP_CAP_%x_", time.Now().UnixNano())
 	var probes []string
-	for field, command := range capabilityProbes {
-		probes = append(probes, fmt.Sprintf("printf '\\n%s%s\\n'; { %s; } 2>/dev/null", marker, field, command))
+	for _, field := range []string{"base64", "jq"} {
+		probes = append(probes, fmt.Sprintf("printf '\\n%s%s\\n'; { %s; } 2>/dev/null", marker, field, capabilityProbes[field]))
 	}
 	script := strings.Join(probes, "; ") + "; true"
 
 	result, err := m.runCommandInternal(key, script, RunOptions{Prevalidated: true})
 	if err != nil {
 		caps.Error = AsToolError(err).Code
-		m.setCapabilities(key, caps)
+		m.setCapabilities(key, client, caps)
 		logger.Info("Capability probe for [%s] failed: %s", key, caps.Error)
 		return
 	}
 	values := parseStatusOutput(result.Stdout, marker)
 	caps.applyOutput(values)
-	m.setCapabilities(key, caps)
+	m.setCapabilities(key, client, caps)
 	logger.Info("Capability probe for [%s]: base64=%t jq=%t", key, caps.Base64, caps.JQ)
 }
 
@@ -102,10 +109,13 @@ func (c *RemoteCapabilities) applyOutput(values map[string]string) {
 	}
 }
 
-func (m *Manager) setCapabilities(key string, caps *RemoteCapabilities) {
+func (m *Manager) setCapabilities(key string, client *ssh.Client, caps *RemoteCapabilities) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	if client == nil || m.clients[key] != client {
+		return
+	}
 	m.capabilities[key] = caps
-	m.mu.Unlock()
 }
 
 // Capabilities returns the cached probe result for a connection, or nil when
