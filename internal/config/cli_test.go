@@ -459,7 +459,14 @@ func TestCommandLogSizeNegativeRejected(t *testing.T) {
 }
 
 func TestParseArgsPTYFlagReachesSingleHostConfig(t *testing.T) {
-	opts, err := ParseArgs([]string{"--host", "192.168.1.1", "--username", "root", "--password", "secret", "--pty=false"})
+	// An explicit empty ssh config keeps the test off ~/.ssh/config, which
+	// the empty-configFilePath default resolves through $HOME.
+	sshConfig := filepath.Join(newConfigDir(t), "ssh_config")
+	if err := os.WriteFile(sshConfig, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	opts, err := ParseArgs([]string{"--ssh-config-file", sshConfig, "--host", "192.168.1.1", "--username", "root", "--password", "secret", "--pty=false"})
 	if err != nil {
 		t.Fatalf("ParseArgs failed: %v", err)
 	}
@@ -468,7 +475,7 @@ func TestParseArgsPTYFlagReachesSingleHostConfig(t *testing.T) {
 		t.Fatalf("expected --pty=false to reach the connection, got %v", conf.Pty)
 	}
 
-	opts, err = ParseArgs([]string{"--host", "192.168.1.1", "--username", "root", "--password", "secret"})
+	opts, err = ParseArgs([]string{"--ssh-config-file", sshConfig, "--host", "192.168.1.1", "--username", "root", "--password", "secret"})
 	if err != nil {
 		t.Fatalf("ParseArgs failed: %v", err)
 	}
