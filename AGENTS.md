@@ -51,7 +51,7 @@ Human-facing docs live in `README.md` and `docs/`; agent-facing API reference is
 - **未做（评估后保留）：** SSH 压缩（`x/crypto/ssh` 只支持 `none`）；cipher 调优（已有 `algorithms.cipher`，按 CPU/链路自选）；exec 的 PID 临时文件（每次命令一次远端小写入，收益不足以改超时 kill 语义）。
 - **验证证据：** WSL Ubuntu-22.04 `go test -race ./...` 全绿；`golangci-lint run ./...` 0 issues；`go vet -tags integration ./...` 干净；`go test -tags integration ./internal/manager/` 全绿（含新增 `TestBackgroundReadTruncationIntegration`、`TestTransferChecksumDisabled`，以及目录并发/续传/去重/独立连接用例）；MCP stdio 端到端驱动实测：`session action=read maxBytes=256` 返回 `truncated=true remainingBytes=1436` + 尾部续读提示，第二次读完整；`seq 1 1000` 在 `maxOutputBytes=200` 下返回 `truncated: true` / `clippedBytes: 3693` / message 明说不完整。
 - **基准（localhost，3 次均值）：** 16 MiB 下载 93.19 → 92.40 MB/s、上传 51.17 → 55.52 MB/s，处于波动范围；流水线收益取决于 RTT，本机无法体现。
-- **发布：** v1.10.0（tag 正文即 release notes，双语；未推 `-registry`）。
+- **发布：** v1.9.3（tag 正文即 release notes，双语；未推 `-registry`）。
 
 ### 未验证事项
 
