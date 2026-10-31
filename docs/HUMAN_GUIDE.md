@@ -95,7 +95,7 @@ MCP 客户端配置里只出现配置文件路径：
 2native-ssh-mcp.exe uninstall
 ```
 
-`install` 生成的 `autostart.vbs` 经 WMI 创建 daemon 进程，进程**完全没有控制台窗口**（`WshShell.Run` 的隐藏窗口仍会分配一个控制台窗口，在 cscript / `start` / 资源管理器这类自带控制台的启动上下文里可能显形）；WMI 调用失败时回退到隐藏窗口启动。手工重启 daemon 用 `wscript autostart.vbs`，不要用 `cscript`。
+`install` 生成的 `autostart.vbs` 经 WMI 创建 daemon 进程，并给 `Win32_ProcessStartup` 设上 `DETACHED_PROCESS`，进程**完全没有控制台窗口**；只用 WMI 不带 startup 信息还不够——那样控制台窗口是按显示状态创建的，会被默认终端（Windows Terminal）接手弹出来。WMI 调用失败时回退到隐藏窗口启动（隐藏的 conhost 窗口，肉眼不可见）。手工重启 daemon 用 `wscript autostart.vbs`，不要用 `cscript`。
 
 **引用计数与租约**：第一个 `start` 是 owner（与 daemon 进程同寿，永不过期）；额外的 `start` 是 **guest 租约**，空闲 **15 分钟**没有 `/mcp` 请求就会被回收（计数自动 -1）。任何通过鉴权的 `/mcp` 请求（无论来自哪个客户端/凭证、无论 MCP 层是否成功）都会**刷新全部** guest 租约的到期时间——只要 daemon 还在被用，任何 guest 都不会掉。`stop` 优先减一个 guest，没有 guest 才减 owner；计数归零 daemon 退出。daemon 进程本身不会因空闲退出（owner 不过期）。`kill` / Ctrl-C 直接关，不看计数。
 
@@ -160,6 +160,7 @@ Admin API（`/__admin/*`）不用这个 token，仍只限本机访问（loopback
 |---|---|---|
 | `allowInsecureConfigPerms` | false | 跳过本配置文件的权限检查（等价于命令行 `--allow-insecure-config-perms`，但声明在文件内部；不推荐，仅开发用） |
 | `httpToken` | 空 | `/mcp` 的 Bearer token（优先级低于 `--http-token` 和 `SSH_MCP_HTTP_TOKEN`；支持 `${VAR}` 引用） |
+| `httpAddr` | 空 | HTTP daemon 的监听地址（优先级低于 `--http-addr`；不写则用 `127.0.0.1:8338`）。daemon 端口写在配置文件里，`install` 生成的 `autostart.vbs` 就不必再手工加端口 |
 | `scriptCleanup` / `scriptInterpreter` / `lintMode` / `keepAliveMs` / `autoProbe` | 同上表 | 这五个按连接配置项的全局默认值；连接级设置优先 |
 
 ## 连接本地 WSL
@@ -298,7 +299,7 @@ Connection options:
 
 Server options:
   --transport <stdio|http>         默认 stdio；start 隐含 http
-  --http-addr <host:port>          默认 127.0.0.1:8338
+  --http-addr <host:port>          监听地址（回退：配置文件里的 $global.httpAddr；默认 127.0.0.1:8338）
   --http-token <token>             /mcp 的 Bearer token（非 loopback 监听必填；也可用 SSH_MCP_HTTP_TOKEN 或 $global.httpToken）
   --version, -v / --help
 ```

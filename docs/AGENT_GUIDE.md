@@ -212,6 +212,8 @@ MCP client: `{"mcpServers": {"2native-ssh-mcp": {"url": "http://127.0.0.1:8338/m
 
 **/mcp auth**: loopback listen (default) needs no token. Non-loopback listen **requires** a Bearer token or the server refuses to start — sources in order: `--http-token`, env `SSH_MCP_HTTP_TOKEN`, `$global.httpToken` (config file). With a token, the client must send `Authorization: Bearer <token>` on every `/mcp` request (401 otherwise). Admin API is exempt (loopback + Host check only).
 
+**Listen address**: sources in order: `--http-addr`, then `$global.httpAddr` in the config file, then `127.0.0.1:8338`.
+
 Daemon semantics: refcount (first `start` = owner lease, never expires; extra `start` = guest lease with a **15 min TTL** refreshed by any authenticated `/mcp` request — all guest leases at once, regardless of which `start` created them; `stop` −1 removes a guest first, then the owner; exits at 0), PID file, admin API `/__admin/{health,status,refcount,shutdown}` (loopback client + loopback `Host` header required, `"name":"2native-ssh-mcp"` verified; `shutdown` additionally requires POST + `Content-Type: application/json`). The daemon never exits from idling — only count 0, `kill`, or a signal.
 
 ### Hot update (upgrade the binary without losing config)
@@ -225,7 +227,7 @@ go build -o 2native-ssh-mcp.new.exe -ldflags "-X main.version=vX.Y.Z" .
 # 3. swap binaries (keep the old one as .exe~)
 mv 2native-ssh-mcp.exe 2native-ssh-mcp.exe~ && mv 2native-ssh-mcp.new.exe 2native-ssh-mcp.exe
 # 4. restart hidden — `start` is a blocking owner-lease command, never foreground it
-wscript autostart.vbs                 # Windows (WMI launch: the daemon has no console window); elsewhere: nohup 2native-ssh-mcp start ... &
+wscript autostart.vbs                 # Windows (WMI launch with DETACHED_PROCESS: no console window); elsewhere: nohup 2native-ssh-mcp start ... &
 # 5. verify
 2native-ssh-mcp status && curl -s http://127.0.0.1:8338/__admin/health
 ```
@@ -238,7 +240,7 @@ mv 2native-ssh-mcp.exe 2native-ssh-mcp.exe~ && mv 2native-ssh-mcp.new.exe 2nativ
 ```
 Then restart the MCP server from the client (restart the session / reconnect the MCP server); each client process runs its own server. Verify with a test tool call through the client.
 
-Gotchas: `install` rewrites `autostart.vbs` and **drops a manually added `--http-addr`** — re-add it after running install. The generated `autostart.vbs` starts the daemon through WMI so the process has **no console window** (a hidden `WshShell.Run` window is still a console window and shows up as a black window when the launcher owns a console). `config.json` lives in the deploy dir and is never touched by an upgrade. If `stop` hangs on guest leases, `kill` is the hard fallback.
+Gotchas: the generated `autostart.vbs` passes no port — the daemon takes its listen address from `$global.httpAddr` in the config file (`--http-addr` wins when given, `127.0.0.1:8338` when neither is set), so an `install` run no longer drops a hand-added port. It starts the daemon through WMI with a `Win32_ProcessStartup` carrying `DETACHED_PROCESS`, so the process has **no console window at all** — plain WMI creation is not enough (its console window is created shown, and the default terminal, Windows Terminal, displays it). `config.json` lives in the deploy dir and is never touched by an upgrade. If `stop` hangs on guest leases, `kill` is the hard fallback.
 
 ## Release workflow
 

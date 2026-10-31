@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -53,6 +54,9 @@ type GlobalConfig struct {
 	// HTTPToken authenticates the /mcp endpoint (Bearer). Falls back to
 	// --http-token / SSH_MCP_HTTP_TOKEN when those are set.
 	HTTPToken string `json:"httpToken,omitempty"`
+	// HTTPAddr is the listen address of the HTTP daemon, used when
+	// --http-addr is not given; DefaultHTTPAddr applies when neither is set.
+	HTTPAddr string `json:"httpAddr,omitempty"`
 	// ApprovalMode is the global default for per-connection approvalMode.
 	ApprovalMode string `json:"approvalMode,omitempty"`
 	// ApprovalPatterns is the global default for per-connection
@@ -144,7 +148,8 @@ Connection options:
 
 Server options:
   --transport <stdio|http>         MCP transport (default: stdio; start implies http)
-  --http-addr <host:port>          HTTP listen address (default: 127.0.0.1:8338)
+  --http-addr <host:port>          HTTP listen address (fallback: $global.httpAddr
+                                   in the config file; default: 127.0.0.1:8338)
   --http-token <token>             Bearer token for /mcp (required for non-loopback
                                    listen; fallback: SSH_MCP_HTTP_TOKEN env, then
                                    $global.httpToken in the config file)
@@ -233,22 +238,20 @@ func ParseArgs(args []string) (*Options, error) {
 	fs.StringVar(&httpToken, "http-token", "", "")
 	fs.BoolVar(&allowInsecure, "allow-insecure-config-perms", false, "")
 
-	// Track whether --pty was explicitly set (flag package cannot tell us).
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "pty" {
-			ptySet = true
-		}
-	})
-
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
 
-	// commandLogFlushSet must be detected after Parse: FlagSet.Visit is a
-	// synchronous walk over the flags that were set.
-	commandLogFlushSet := false
+	// Which flags were explicitly set. FlagSet.Visit is a synchronous walk
+	// over the flags that were set, so it has to run after Parse.
+	var httpAddrSet, commandLogFlushSet bool
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "command-log-flush-ms" {
+		switch f.Name {
+		case "pty":
+			ptySet = true
+		case "http-addr":
+			httpAddrSet = true
+		case "command-log-flush-ms":
 			commandLogFlushSet = true
 		}
 	})
@@ -295,6 +298,11 @@ func ParseArgs(args []string) (*Options, error) {
 		}
 		if opts.HTTPToken == "" {
 			opts.HTTPToken = expandEnvVars(global.HTTPToken)
+		}
+		// An explicit --http-addr wins; otherwise the config file decides,
+		// and DefaultHTTPAddr applies when it names no address.
+		if !httpAddrSet && global.HTTPAddr != "" {
+			opts.HTTPAddr = global.HTTPAddr
 		}
 		fileGlobal = *global
 		opts.Configs = configs
@@ -452,6 +460,7 @@ func parseGlobalConfig(raw any, global *GlobalConfig) error {
 	readers := []func(map[string]any) error{
 		globalBool("allowInsecureConfigPerms", &global.AllowInsecureConfigPerms),
 		globalString("httpToken", &global.HTTPToken),
+	globalHTTPAddr(&global.HTTPAddr),
 		globalString("approvalMode", &global.ApprovalMode),
 		globalStringSlice("approvalPatterns", &global.ApprovalPatterns),
 		globalStringSlice("approvalExemptPatterns", &global.ApprovalExemptPatterns),
@@ -513,6 +522,28 @@ func globalString(key string, dst *string) func(map[string]any) error {
 			return fmt.Errorf("%s.%s must be a string", GlobalConfigKey, key)
 		}
 		*dst = s
+		return nil
+	}
+}
+
+// globalHTTPAddr reads $global.httpAddr. A malformed address fails here, so
+// the error names the config key instead of surfacing later as an invalid
+// --http-addr at listen time.
+func globalHTTPAddr(dst *string) func(map[string]any) error {
+	return func(m map[string]any) error {
+		if err := globalString("httpAddr", dst)(m); err != nil {
+			return err
+		}
+		if *dst == "" {
+			return nil
+		}
+		_, portStr, err := net.SplitHostPort(*dst)
+		if err != nil {
+			return fmt.Errorf("%s.httpAddr: %v", GlobalConfigKey, err)
+		}
+		if _, err := strconv.Atoi(portStr); err != nil {
+			return fmt.Errorf("%s.httpAddr: port %q is not a number", GlobalConfigKey, portStr)
+		}
 		return nil
 	}
 }

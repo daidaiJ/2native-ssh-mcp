@@ -457,3 +457,22 @@ func TestCommandLogSizeNegativeRejected(t *testing.T) {
 		t.Fatal("negative commandLogSize must be rejected")
 	}
 }
+
+func TestParseArgsPTYFlagReachesSingleHostConfig(t *testing.T) {
+	opts, err := ParseArgs([]string{"--host", "192.168.1.1", "--username", "root", "--password", "secret", "--pty=false"})
+	if err != nil {
+		t.Fatalf("ParseArgs failed: %v", err)
+	}
+	conf := opts.Configs["default"]
+	if conf.Pty == nil || *conf.Pty {
+		t.Fatalf("expected --pty=false to reach the connection, got %v", conf.Pty)
+	}
+
+	opts, err = ParseArgs([]string{"--host", "192.168.1.1", "--username", "root", "--password", "secret"})
+	if err != nil {
+		t.Fatalf("ParseArgs failed: %v", err)
+	}
+	if conf := opts.Configs["default"]; conf.Pty != nil {
+		t.Fatalf("expected an unset --pty to leave the connection default alone, got %v", *conf.Pty)
+	}
+}
