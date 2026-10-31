@@ -31,14 +31,15 @@ func TestFormatServerListIncludesMetadata(t *testing.T) {
 // A via target must be labeled as such so the agent knows the host is not
 // directly reachable (and the JSON carries it too).
 func TestFormatServerListShowsVia(t *testing.T) {
-	text := formatServerList([]manager.ServerInfo{
+	servers := []manager.ServerInfo{
 		{Name: "internal-db", Host: "10.0.1.50", Port: 22, Username: "dbadmin", Via: "bastion"},
-	})
+	}
+	text := formatServerList(servers)
 	if !strings.Contains(text, "via=bastion") {
 		t.Fatalf("summary line must show the jump host:\n%s", text)
 	}
-	if !strings.Contains(text, `"via":"bastion"`) {
-		t.Fatalf("servers JSON must show the jump host:\n%s", text)
+	if json := formatInventory(servers, nil, true); !strings.Contains(json, `"via":"bastion"`) {
+		t.Fatalf("the JSON inventory must show the jump host:\n%s", json)
 	}
 }
 
@@ -46,18 +47,19 @@ func TestFormatServerListShowsVia(t *testing.T) {
 // runs when connectionName is omitted (only possible with an explicit
 // "default" connection).
 func TestFormatServerListShowsDefault(t *testing.T) {
-	text := formatServerList([]manager.ServerInfo{
+	servers := []manager.ServerInfo{
 		{Name: "centos", Host: "h", Port: 22, Username: "u"},
 		{Name: "default", Host: "h", Port: 22, Username: "u", Default: true},
-	})
+	}
+	text := formatServerList(servers)
 	if !strings.Contains(text, "default=true (used when connectionName is omitted)") {
 		t.Fatalf("summary line must mark the default connection:\n%s", text)
 	}
-	if !strings.Contains(text, `"default":true`) {
-		t.Fatalf("servers JSON must mark the default connection:\n%s", text)
-	}
 	if strings.Count(text, "default=true") != 1 {
 		t.Fatalf("only the default connection must be marked:\n%s", text)
+	}
+	if json := formatInventory(servers, nil, true); !strings.Contains(json, `"default":true`) {
+		t.Fatalf("the JSON inventory must mark the default connection:\n%s", json)
 	}
 }
 

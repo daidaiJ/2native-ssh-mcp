@@ -164,11 +164,23 @@ func TestSpillDirCapKeepsNewest(t *testing.T) {
 func TestSpillPreviewBounds(t *testing.T) {
 	stdout := strings.Repeat("line\n", 50)
 	preview := spillPreview(stdout, "")
-	if got := strings.Count(preview, "\n"); got != defaultOutputSpillPreviewLines {
-		t.Fatalf("preview must keep %d lines plus the marker, got %d newlines", defaultOutputSpillPreviewLines, got)
+	lines := strings.Split(preview, "\n")
+	want := defaultOutputSpillPreviewHeadLines + defaultOutputSpillPreviewTailLines + 1
+	if len(lines) != want {
+		t.Fatalf("preview must keep %d head lines + 1 marker + %d tail lines, got %d",
+			defaultOutputSpillPreviewHeadLines, defaultOutputSpillPreviewTailLines, len(lines))
 	}
-	if !strings.Contains(preview, "more lines in the spill file") {
-		t.Fatalf("preview must note the omitted lines: %q", preview)
+	if !strings.Contains(lines[defaultOutputSpillPreviewHeadLines], "lines omitted here") {
+		t.Fatalf("the omission marker must sit between head and tail: %q", preview)
+	}
+	// The tail is kept because that is where failures print.
+	if tail := lines[len(lines)-1]; tail != "line" {
+		t.Fatalf("preview must end with the last output line, got %q", tail)
+	}
+
+	// Short output is previewed whole, with no marker and no trailing blank.
+	if got := spillPreview("a\nb\n", ""); got != "a\nb" {
+		t.Fatalf("short output must be previewed verbatim, got %q", got)
 	}
 
 	long := strings.Repeat("字", 5000) // one huge multi-byte line

@@ -62,7 +62,7 @@ func CompressCommandOutput(s string, opts CompressOptions) string {
 	var omitted int
 	if len(lines) > head+tail+1 {
 		omitted = len(lines) - head - tail
-		middle := fmt.Sprintf("... [%d lines omitted; use head/tail/grep/wc for focused output] ...", omitted)
+		middle := fmt.Sprintf("... [%d lines omitted here; the output above is incomplete — use head/tail/grep/wc for focused output] ...", omitted)
 		lines = append(append(lines[:head], middle), lines[len(lines)-tail:]...)
 	}
 
@@ -71,7 +71,7 @@ func CompressCommandOutput(s string, opts CompressOptions) string {
 		return s
 	}
 	out += fmt.Sprintf(
-		"\n\n[output compressed: %d → %d bytes; %d lines omitted. Use head/tail/grep for focused output.]",
+		"\n\n[output compressed: %d → %d bytes; %d lines omitted — the output above is incomplete because it was truncated for length. Use head/tail/grep for focused output.]",
 		origBytes, len(out), omitted,
 	)
 	return out

@@ -93,6 +93,14 @@ func errorResultFor(err error, res manager.CommandResult) *mcp.CallToolResult {
 		payload["status"] = res.Status
 		payload["partial"] = res.Partial
 		payload["replaySafe"] = res.ReplaySafe
+		// What the remote side can be assumed to have done, and what to do
+		// about it: an interrupted call is not a command that did not run.
+		if res.ExecutionState != "" {
+			payload["executionState"] = res.ExecutionState
+		}
+		if res.Guidance != "" {
+			payload["guidance"] = res.Guidance
+		}
 		if res.NonUTF8 {
 			payload["nonUtf8"] = true
 		}

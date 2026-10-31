@@ -121,6 +121,30 @@ func TestSessionToolCloseRequiresSessionName(t *testing.T) {
 	}
 }
 
+// A read cut off by maxBytes must say so in both the header and a trailing
+// note: the caller needs to know the chunk is a prefix, not the whole output.
+func TestSessionReadTextTruncated(t *testing.T) {
+	out := &manager.SessionOutput{
+		SessionName:    "bg-1",
+		Output:         "PARTIAL",
+		Offset:         1024,
+		TotalBytes:     4096,
+		RemainingBytes: 3072,
+		Truncated:      true,
+	}
+	text := sessionReadText(out)
+	for _, want := range []string{"truncated=true", "remainingBytes=3072", "output truncated", "offset=1024", "PARTIAL"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("truncated read must mention %q, got:\n%s", want, text)
+		}
+	}
+
+	plain := sessionReadText(&manager.SessionOutput{SessionName: "bg-2", Output: "ALL", TotalBytes: 3})
+	if strings.Contains(plain, "truncated") {
+		t.Fatalf("a complete read must not claim truncation, got:\n%s", plain)
+	}
+}
+
 func TestSessionToolCloseIdempotent(t *testing.T) {
 	m := newTestManager(t)
 	// Closing a session that was never opened (or already closed by the

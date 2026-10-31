@@ -76,6 +76,10 @@ type namedSession struct {
 	bgLogPath  string
 	bgPIDPath  string
 	bgExitPath string
+	// bgHeadPath keeps the beginning of the job's output and bgDropPath
+	// counts the bytes trimmed from the log once it reached its cap.
+	bgHeadPath string
+	bgDropPath string
 	bgOffset   int64
 	bgRunning  bool
 	// bgExitCode is the job's exit code once the remote .exit file is
@@ -534,7 +538,7 @@ func (m *Manager) runShellScriptOnce(ctx context.Context, sh *shellSession, scri
 			res.Truncated = true // the tail stayed in the remote pipe; clipped size unknown
 			return abort(res,
 				newToolError(CodeOutputLimitExceeded,
-					fmt.Sprintf("[truncated] Output exceeded maxOutputBytes=%d; the command was aborted.", maxOutput), false))
+					fmt.Sprintf("[output truncated] Output exceeded maxOutputBytes=%d and was cut off; the returned output is incomplete and the command was aborted.", maxOutput), false))
 		}
 
 		if sh.closed {

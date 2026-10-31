@@ -305,6 +305,31 @@ func TestTransferChecksumVerified(t *testing.T) {
 // TestTransferDedicatedConn covers sftpDedicatedConn: the transfer still
 // lands byte-identical when SFTP runs over its own SSH connection, and the
 // client is pooled under the dedicated key so it survives idle reuse.
+// TestTransferChecksumDisabled verifies sftpVerifyChecksum=false: the bytes
+// still land intact, but the post-transfer remote sha256 pass is skipped.
+func TestTransferChecksumDisabled(t *testing.T) {
+	m := newSftpTestManager(t)
+	m.mu.Lock()
+	off := false
+	m.configs["ubuntu"].SftpVerifyChecksum = &off
+	m.mu.Unlock()
+
+	dir := sftpTestDir(t, m)
+	local := writeFile(t, t.TempDir(), 128<<10, 17)
+	remote := dir + "/nocheck.bin"
+
+	res, err := m.TransferFile(nil, "upload", local, remote, "ubuntu", false, nil)
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	if res.ChecksumStatus != "" || res.Checksum != "" {
+		t.Fatalf("disabled checksum must not report a verification, got: %+v", res)
+	}
+	if got := remoteMD5(t, m, remote); got != localMD5(t, local) {
+		t.Fatalf("remote content mismatch after upload")
+	}
+}
+
 func TestTransferDedicatedConn(t *testing.T) {
 	m := newSftpTestManager(t)
 	m.mu.Lock()

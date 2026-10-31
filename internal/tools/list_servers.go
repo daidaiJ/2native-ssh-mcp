@@ -23,7 +23,7 @@ func registerListServers(s *server.MCPServer, m *manager.Manager) {
 	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		servers := m.GetAllServerInfos()
 		sessions := m.ListSessions()
-		text := formatInventory(servers, sessions)
+		text := formatInventory(servers, sessions, jsonResultsWanted(m, "", ""))
 		if note := elicitationNote(ctx, servers); note != "" {
 			text += "\n\n" + note
 		}
@@ -56,14 +56,27 @@ func elicitationNote(ctx context.Context, servers []manager.ServerInfo) string {
 	return "Client elicitation support: no — ask-destructive connections run destructive commands without prompting (fail-open); ask the user for confirmation before destructive actions on those connections."
 }
 
-func formatInventory(servers []manager.ServerInfo, sessions []manager.SessionInfo) string {
+// formatInventory renders the whole list-servers answer: one line per
+// connection, one per session. Text is the default because those lines
+// already carry the facts an agent needs; a connection that asks for JSON
+// gets the same inventory as one structured object instead — never both.
+func formatInventory(servers []manager.ServerInfo, sessions []manager.SessionInfo, withJSON bool) string {
+	if withJSON {
+		if raw, err := marshalCompactJSON(struct {
+			Servers  []manager.ServerInfo  `json:"servers"`
+			Sessions []manager.SessionInfo `json:"sessions"`
+		}{servers, sessions}); err == nil {
+			return raw
+		}
+	}
 	var parts []string
 	parts = append(parts, formatServerList(servers))
 	parts = append(parts, formatSessionList(sessions))
 	return strings.Join(parts, "\n\n")
 }
 
-// formatServerList renders configured servers: summary lines + raw JSON.
+// formatServerList renders configured servers as one summary line per
+// connection.
 func formatServerList(servers []manager.ServerInfo) string {
 	if len(servers) == 0 {
 		return "Configured SSH servers:\n(none)"
@@ -120,8 +133,7 @@ func formatServerList(servers []manager.ServerInfo) string {
 		lines = append(lines, strings.Join(parts, " | "))
 	}
 
-	raw, _ := marshalCompactJSON(servers)
-	return "Configured SSH servers:\n" + strings.Join(lines, "\n") + "\n\nServers JSON:\n" + raw
+	return "Configured SSH servers:\n" + strings.Join(lines, "\n")
 }
 
 // formatCapabilities renders the remote capability probe as one inventory
@@ -236,6 +248,5 @@ func formatSessionList(sessions []manager.SessionInfo) string {
 		}
 		lines = append(lines, strings.Join(parts, " | "))
 	}
-	raw, _ := marshalCompactJSON(sessions)
-	return "Active sessions:\n" + strings.Join(lines, "\n") + "\n\nSessions JSON:\n" + raw
+	return "Active sessions:\n" + strings.Join(lines, "\n")
 }

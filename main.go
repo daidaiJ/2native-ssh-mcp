@@ -93,7 +93,9 @@ func runForeground(args []string) {
 		os.Exit(1)
 	}
 
-	m, err := manager.New(opts.Configs, opts.CommandLogDir)
+	// The $global resultFormat default answers calls that name no
+	// connection (list-servers); every connection carries it too.
+	m, err := manager.New(opts.Configs, opts.CommandLogDir, manager.WithGlobalResultFormat(opts.ResultFormat))
 	if err != nil {
 		logger.Error("%v", err)
 		os.Exit(1)
@@ -150,7 +152,9 @@ func runStart(args []string) {
 	}
 	_ = daemon.RemovePID()
 
-	m, err := manager.New(opts.Configs, opts.CommandLogDir)
+	// The $global resultFormat default answers calls that name no
+	// connection (list-servers); every connection carries it too.
+	m, err := manager.New(opts.Configs, opts.CommandLogDir, manager.WithGlobalResultFormat(opts.ResultFormat))
 	if err != nil {
 		logger.Error("%v", err)
 		os.Exit(1)
@@ -205,9 +209,19 @@ func runHTTPServer(ctx context.Context, s *server.MCPServer, m *manager.Manager,
 		os.Exit(1)
 	}
 	mux := http.NewServeMux()
-	httpServer := &http.Server{Addr: addr, Handler: mux}
+	// Header/idle timeouts and a header-size bound keep one stalled client
+	// from holding a connection open; the request body is capped below.
+	// Loopback listeners also get the streamable HTTP server's built-in
+	// DNS-rebinding protection (a non-localhost Host header is refused).
+	httpServer := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    16 << 10,
+	}
 	streamable := server.NewStreamableHTTPServer(s, server.WithStreamableHTTPServer(httpServer))
-	var mcpHandler http.Handler = streamable
+	mcpHandler := limitBody(streamable, maxMCPBodyBytes)
 	if admin != nil {
 		// Authorized /mcp traffic keeps guest leases alive; the daemon's
 		// own owner lease never expires.
@@ -242,8 +256,17 @@ func runHTTPServer(ctx context.Context, s *server.MCPServer, m *manager.Manager,
 // newMCPServer builds the MCP server with all tools registered. WithElicitation
 // advertises the server side of the elicitation capability; whether a prompt
 // actually appears depends on the client declaring its side at initialize.
+// WithRecovery turns a panicking tool handler into an error response for that
+// one call instead of a dropped request the client waits out. Middlewares wrap
+// in reverse registration order, so LogToolCalls — registered first — ends up
+// outside the recovery middleware and still logs the recovered failure.
 func newMCPServer(m *manager.Manager) *server.MCPServer {
-	s := server.NewMCPServer("2native-ssh-mcp", version, server.WithElicitation())
+	s := server.NewMCPServer("2native-ssh-mcp", version,
+		server.WithElicitation(),
+		server.WithToolHandlerMiddleware(tools.LogToolCalls),
+		server.WithRecovery(),
+		server.WithInstructions(tools.Instructions),
+	)
 	tools.RegisterAll(s, m)
 	return s
 }
@@ -353,6 +376,23 @@ func isLoopbackBind(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// maxMCPBodyBytes bounds one MCP request body. Tool arguments are small —
+// paths, commands and argv arrays; file contents travel over SFTP rather than
+// through the tool call — so this only has to be generous enough for a long
+// argv, not for payloads.
+const maxMCPBodyBytes = 4 << 20
+
+// limitBody caps how much of a request body the MCP handler may read, so an
+// oversized or endless upload fails fast instead of growing the process.
+func limitBody(next http.Handler, max int64) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, max)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // touchGuests refreshes guest lease expiries after each authorized /mcp

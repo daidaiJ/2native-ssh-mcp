@@ -158,3 +158,15 @@ curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=2native-ssh-m
 - **背景**：e4888a6（2026-09-04，v1.5.0 发布前夜）把 execute-command 成功路径从 `result.Text()` 分节文本改为 `commandResultJSON`。MCP 客户端把 text content 原样渲染，而 JSON 里的 `stdout` 是单行转义字符串（换行是字面 `\n`），长输出在终端里被软换行成一整块，可读性差；v1.4.1 及之前的分节文本才是用户与 agent 都易读的形态。
 - **决策**：成功路径默认恢复 `result.Text()`；新增按连接配置 `resultFormat`（`text` 默认 / `json` 可选，见 `SSHConfig.GetResultFormat`）。错误路径保持 JSON（agent 依赖 `code`/`message`/`retriable`/`partial`/`replaySafe` 分支）；background/session-open 的 info JSON 与 list-servers 不变。
 - **兼容性**：默认行为变化——依赖 JSON 形状的消费方在连接配置里显式加 `"resultFormat": "json"` 即可恢复旧行为。
+
+## 设计决策：稳定性与上下文收敛（2026-10-31）
+
+调研同类 SSH MCP（Motty 内置的 MCP server、TermBridge 的执行语义 ADR、n0madic/ssh-mcp、remotessh-mcp）后确认的差距与对应决策：
+
+- **工具 panic 会让请求悬空**：mcp-go 的恢复中间件是可选项，此前没开——handler 内 panic 会落到传输层兜底，客户端只等到超时。现在 `newMCPServer` 注册 `server.WithRecovery()`，并在其外层加 `tools.LogToolCalls` 中间件（记录工具名、耗时、错误），panic 变成那一次调用的错误响应并留痕。
+- **HTTP 传输无超时/体积上限**：`http.Server` 现在设 `ReadHeaderTimeout` 10s、`IdleTimeout` 2m、`MaxHeaderBytes` 16 KiB，`/mcp` 请求体上限 4 MiB（`limitBody`）。loopback 监听下的 DNS-rebinding 保护是 mcp-go 内建的（Host 非 localhost 直接 403）。
+- **后台任务远端日志无界**：新增连接配置 `backgroundLogMaxBytes`（默认 8 MiB，`-1` 不裁剪，`$global` 可设默认）。启动脚本把作业输出经 `capture()` 管道写入日志：超限时从最早处裁剪，丢弃字节数写进 `.drop` 文件，输出开头 64 KiB 复制到 `.head`；裁剪发生在唯一的写入者进程内，因此不存在与作业竞争的丢数据窗口。`session action=read` 的 `offset`/`totalBytes` 改为**绝对字节**（从作业第一个字节算起，含已丢弃部分），命中被裁剪区间时一次返回「保留的开头 + 省略标记 + 最新输出」，头部另报 `droppedBytes`/`logMaxBytes`。
+- **中断缺少可执行的恢复语义**：`CommandResult` 新增 `executionState`（`started` = 命令已开始、结果未知；`unknown` = 断线，可能没开始/在跑/已结束）与 `guidance`（下一步动作），只在被中断的结果上出现；`session`/`list-servers`/`skills/2native-ssh-mcp-agent` 同步写明「超时 ≠ 命令没跑，先核对远端状态再决定是否重试」。
+- **同一份数据发两遍**：`session action=read`/`list` 与 `list-servers` 过去在文本之后再附一份 `Raw JSON`/`Servers JSON`。现在统一由 `resultFormat` 二选一（默认文本），并支持 `$global.resultFormat` 一次配全部连接。spill 预览改为头 8 行 + 尾 4 行（失败信息在尾部）。initialize 增加 `instructions` 承载跨工具契约（连接选择、落盘文件、中断语义、后台会话）。
+
+**兼容性**：session/list-servers 的响应默认不再含 `Raw JSON`/`Servers JSON` 段（需要结构化形态就配 `"resultFormat": "json"`）；`offset` 语义变为绝对字节（旧偏移仍有效，只是不再随裁剪回退）；后台日志默认 8 MiB 上限，需要完整日志的连接设 `"backgroundLogMaxBytes": -1`。

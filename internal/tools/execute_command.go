@@ -20,7 +20,7 @@ import (
 // registerExecuteCommand registers the execute-command tool.
 func registerExecuteCommand(s *server.MCPServer, m *manager.Manager) {
 	tool := mcp.NewTool("execute-command",
-		mcp.WithDescription("Execute a command on a configured SSH server and return its output. Use list-servers first to pick connectionName. Pass the command as cmdString, as cmdString+args (argv mode), or as a local scriptFile. Large output is spilled to a local file — Grep/Read that file instead of re-running the command."),
+		mcp.WithDescription("Execute a command on a configured SSH server and return its output. Use list-servers first to pick connectionName. Pass the command as cmdString, as cmdString+args (argv mode), or as a local scriptFile."),
 		mutatingAnnotation("Execute remote command", true),
 		mcp.WithString("cmdString", mcp.Description("Command to run. In argv mode (args set) this is the program itself. Mutually exclusive with scriptFile")),
 		mcp.WithArray("args", mcp.WithStringItems(), mcp.Description("argv mode: arguments for cmdString, each passed to the program byte-for-byte with no shell parsing (spaces, quotes, $, backslashes and * stay literal)")),

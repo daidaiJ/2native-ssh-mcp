@@ -31,6 +31,77 @@ func TestCommandResultText(t *testing.T) {
 	}
 }
 
+// An interrupted command must say what the remote side can be assumed to have
+// done and what to do about it: "the call failed" and "the command did not
+// run" are different facts.
+func TestInterruptGuidance(t *testing.T) {
+	cases := []struct {
+		status string
+		state  string
+		want   string
+	}{
+		{StatusTimeout, ExecutionStarted, "may still be running"},
+		{StatusOutputLimit, ExecutionStarted, "aborted"},
+		{StatusCancelled, ExecutionStarted, "cancelled"},
+		{StatusConnectionLost, ExecutionUnknown, "never have started"},
+	}
+	for _, tc := range cases {
+		state, guidance := interruptGuidance(tc.status)
+		if state != tc.state {
+			t.Fatalf("%s: executionState = %q, want %q", tc.status, state, tc.state)
+		}
+		if !strings.Contains(guidance, tc.want) {
+			t.Fatalf("%s: guidance must mention %q, got %q", tc.status, tc.want, guidance)
+		}
+		if !strings.Contains(guidance, "before") {
+			t.Fatalf("%s: guidance must tell the caller to check the remote state first, got %q", tc.status, guidance)
+		}
+	}
+	for _, status := range []string{StatusOK, StatusExited, ""} {
+		if state, guidance := interruptGuidance(status); state != "" || guidance != "" {
+			t.Fatalf("%q must not carry a recovery note, got %q/%q", status, state, guidance)
+		}
+	}
+}
+
+func TestBuildCommandResultCarriesRecoveryState(t *testing.T) {
+	timedOut := buildCommandResult("partial", "", -1, StatusTimeout, nil)
+	if timedOut.ExecutionState != ExecutionStarted || timedOut.Guidance == "" || timedOut.ReplaySafe {
+		t.Fatalf("timeout result must be started/not replay-safe with guidance: %+v", timedOut)
+	}
+	lost := buildCommandResult("partial", "", -1, StatusConnectionLost, nil)
+	if lost.ExecutionState != ExecutionUnknown {
+		t.Fatalf("a dropped connection leaves the execution state unknown, got %q", lost.ExecutionState)
+	}
+	ok := buildCommandResult("done", "", 0, StatusOK, nil)
+	if ok.ExecutionState != "" || ok.Guidance != "" {
+		t.Fatalf("a completed command carries no recovery note: %+v", ok)
+	}
+	// The text rendering shows the recovery line for interrupted results.
+	if !strings.Contains(timedOut.Text(), "[recovery]") {
+		t.Fatalf("Text() must render the recovery guidance: %q", timedOut.Text())
+	}
+}
+
+// Truncated output must be labelled as incomplete in the text rendering, not
+// just in the JSON flag: an agent reading prose should never take a prefix
+// for the whole output.
+func TestCommandResultTextMarksTruncation(t *testing.T) {
+	res := CommandResult{
+		Stdout:       "partial output",
+		ExitCode:     -1,
+		Status:       StatusOutputLimit,
+		Truncated:    true,
+		ClippedBytes: 4096,
+	}
+	text := res.Text()
+	for _, want := range []string{"[output truncated]", "incomplete", "4096 bytes were discarded"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Text() must mention %q, got:\n%s", want, text)
+		}
+	}
+}
+
 func TestCommandResultTextWithStderr(t *testing.T) {
 	res := CommandResult{
 		Stdout:   "out",

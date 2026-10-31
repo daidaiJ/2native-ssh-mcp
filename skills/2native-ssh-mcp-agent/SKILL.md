@@ -52,13 +52,14 @@ Before sending, scan for: an odd number of quotes, a command ending in a bare `\
 2native-ssh-mcp layers large output automatically:
 
 - **Directories transfer recursively** via `file-transfer` (per-file atomic upload, `files`/`failed` in the result; single files get a sha256 check).
-- **≥ 8KB** (`outputSpillThreshold`, `-1` disables): the full output is written to a local file (default `.ssh-mcp-out/`, `outputSpillDir` configurable, newest 32 kept). The result carries only a short notice, the absolute path, byte/line counts and a ~12-line preview. **Grep/Read that local file — never re-run the command or `cat` it remotely.**
+- **≥ 8KB** (`outputSpillThreshold`, `-1` disables): the full output is written to a local file (default `.ssh-mcp-out/`, `outputSpillDir` configurable, newest 32 kept). The result carries only a short notice, the absolute path, byte/line counts and a **head+tail preview** (first 8 and last 4 lines — failures print last, so the tail matters). **Grep/Read that local file — never re-run the command or `cat` it remotely.**
 - **4–8KB**: light compression — head + tail lines, middle replaced with `... [N lines omitted] ...`, duplicate/blank lines collapsed.
+- **Truncation is labelled**: a result cut by `maxOutputBytes` carries `truncated: true` / `clippedBytes` (error JSON) or a trailing `[output truncated] ... incomplete` (text). Compressed output says the middle was omitted; a spill preview says it is not the complete output. Treat any of these as "not the whole story" and fetch the rest (remote filter, local spill file, or another `session action=read`) before concluding.
 - Disable compression per connection: `"outputCompressLight": false`; tune threshold: `"outputCompressThreshold": 8192`.
 
 ANSI escape sequences (colors, progress bars) are stripped from all output by default; disable per connection: `"stripAnsi": false`.
 
-Successful execute-command results render as sectioned text by default (real newlines + `[exit code] N` + spill notice); set `"resultFormat": "json"` per connection for the structured CommandResult JSON (error paths always JSON).
+Successful execute-command results render as sectioned text by default (real newlines + `[exit code] N` + spill notice); set `"resultFormat": "json"` per connection for the structured CommandResult JSON (error paths always JSON). `session action=read`, `session action=list` and `list-servers` follow the same switch: text by default, JSON instead of it — one payload, never both.
 
 ### Agent-side habits (before running)
 
@@ -69,6 +70,7 @@ Successful execute-command results render as sectioned text by default (real new
 | `docker ps -a` (huge) | `docker ps --format 'table {{.Names}}\t{{.Status}}' \| head -30` |
 | `kubectl get pods -A` | add `\| head` or `-l app=...` |
 | `ls -laR /` | `ls -la /specific/path` |
+| `grep -c ERROR app.log` then paste the file | let the remote host select: `grep -c`, `awk`, `sort \| uniq -c`, `wc -l` — only the answer enters the conversation |
 
 ## Tool choice (4 tools)
 
@@ -102,10 +104,18 @@ session(action=close, sessionName=logs)
 
 **A finished background job keeps its session and remote log for 60 min** — always `close` when done (idempotent, safe to call twice). `read` supports `offset=0` to re-read from the start; the JSON carries `logPath` (remote log) and `exitCode` once the job finished. Sessions are in-memory: a stdio process restart loses them (the remote log survives at `logPath`); a resident HTTP daemon keeps them across conversations. Re-opening `background=true` on a finished session is rejected with the `logPath` — `close` first, or read the old log.
 
+**The remote log is capped** (`backgroundLogMaxBytes`, default 8 MiB) so a chatty job cannot fill the remote `/tmp`. Past the cap the oldest bytes are trimmed and counted: `read` then reports `droppedBytes`/`logMaxBytes` in the header and returns the **kept beginning of the output, an omission marker, and the newest bytes** in one answer. `offset`/`totalBytes` stay absolute (counted from the job's first byte), so a stored offset keeps its meaning across a trim. Poll often enough to see what you need, or make the job itself quieter (`grep`, `--quiet`, log level).
+
+**A read capped by `maxBytes` is a prefix, not the whole log**: the response carries `truncated: true` and `remainingBytes`, and both the header and a trailing note say so. Call `session action=read` again with the returned `offset` until `truncated` is gone. Never join two chunks and assume the seam is a line boundary — chunks are byte-ranged.
+
 ## Reading results
 
 - **Non-zero exit is a normal result** — read `[exit code] N` from the text; do not treat it as a transport failure.
-- **`SSH_CONNECTION_LOST` (retriable=false)**: the connection dropped mid-command; the remote process may still be running. **Do not replay blindly** — inspect the partial `stdout` in the error JSON (`replaySafe: false`).
+- **Truncated output is incomplete output** — `truncated`, `clippedBytes`, `[output truncated]`, `output compressed` and `remainingBytes` all say the content in hand is a prefix or a head/tail extract. Get the rest before judging a build, a log or a test run.
+- **An interrupted call is not a command that did not run.** Timeout, output limit, cancellation and connection loss return `executionState` plus a `guidance` string telling you the next step, and `replaySafe: false`:
+  - `executionState: "started"` (timeout / output limit / cancelled) — the command did run; its outcome is unknown. A timeout kills the remote process group by PID, so the common case is "it ran and was killed", but check before assuming.
+  - `executionState: "unknown"` (`SSH_CONNECTION_LOST`, retriable=false) — it may never have started, may still be running, or may have finished.
+  - Either way: **verify the remote state first** (process list, service status, or an idempotent query) and never replay a command that is not safe to run twice. The error JSON carries the partial `stdout`/`stderr`.
 - Foreground `timeout` must exceed the real runtime (the connection's `commandTimeoutMs`, default 120000, applies otherwise). On timeout the remote process group is killed by PID, so nothing is left running remotely.
 - exec runs **without a PTY by default**; interactive commands need the connection's `"pty": true` (a config change for the owner — ask, or find a non-interactive path such as `sudo -S`).
 - **"jump host [X] is unreachable" / "target authentication … rejected"** — two different failure layers on `via=` connections: the first is the jump host (retry — it may be a transient network issue), the second is the target's own credentials (do not retry; report).
@@ -124,6 +134,7 @@ session(action=close, sessionName=logs)
 - [ ] Start with read-only probes (`whoami`, `pwd`, `df -h`, `systemctl status`)
 - [ ] Destructive commands (`rm`, `systemctl restart`, migrations) — confirm with operator
 - [ ] Large output — use head/tail/grep or background session + read; if the result carries an output-file notice, Grep that local file
+- [ ] Check for truncation markers (`truncated`, `remainingBytes`, `output compressed`) before treating output as complete
 - [ ] Close sessions when done (`session action=close`)
 
 ## Related

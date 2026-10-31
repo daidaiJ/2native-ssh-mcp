@@ -24,10 +24,11 @@ SSH-based MCP server (Go). Remote command execution + file transfer as MCP tools
 
 - Whitelist/blacklist regexes per connection; rejected → `COMMAND_VALIDATION_FAILED`（argv 模式按**原始参数**拼出的命令行匹配，不受引用影响）。
 - **Non-zero exit is a normal result, not an error** — read `exitCode` from the text (`[exit code] N`). Errors are reserved for validation/connect failures, `COMMAND_TIMEOUT`, `OUTPUT_LIMIT_EXCEEDED`, and `SSH_CONNECTION_LOST`.
-- **Successful results render as sectioned text by default** — real newlines: `stdout`, then `[stderr]`, `[exit code] N`, and a spill notice when output was persisted. Set `"resultFormat": "json"` on a connection to switch successful results to the structured CommandResult JSON; error paths always stay JSON.
+- **Successful results render as sectioned text by default** — real newlines: `stdout`, then `[stderr]`, `[exit code] N`, and a spill notice when output was persisted. Set `"resultFormat": "json"` on a connection to switch successful results to the structured CommandResult JSON; error paths always stay JSON. `session action=read`/`list` 与 `list-servers` 同样遵循该开关：默认只发文本，`json` 时只发 JSON——同一份数据不再发两遍。
 - **省略 `connectionName`（走 `default` 连接）时，响应会带上实际命中的连接摘要**：文本格式首行为 `connection=default host=<ip> port=<port> aliases=<...>`（无别名则省略），JSON 格式则多出 `connection`/`host`/`port`/`aliases` 字段；后台任务启动响应同样带这一行，**失败结果**（后台启动失败、file-transfer 失败、参数校验失败）也带这些字段。传了 `connectionName` 或 `sessionName` 的调用不重复此信息（`sessionName` 生效时 `connectionName` 被忽略，会话自身已指明主机）。
-- `SSH_CONNECTION_LOST` (retriable=false): the connection dropped mid-command; the remote process may still be running. **Do not replay blindly** — the error JSON carries partial `stdout`/`stderr` and `replaySafe: false`.
-- Output cap `maxOutputBytes` (default 10 MB, **stdout+stderr combined**) → `OUTPUT_LIMIT_EXCEEDED`; timeout → `COMMAND_TIMEOUT`. For timeout/lost/limit the error message stays short; partial output is in the same result's `stdout`/`stderr` fields.
+- **An interrupted call is not a command that did not run.** Timeout, output limit, cancellation and connection loss return `executionState` and a `guidance` string naming the next step, together with `replaySafe: false`. `executionState: "started"` (timeout / output limit / cancelled) means the command did run and its outcome is unknown; `executionState: "unknown"` (`SSH_CONNECTION_LOST`, retriable=false) means it may never have started, may still be running, or may have finished. Verify the remote state (process, service, or an idempotent query) before retrying; never replay a command that is not safe to run twice. The error JSON carries the partial `stdout`/`stderr` either way.
+- Output cap `maxOutputBytes` (default 10 MB, **stdout+stderr combined**) → `OUTPUT_LIMIT_EXCEEDED` (the remote command is aborted when the cap is hit); timeout → `COMMAND_TIMEOUT`.
+- **截断会明说，不要把返回内容当成完整输出**：命中上限的错误 JSON 带 `truncated: true`、`clippedBytes`，`message` 写明返回内容不完整；文本结果尾部有 `[output truncated] ... incomplete`。轻压缩会在正文里写明中间省略，落盘预览会写明“preview is not the complete output”。看到这些标记时，需要完整内容就换用 `grep`/`head`/`tail`/重定向到远端文件，或读 `outputFile`/`logPath`，不要根据残缺输出下结论。
 - **Light compress** (default): outputs ≥ `outputCompressThreshold` (4096 B) get head/tail lines + dedup; disable with `"outputCompressLight": false`. See `skills/2native-ssh-mcp-agent` for agent-side habits.
 - **ANSI stripped by default**: colors/progress escapes are removed from all output (exec, shell, background reads); disable per connection with `"stripAnsi": false`.
 - Connections **lazy**; after command kept alive per the connection's `keepAliveMs`（默认 10 分钟，`-1` 表示执行完即断），idle expiry closes.
@@ -62,7 +63,7 @@ One tool, `action` param. Progress via `notifications/progress` when client send
 
 - **Dedup**: destination matches (size+mtime) → skipped. **Resume**: partial destination → continue. Download = temp + atomic rename, stamps remote mtime.
 - Growing source: tail appended after main copy.
-- Concurrent SFTP (16×32 KB default; `sftpConcurrency`/`sftpChunkSize` per connection).
+- Concurrent SFTP (16×32 KB per file by default; `sftpConcurrency`/`sftpChunkSize` per connection). Directory transfers move several files at once (`sftpFileConcurrency`, default 4; per connection or `$global`), so a tree of small files is not serialized behind per-file round trips. Single-file transfers verify sha256 on both sides by default; `sftpVerifyChecksum: false` skips that full remote read at the cost of the content check.
 - `sftpDedicatedConn: true`（每连接或 `$global`）：SFTP 单开一条 SSH 连接。sshd 前有影子容器/会话级 overlay 的网关会丢弃复用 shell 会话写入的文件，传输后文件消失时开这个；连接懒创建、空闲 5 分钟回收、复用前探活。
 - 重接会话恢复上下文时优先跑 `history`：连接开了 `historyFromLog` 的话，远程历史过少（<10 条，exec 模式通常为 0）会自动从 MCP 命令日志补齐（尾部去重，`historySupplemented` 字段计数）。
 - **省略 `connectionName`（走 `default` 连接）时**，成功响应与 execute-command 相同：文本首行为 `connection=default host=<ip> port=<port> aliases=<...>`，JSON 里多 `connection`/`host`/`port`/`aliases` 字段；传输失败的结果也带这些字段。
@@ -80,7 +81,7 @@ One tool, `action` param. Exec-mode connections only.
 | action | Required | Notes |
 |---|---|---|
 | `open` | `sessionName`, `connectionName` (new) | Idempotent; `background=true` + `cmdString` starts long-running job |
-| `read` | `sessionName` | Poll background log; optional `maxBytes`, `offset` (negative/omitted = continue, `0` = re-read from start), `waitMs` (block up to 30s for new output or job exit) |
+| `read` | `sessionName` | Poll background log; optional `maxBytes`, `offset` (negative/omitted = continue, `0` = re-read from start), `waitMs` (block up to 30s for new output or job exit). `offset`/`totalBytes` are absolute (counted from the job's first byte); once the remote log has been trimmed the header also reports `droppedBytes`/`logMaxBytes` and the body carries the kept beginning, an omission marker and the newest bytes |
 | `close` | `sessionName` | Stop background job, release shell (**idempotent** — closing an already-closed session succeeds) |
 | `list` | — | All sessions; optional `connectionName` filter |
 
@@ -88,7 +89,7 @@ One tool, `action` param. Exec-mode connections only.
 
 **Long tasks: `execute-command` with `background: true`** detaches the command via a background session and returns `sessionName` + `logPath` immediately (a random `bg-*` session is created if none given). Poll with `session action=read` (`waitMs` blocks for new output instead of returning empty). Equivalent: `session action=open` with `background=true` + `cmdString`. Add the connection's `"pty": true` for jobs that require a TTY (wrapped in `script`, exit code preserved). Do NOT `nohup ... &` or `setsid` through a foreground `execute-command` — those die with the exec channel. Background jobs are started detached (no PTY, new session) and **survive connection drops**; after a drop the session shows `disconnected=true` and `read`/`execute-command` reconnect automatically. Only `action=close` kills the remote job.
 
-**Finished background jobs keep their session** (and remote log) for 60 min — `close` it to release. `read` returns `logPath` (remote log) and `exitCode` once the job finished; `offset=0` re-reads from the start. Sessions live in memory only: a stdio process exit loses them (the remote log survives at `logPath`); a resident HTTP daemon keeps them across conversations. Re-opening `background=true` on a finished session is rejected with the `logPath` — `close` first, or read the old log. **If the connection is down, `close` cannot confirm the remote job stopped**: the session stays listed with `orphaned=true` and the close returns a retriable error — retry `close` after the connection is back. BG log/pid/exit files use a one-time random suffix (`/tmp/.2native-ssh-mcp-<name>-<id>.log`); always use the returned `logPath`, never guess a fixed path.
+**Finished background jobs keep their session** (and remote log) for 60 min — `close` it to release. `read` returns `logPath` (remote log) and `exitCode` once the job finished; `offset=0` re-reads from the start. Sessions live in memory only: a stdio process exit loses them (the remote log survives at `logPath`); a resident HTTP daemon keeps them across conversations. Re-opening `background=true` on a finished session is rejected with the `logPath` — `close` first, or read the old log. **If the connection is down, `close` cannot confirm the remote job stopped**: the session stays listed with `orphaned=true` and the close returns a retriable error — retry `close` after the connection is back. BG log/pid/exit files use a one-time random suffix (`/tmp/.2native-ssh-mcp-<name>-<id>.log`); always use the returned `logPath`, never guess a fixed path. The remote log is **capped** (connection's `backgroundLogMaxBytes`, default 8 MiB): past the cap the oldest bytes are trimmed and counted (`droppedBytes`), while the first 64 KiB of the output stay available, so a chatty job cannot fill the remote `/tmp` — a read that lands in the trimmed region returns the kept beginning, an omission marker and the newest bytes. A read cut short by `maxBytes` reports `truncated: true` and `remainingBytes`, and says so in the text header and trailing note — continue from the returned `offset` instead of assuming the chunk is everything.
 
 ### execute-command (with optional session)
 | Param | Notes |
@@ -116,7 +117,9 @@ session(action=close, sessionName=deploy)
 ```json
 {
   "$global": {
-    "allowInsecureConfigPerms": true
+    "allowInsecureConfigPerms": true,
+    "resultFormat": "text",                // 所有连接的默认输出形态："text"（默认）或 "json"
+    "backgroundLogMaxBytes": 8388608       // 后台会话远端日志的默认上限
   },
   "dev": {
     "host": "10.0.0.1", "port": 22, "username": "root",
@@ -136,6 +139,7 @@ session(action=close, sessionName=deploy)
     "transportMode": "exec",                   // or "shell" (bastion)
     "commandLogSize": 50, "commandLogDir": "logs", "commandLogOnlySuccess": true,
     "sftpConcurrency": 16, "sftpChunkSize": 32768,
+    "sftpFileConcurrency": 4, "sftpVerifyChecksum": true,
     "algorithms": {"kex": ["curve25519-sha256"], "cipher": ["aes128-ctr"]},
     "hostKeyCheck": "accept-new",            // or "strict" / "none"
     "knownHostsFile": "~/.ssh/known_hosts",
@@ -151,6 +155,7 @@ session(action=close, sessionName=deploy)
     "scriptInterpreter": "sh",             // 无 shebang 的暂存脚本用哪个解释器
     "lintMode": "warn",                    // off / warn(默认) / strict：命令下发前的结构检查（只有配置文件能改）
     "keepAliveMs": 600000,                 // 执行完保活多久（默认 600000 = 10 分钟；-1 = 执行完即断）
+    "backgroundLogMaxBytes": 8388608,      // 后台会话远端日志上限（默认 8 MiB；-1 表示不裁剪）
     "autoProbe": true,                     // 连接建立后探一次远端 base64/jq（list-servers 展示）；远端会记录每条命令的连接可关掉
     "redactSecrets": false,                // opt-in: masks password=/token=/Bearer/PEM (~200ms per MiB of secret-bearing output)
     "commandTemplate": "sudo -n <quotedCommand>",
@@ -170,7 +175,9 @@ Auth: password | privateKey (+passphrase, `SSH_MCP_PASSPHRASE` env) | agent (`SS
 - **exec runs without a PTY by default** — a PTY makes tools like docker/npm behave as if interactive and can cause SIGHUP issues on long tasks, so it is opt-in via the connection's `"pty": true`. Background jobs never use a PTY unless that setting is on.
 - **Non-zero exit is a normal result** — check `exitCode`; do not treat `[exit code] 1` as a transport failure.
 - **`approvalMode: "ask-destructive"` 的连接**：`list-servers` 会标注 `approval=ask-destructive` 与本客户端是否支持 elicitation。命中破坏性分类器时会弹窗征询用户（提示中带连接名与实际 host:port）——拒绝/取消则命令不执行，返回 `"executed": false`，不要重试；客户端不支持 elicitation 时命令照常执行（fail-open），结果尾部带提示，此时应先征询用户再发破坏性命令。
-- **`SSH_CONNECTION_LOST` is not replay-safe** — the command may have partially executed; inspect the partial `stdout` before deciding to retry.
+- **`SSH_CONNECTION_LOST` is not replay-safe** — the command may have partially executed; inspect the partial `stdout` 与 `executionState` before deciding to retry.
+- **过滤放在远端。** 把原始数据搬进对话是最贵的一条路：用 `grep`/`awk`/`head`/`wc`（或 argv 模式、`scriptFile` 暂存脚本）让远端先做筛选，只把结论带回来。已经拉回来的大输出在本地 spill 文件里——直接 Grep 那个文件，不要重跑命令。
+- **看到截断标记就补齐，不要基于残缺输出下判断**：`truncated: true` / `clippedBytes` / `[output truncated]` / `output compressed` / `remainingBytes` 都表示手里不是完整内容。按提示继续读（`session action=read` 用返回的 `offset`），或改用远端过滤/读本地 spill 文件。
 
 ## Secure setup (pick one — do NOT put credentials in MCP client args)
 
@@ -184,7 +191,7 @@ Config file permission check on startup (Unix `0600`/`0700`; Windows ACL). Overr
 
 `file-transfer` accepts **directories**: the tree transfers recursively (remote parents auto-created, per-file atomic upload, failures collected in `failed`), and single-file transfers are sha256-verified (`unverified` when the remote lacks sha256sum).
 
-Output is **spilled to a local file** when stdout+stderr reach `outputSpillThreshold` (default 8 KiB): the result then only carries a short notice, the absolute path, size/line counts and a ~12-line preview — Read/Grep **that local file**, do not re-run the command or `cat` it remotely. Below the threshold, output ≥4 KiB is light-compressed. See [SECURITY.md](../SECURITY.md).
+Output is **spilled to a local file** when stdout+stderr reach `outputSpillThreshold` (default 8 KiB): the result then only carries a short notice, the absolute path, size/line counts and a head+tail preview (first 8 and last 4 lines) — Read/Grep **that local file**, do not re-run the command or `cat` it remotely. Below the threshold, output ≥4 KiB is light-compressed. See [SECURITY.md](../SECURITY.md).
 
 Secret redaction (Bearer tokens, PEM blocks, `password=`/`token=` lines) is **opt-in** via `"redactSecrets": true` — it is off by default because scanning secret-bearing output is expensive. When it is on, spilled files contain redacted content only.
 

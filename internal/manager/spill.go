@@ -14,9 +14,13 @@ import (
 )
 
 const (
-	// defaultOutputSpillPreviewLines bounds the preview that replaces the
-	// full output in the MCP result once it has been spilled to a file.
-	defaultOutputSpillPreviewLines = 12
+	// defaultOutputSpillPreviewHeadLines and defaultOutputSpillPreviewTailLines
+	// bound the preview that replaces the full output in the MCP result once
+	// it has been spilled to a file. The tail is kept because the reason a
+	// command failed — the error, the stack trace, the test summary — is at
+	// the end of its output, and a head-only preview hides exactly that.
+	defaultOutputSpillPreviewHeadLines = 8
+	defaultOutputSpillPreviewTailLines = 4
 	// spillPreviewLineMax caps each preview line so one pathological line
 	// cannot defeat the purpose of the short notice.
 	spillPreviewLineMax = 2000
@@ -124,7 +128,7 @@ func trimSpillDir(dir string) {
 	}
 }
 
-// spillPreview builds the short head-of-output preview that travels in the
+// spillPreview builds the short head-and-tail preview that travels in the
 // MCP result once the full output has been spilled to a file.
 func spillPreview(stdout, stderr string) string {
 	src := stdout
@@ -135,18 +139,24 @@ func spillPreview(stdout, stderr string) string {
 		return ""
 	}
 	lines := strings.Split(src, "\n")
-	total := len(lines)
-	if total > defaultOutputSpillPreviewLines {
-		lines = lines[:defaultOutputSpillPreviewLines]
+	// A final newline leaves an empty last element; drop it so the tail is
+	// real output rather than a blank line.
+	if n := len(lines); n > 1 && lines[n-1] == "" {
+		lines = lines[:n-1]
 	}
-	for i, line := range lines {
+	total := len(lines)
+	kept, omitted := lines, 0
+	if total > defaultOutputSpillPreviewHeadLines+defaultOutputSpillPreviewTailLines {
+		omitted = total - defaultOutputSpillPreviewHeadLines - defaultOutputSpillPreviewTailLines
+		kept = make([]string, 0, total-omitted+1)
+		kept = append(kept, lines[:defaultOutputSpillPreviewHeadLines]...)
+		kept = append(kept, fmt.Sprintf("... [%d lines omitted here: this preview is not the complete output; the full output is in the spill file — Grep it for what you need] ...", omitted))
+		kept = append(kept, lines[total-defaultOutputSpillPreviewTailLines:]...)
+	}
+	for i, line := range kept {
 		if len(line) > spillPreviewLineMax {
-			lines[i] = utf8SafeTruncate(line, spillPreviewLineMax) + "…"
+			kept[i] = utf8SafeTruncate(line, spillPreviewLineMax) + "…"
 		}
 	}
-	out := strings.Join(lines, "\n")
-	if total > defaultOutputSpillPreviewLines {
-		out += fmt.Sprintf("\n... [%d more lines in the spill file] ...", total-defaultOutputSpillPreviewLines)
-	}
-	return out
+	return strings.Join(kept, "\n")
 }

@@ -18,6 +18,10 @@ import (
 // Options holds the parsed command line options.
 type Options struct {
 	Configs                  map[string]*SSHConfig
+	// ResultFormat is the $global resultFormat default ("" when unset). It is
+	// merged into every connection; this copy answers calls that name no
+	// connection at all, such as list-servers.
+	ResultFormat string
 	ConfigFile               string
 	AllowInsecureConfigPerms bool
 	PreConnect               bool
@@ -68,6 +72,12 @@ type GlobalConfig struct {
 	// SftpDedicatedConn is the global default for per-connection
 	// sftpDedicatedConn (SFTP over a dedicated SSH connection).
 	SftpDedicatedConn *bool `json:"sftpDedicatedConn,omitempty"`
+	// SftpFileConcurrency is the global default for per-connection
+	// sftpFileConcurrency (files moved at once by a directory transfer).
+	SftpFileConcurrency *int `json:"sftpFileConcurrency,omitempty"`
+	// SftpVerifyChecksum is the global default for per-connection
+	// sftpVerifyChecksum (sha256 comparison after a single-file transfer).
+	SftpVerifyChecksum *bool `json:"sftpVerifyChecksum,omitempty"`
 	// ScriptCleanup is the global default for per-connection scriptCleanup.
 	ScriptCleanup *bool `json:"scriptCleanup,omitempty"`
 	// ScriptInterpreter is the global default for per-connection
@@ -75,8 +85,14 @@ type GlobalConfig struct {
 	ScriptInterpreter string `json:"scriptInterpreter,omitempty"`
 	// LintMode is the global default for per-connection lintMode.
 	LintMode string `json:"lintMode,omitempty"`
+	// ResultFormat is the global default for per-connection resultFormat:
+	// "text" (default) or "json".
+	ResultFormat string `json:"resultFormat,omitempty"`
 	// KeepAliveMs is the global default for per-connection keepAliveMs.
 	KeepAliveMs *int `json:"keepAliveMs,omitempty"`
+	// BackgroundLogMaxBytes is the global default for the per-connection
+	// backgroundLogMaxBytes cap.
+	BackgroundLogMaxBytes *int `json:"backgroundLogMaxBytes,omitempty"`
 	// AutoProbe is the global default for per-connection autoProbe.
 	AutoProbe *bool `json:"autoProbe,omitempty"`
 	// HistoryFromLog is the global default for per-connection
@@ -305,6 +321,7 @@ func ParseArgs(args []string) (*Options, error) {
 			opts.HTTPAddr = global.HTTPAddr
 		}
 		fileGlobal = *global
+		opts.ResultFormat = global.ResultFormat
 		opts.Configs = configs
 		opts.ConfigFile = configFile
 	}
@@ -371,6 +388,12 @@ func ParseArgs(args []string) (*Options, error) {
 		if conf.SftpDedicatedConn == nil {
 			conf.SftpDedicatedConn = fileGlobal.SftpDedicatedConn
 		}
+		if conf.SftpFileConcurrency == 0 && fileGlobal.SftpFileConcurrency != nil {
+			conf.SftpFileConcurrency = *fileGlobal.SftpFileConcurrency
+		}
+		if conf.SftpVerifyChecksum == nil {
+			conf.SftpVerifyChecksum = fileGlobal.SftpVerifyChecksum
+		}
 		if conf.HistoryFromLog == nil {
 			conf.HistoryFromLog = fileGlobal.HistoryFromLog
 		}
@@ -386,8 +409,14 @@ func ParseArgs(args []string) (*Options, error) {
 		if conf.LintMode == "" {
 			conf.LintMode = fileGlobal.LintMode
 		}
+		if conf.ResultFormat == "" {
+			conf.ResultFormat = fileGlobal.ResultFormat
+		}
 		if conf.KeepAliveMs == 0 && fileGlobal.KeepAliveMs != nil {
 			conf.KeepAliveMs = *fileGlobal.KeepAliveMs
+		}
+		if conf.BackgroundLogMaxBytes == 0 && fileGlobal.BackgroundLogMaxBytes != nil {
+			conf.BackgroundLogMaxBytes = *fileGlobal.BackgroundLogMaxBytes
 		}
 		if conf.AutoProbe == nil {
 			conf.AutoProbe = fileGlobal.AutoProbe
@@ -465,12 +494,16 @@ func parseGlobalConfig(raw any, global *GlobalConfig) error {
 		globalStringSlice("approvalPatterns", &global.ApprovalPatterns),
 		globalStringSlice("approvalExemptPatterns", &global.ApprovalExemptPatterns),
 		globalOptBool("sftpDedicatedConn", &global.SftpDedicatedConn),
+		globalOptInt("sftpFileConcurrency", &global.SftpFileConcurrency),
+		globalOptBool("sftpVerifyChecksum", &global.SftpVerifyChecksum),
 		globalOptBool("historyFromLog", &global.HistoryFromLog),
 		globalOptBool("utf8Sanitize", &global.Utf8Sanitize),
 		globalOptBool("scriptCleanup", &global.ScriptCleanup),
 		globalString("scriptInterpreter", &global.ScriptInterpreter),
 		globalString("lintMode", &global.LintMode),
+		globalString("resultFormat", &global.ResultFormat),
 		globalOptInt("keepAliveMs", &global.KeepAliveMs),
+		globalOptInt("backgroundLogMaxBytes", &global.BackgroundLogMaxBytes),
 		globalOptBool("autoProbe", &global.AutoProbe),
 	}
 	for _, read := range readers {
@@ -642,6 +675,7 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 		CommandLogDir:          expandEnvVars(str(m["commandLogDir"])),
 		OutputSpillDir:         expandEnvVars(str(m["outputSpillDir"])),
 		LintMode:               str(m["lintMode"]),
+		ResultFormat:           str(m["resultFormat"]),
 		ScriptInterpreter:      str(m["scriptInterpreter"]),
 		ApprovalMode:           str(m["approvalMode"]),
 		ApprovalPatterns:       StringSlice(m["approvalPatterns"]),
@@ -725,6 +759,13 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 		}
 		conf.SftpDedicatedConn = &b
 	}
+	if v, ok := m["sftpVerifyChecksum"]; ok {
+		b, err := ParseBool(v)
+		if err != nil {
+			return nil, err
+		}
+		conf.SftpVerifyChecksum = &b
+	}
 	if v, ok := m["historyFromLog"]; ok {
 		b, err := ParseBool(v)
 		if err != nil {
@@ -747,6 +788,7 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 		"connectionTimeoutMs":     &conf.ConnectionTimeoutMs,
 		"sftpTimeoutMs":           &conf.SftpTimeoutMs,
 		"maxOutputBytes":          &conf.MaxOutputBytes,
+		"backgroundLogMaxBytes":   &conf.BackgroundLogMaxBytes,
 		"outputCompressThreshold": &conf.OutputCompressThreshold,
 		"outputSpillThreshold":    &conf.OutputSpillThreshold,
 		"keepaliveIntervalMs":     &conf.KeepaliveIntervalMs,
@@ -754,6 +796,7 @@ func normalizeConfig(raw any) (*SSHConfig, error) {
 		"keepAliveMs":             &conf.KeepAliveMs,
 		"sftpConcurrency":         &conf.SftpConcurrency,
 		"sftpChunkSize":           &conf.SftpChunkSize,
+		"sftpFileConcurrency":     &conf.SftpFileConcurrency,
 	}
 	for field, target := range intFields {
 		if v, ok := m[field]; ok && v != nil && v != "" {

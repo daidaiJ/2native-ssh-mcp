@@ -149,12 +149,24 @@ type Manager struct {
 	// suffix for the concurrent-writes client) with an idle TTL.
 	sftpPool    map[string]*sftpPoolEntry
 	defaultName string
+	// globalResultFormat is the $global resultFormat default, used by calls
+	// that name no connection at all (list-servers).
+	globalResultFormat string
+}
+
+// Option configures a Manager at construction.
+type Option func(*Manager)
+
+// WithGlobalResultFormat sets the format used by calls that name no
+// connection: the $global resultFormat default ("" keeps text).
+func WithGlobalResultFormat(format string) Option {
+	return func(m *Manager) { m.globalResultFormat = format }
 }
 
 // New creates a Manager for the given configurations. defaultLogDir is the
 // directory for per-connection command log files (overridable per
 // connection); it may be empty to disable logging.
-func New(configs map[string]*config.SSHConfig, defaultLogDir string) (*Manager, error) {
+func New(configs map[string]*config.SSHConfig, defaultLogDir string, opts ...Option) (*Manager, error) {
 	m := &Manager{
 		configs:      configs,
 		clients:      map[string]*ssh.Client{},
@@ -230,7 +242,16 @@ func New(configs map[string]*config.SSHConfig, defaultLogDir string) (*Manager, 
 			m.aliases[alias] = name
 		}
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
 	return m, nil
+}
+
+// GlobalResultFormat reports the $global resultFormat default, used by calls
+// that name no connection at all (list-servers).
+func (m *Manager) GlobalResultFormat() string {
+	return m.globalResultFormat
 }
 
 func compilePatterns(patterns []string, name, kind string) ([]*regexp.Regexp, error) {

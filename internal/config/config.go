@@ -27,6 +27,11 @@ const (
 	DefaultConnectionTimeoutMs = 30000
 	DefaultSftpTimeoutMs       = 300000
 	DefaultMaxOutputBytes      = 10 * 1024 * 1024
+	// DefaultBackgroundLogMaxBytes caps the remote log file a background
+	// session writes to. Past the cap the oldest bytes are trimmed and
+	// counted (the first 64 KiB stay available separately), so a chatty job
+	// cannot fill the remote /tmp.
+	DefaultBackgroundLogMaxBytes = 8 * 1024 * 1024
 	DefaultKeepaliveIntervalMs = 10000
 	DefaultKeepaliveCountMax   = 3
 	DefaultCommandLogSize      = 20
@@ -40,8 +45,9 @@ const (
 	// can Grep it.
 	DefaultCommandLogDir   = ".ssh-mcp-logs"
 	DefaultHTTPAddr        = "127.0.0.1:8338"
-	DefaultSftpConcurrency = 16
-	DefaultSftpChunkSize   = 32 * 1024
+	DefaultSftpConcurrency     = 16
+	DefaultSftpChunkSize       = 32 * 1024
+	DefaultSftpFileConcurrency = 4
 	// DefaultOutputSpillThreshold is the combined stdout+stderr size above
 	// which command output is spilled to a local file (one or two terminal
 	// screens of a normal command; below it, light compression still applies
@@ -133,6 +139,12 @@ type SSHConfig struct {
 	ConnectionTimeoutMs   int    `json:"connectionTimeoutMs,omitempty"`
 	SftpTimeoutMs         int    `json:"sftpTimeoutMs,omitempty"`
 	MaxOutputBytes        int    `json:"maxOutputBytes,omitempty"`
+	// BackgroundLogMaxBytes caps the remote log a background session writes
+	// to (default 8 MiB; -1 keeps the whole log). Past the cap the oldest
+	// bytes are dropped and reported as droppedBytes by session action=read,
+	// and the first 64 KiB of the output are kept aside so the beginning is
+	// still available.
+	BackgroundLogMaxBytes int `json:"backgroundLogMaxBytes,omitempty"`
 	// OutputCompressLight enables lossy head/tail line compression when output
 	// exceeds outputCompressThreshold bytes (default: true when unset).
 	OutputCompressLight *bool `json:"outputCompressLight,omitempty"`
@@ -218,6 +230,14 @@ type SSHConfig struct {
 	// Values above 32 KiB are clamped: an SFTP request must fit in one SSH
 	// session-channel data message, which OpenSSH caps at 32 KiB.
 	SftpChunkSize int `json:"sftpChunkSize,omitempty"`
+	// SftpFileConcurrency is how many files a directory transfer moves at
+	// once (default: 4; 1 keeps one file at a time). Each file still uses
+	// sftpConcurrency for its own in-flight requests.
+	SftpFileConcurrency int `json:"sftpFileConcurrency,omitempty"`
+	// SftpVerifyChecksum compares sha256 on both sides after a single-file
+	// transfer (default: true). Turning it off saves a full read of the
+	// transferred file on the remote side, at the cost of the content check.
+	SftpVerifyChecksum *bool `json:"sftpVerifyChecksum,omitempty"`
 	// SftpDedicatedConn runs file transfers over a dedicated SSH connection
 	// instead of reusing the shell/exec connection. For gateways that front
 	// sshd with a session-scoped overlay (shadow container), files written
@@ -302,6 +322,12 @@ func (c *SSHConfig) Normalize() error {
 	if c.MaxOutputBytes == 0 {
 		c.MaxOutputBytes = DefaultMaxOutputBytes
 	}
+	if c.BackgroundLogMaxBytes == 0 {
+		c.BackgroundLogMaxBytes = DefaultBackgroundLogMaxBytes
+	}
+	if c.BackgroundLogMaxBytes < -1 {
+		return fmt.Errorf("backgroundLogMaxBytes must be -1 (keep the whole log) or a positive byte count, got: %d", c.BackgroundLogMaxBytes)
+	}
 	if c.KeepaliveIntervalMs <= 0 {
 		c.KeepaliveIntervalMs = DefaultKeepaliveIntervalMs
 	}
@@ -331,6 +357,12 @@ func (c *SSHConfig) Normalize() error {
 	}
 	if c.SftpChunkSize < 1024 {
 		return fmt.Errorf("sftpChunkSize must be at least 1024 bytes, got: %d", c.SftpChunkSize)
+	}
+	if c.SftpFileConcurrency == 0 {
+		c.SftpFileConcurrency = DefaultSftpFileConcurrency
+	}
+	if c.SftpFileConcurrency < 1 {
+		return fmt.Errorf("sftpFileConcurrency must be a positive integer, got: %d", c.SftpFileConcurrency)
 	}
 	if c.OutputSpillThreshold < 0 {
 		c.OutputSpillThreshold = -1
@@ -383,6 +415,14 @@ func (c *SSHConfig) Normalize() error {
 	}
 	if c.KeepAliveMs < -1 {
 		return fmt.Errorf("keepAliveMs must be -1 (close the connection after each command) or a positive duration in milliseconds, got: %d", c.KeepAliveMs)
+	}
+	switch strings.ToLower(strings.TrimSpace(c.ResultFormat)) {
+	case "", ResultFormatText:
+		c.ResultFormat = ResultFormatText
+	case ResultFormatJSON:
+		c.ResultFormat = ResultFormatJSON
+	default:
+		return fmt.Errorf("resultFormat must be 'text' or 'json', got: %s", c.ResultFormat)
 	}
 	if c.KnownHostsFile != "" {
 		c.KnownHostsFile = ExpandHome(c.KnownHostsFile)
@@ -521,6 +561,15 @@ func (c *SSHConfig) GetPty() bool {
 	return *c.Pty
 }
 
+// GetBackgroundLogMaxBytes returns the byte cap for a background session's
+// remote log (default DefaultBackgroundLogMaxBytes; -1 keeps every byte).
+func (c *SSHConfig) GetBackgroundLogMaxBytes() int {
+	if c == nil || c.BackgroundLogMaxBytes == 0 {
+		return DefaultBackgroundLogMaxBytes
+	}
+	return c.BackgroundLogMaxBytes
+}
+
 // GetStripAnsi returns whether ANSI escape sequences should be stripped from
 // command output (default: true when unset).
 func (c *SSHConfig) GetStripAnsi() bool {
@@ -572,6 +621,24 @@ func (c *SSHConfig) GetSftpDedicatedConn() bool {
 		return *c.SftpDedicatedConn
 	}
 	return false
+}
+
+// GetSftpVerifyChecksum returns whether a single-file transfer is followed
+// by a sha256 comparison on both sides (default: true).
+func (c *SSHConfig) GetSftpVerifyChecksum() bool {
+	if c == nil || c.SftpVerifyChecksum == nil {
+		return true
+	}
+	return *c.SftpVerifyChecksum
+}
+
+// GetSftpFileConcurrency returns how many files a directory transfer moves
+// at once (default: DefaultSftpFileConcurrency; never below 1).
+func (c *SSHConfig) GetSftpFileConcurrency() int {
+	if c == nil || c.SftpFileConcurrency <= 0 {
+		return DefaultSftpFileConcurrency
+	}
+	return c.SftpFileConcurrency
 }
 
 // GetHistoryFromLog returns whether sparse remote `history` output should be

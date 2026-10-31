@@ -16,20 +16,26 @@ import (
 const (
 	defaultBGReadBytes = 64 * 1024
 	bgLogPrefix        = "/tmp/.2native-ssh-mcp-"
+	// bgLogHeadKeepBytes is how much of the beginning of a background job's
+	// output is kept aside once its log has been trimmed: the first bytes say
+	// what the job started doing, the newest bytes say what it just did, and
+	// the middle is what a bounded log has to give up.
+	bgLogHeadKeepBytes = 64 * 1024
+	// bgLogChunkBytes is the read size of the bounded-capture loop.
+	bgLogChunkBytes = 64 * 1024
 	// maxBGWaitMs caps the session read waitMs parameter; bgWaitPollInterval
 	// is the polling cadence while waiting for new output.
 	maxBGWaitMs        = 30000
 	bgWaitPollInterval = 200 * time.Millisecond
 )
 
-// bgPaths returns the three remote file paths for a background session. The
-// one-time random id is shared by all three files so a predictable /tmp path
-// cannot be symlink-preempted by another user.
-func bgPaths(sessionName string) (logPath, pidPath, exitPath string) {
-	id := randomID("bg")
-	return bgLogPrefix + sessionName + "-" + id + ".log",
-		bgLogPrefix + sessionName + "-" + id + ".pid",
-		bgLogPrefix + sessionName + "-" + id + ".exit"
+// bgPaths returns the five remote file paths of a background session: the
+// bounded log, the job pid, the exit code, the kept beginning of the output
+// and the dropped-byte counter. The one-time random id is shared by all of
+// them so a predictable /tmp path cannot be symlink-preempted by another user.
+func bgPaths(sessionName string) (logPath, pidPath, exitPath, headPath, dropPath string) {
+	base := bgLogPrefix + sessionName + "-" + randomID("bg")
+	return base + ".log", base + ".pid", base + ".exit", base + ".head", base + ".drop"
 }
 
 var bgStartedPattern = regexp.MustCompile(`(?m)^__MCP_BG_STARTED__ pid=(\d+)\r?\n`)
@@ -69,6 +75,19 @@ type SessionOutput struct {
 	// LogPath is the remote log file; it survives the session so output can
 	// be re-read (e.g. with offset=0) or recovered after a restart.
 	LogPath string `json:"logPath,omitempty"`
+	// DroppedBytes is how many bytes the remote side discarded from the
+	// beginning of the log to keep it within backgroundLogMaxBytes; Output
+	// then carries the kept beginning, an omission marker and the tail.
+	DroppedBytes int64 `json:"droppedBytes,omitempty"`
+	// LogMaxBytes is the cap in force on the remote log (0 when uncapped).
+	LogMaxBytes int64 `json:"logMaxBytes,omitempty"`
+	// Truncated is true when the requested maxBytes cut this read short:
+	// Output is a prefix of what is available, and RemainingBytes more can
+	// be fetched from Offset.
+	Truncated bool `json:"truncated,omitempty"`
+	// RemainingBytes is how many bytes of already-written output were left
+	// unread after this chunk (0 when the read reached the end).
+	RemainingBytes int64 `json:"remainingBytes,omitempty"`
 	// ExitCode is the job's exit code once it has finished (nil while
 	// running or unknown).
 	ExitCode *int `json:"exitCode,omitempty"`
@@ -165,9 +184,9 @@ func (m *Manager) openOrReuseSession(ctx context.Context, sessionName, connectio
 		shell:         sh,
 		lastUsed:      time.Now(),
 	}
-	// One-time random suffix shared by the three files, so a predictable
+	// One-time random suffix shared by the five files, so a predictable
 	// /tmp path cannot be symlink-preempted by another user.
-	ns.bgLogPath, ns.bgPIDPath, ns.bgExitPath = bgPaths(sessionName)
+	ns.bgLogPath, ns.bgPIDPath, ns.bgExitPath, ns.bgHeadPath, ns.bgDropPath = bgPaths(sessionName)
 	ns.resetIdleTimer(m)
 
 	m.mu.Lock()
@@ -233,7 +252,16 @@ func (m *Manager) startBackgroundCommand(ctx context.Context, sessionName string
 	if opts.Pty != nil {
 		usePty = *opts.Pty
 	}
-	script := buildBGStarterScript(ns.bgLogPath, ns.bgPIDPath, ns.bgExitPath, body, usePty)
+	script := buildBGStarterScript(bgJobSpec{
+		logPath:     ns.bgLogPath,
+		pidPath:     ns.bgPIDPath,
+		exitPath:    ns.bgExitPath,
+		headPath:    ns.bgHeadPath,
+		dropPath:    ns.bgDropPath,
+		body:        body,
+		pty:         usePty,
+		logMaxBytes: cfg.GetBackgroundLogMaxBytes(),
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	output, err := m.runDetachedExec(ctx, client, script, 15*time.Second)
@@ -268,48 +296,118 @@ func (m *Manager) startBackgroundCommand(ctx context.Context, sessionName string
 	return info, nil
 }
 
+// bgJobSpec is everything the background starter needs: where the job writes,
+// how it is launched, and how much of its output may stay on the remote host.
+type bgJobSpec struct {
+	logPath  string
+	pidPath  string
+	exitPath string
+	headPath string
+	dropPath string
+	body     string
+	pty      bool
+	// logMaxBytes caps the remote log; <= 0 keeps every byte (no trimming,
+	// no head copy).
+	logMaxBytes int
+}
+
 // buildBGStarterScript builds a POSIX sh script that starts a command fully
 // detached from the SSH channel: setsid into a new session (no controlling
-// tty), stdin from /dev/null, stdout/stderr appended to the log, and the job
-// PID written to the pid file. The starter exits quickly after confirming the
+// tty), stdin from /dev/null, and the job's output piped through a bounded
+// capture loop into the log. The starter exits quickly after confirming the
 // job is alive. The body is passed as a single-quoted argument and eval'd by
 // the inner shell so embedded '&' and quoting survive.
+//
+// The capture loop is what keeps a chatty job from filling the remote /tmp:
+// once the log passes logMaxBytes the oldest bytes are trimmed off and
+// counted in the drop file, while the first bgLogHeadKeepBytes are copied to
+// the head file. A read reports both, so the agent sees the beginning, the
+// newest bytes, and how much was discarded in between. Trimming happens in
+// the capturing process, which is the only writer of the log, so no output
+// can be lost to a race.
 //
 // With pty=true the job runs under util-linux `script` so it gets a
 // pseudo-terminal (-e propagates the exit code, -f flushes output); without
 // one, the body is eval'd directly. PYTHONUNBUFFERED is always exported so
 // Python logs stream instead of block-buffering.
-func buildBGStarterScript(logPath, pidPath, exitPath, body string, pty bool) string {
+func buildBGStarterScript(spec bgJobSpec) string {
 	flag := "0"
-	if pty {
+	if spec.pty {
 		flag = "1"
 	}
+	headKeep := bgLogHeadKeepBytes
+	if spec.logMaxBytes > 0 && spec.logMaxBytes < headKeep {
+		headKeep = spec.logMaxBytes
+	}
 	return fmt.Sprintf(
-		"LOG=%s\nPIDF=%s\nEXITF=%s\n"+
-			"rm -f \"$PIDF\" \"$EXITF\"\n"+
+		"LOG=%s\nPIDF=%s\nEXITF=%s\nHEADF=%s\nDROPF=%s\n"+
+			"rm -f \"$PIDF\" \"$EXITF\" \"$DROPF\" \"$HEADF\"\n"+
 			": > \"$LOG\"\n"+
 			"setsid sh -c '\n"+
+			"  LOG=$1; BODY=$2; EXITF=$3; HEADF=$4; DROPF=$5; CAP=$6; USE_PTY=$7\n"+
 			"  trap \"\" HUP\n"+
-			"  exec </dev/null\n"+
+			// Detach the channel's stdin/stdout/stderr: the job's output goes
+			// through the pipe into the capture loop, and the exec channel
+			// only closes (letting the starter return) once no process holds
+			// its stdout any more.
+			"  exec </dev/null >/dev/null 2>&1\n"+
 			"  export PYTHONUNBUFFERED=1\n"+
-			"  exec >>\"$1\" 2>&1\n"+
-			"  if [ \"$4\" = \"1\" ] && command -v script >/dev/null 2>&1; then\n"+
-			"    script -qefc \"$2\" /dev/null\n"+
-			"  else\n"+
-			"    eval \"$2\"\n"+
-			"  fi\n"+
-			"  echo $? > \"$3\"\n"+
-			"' _ \"$LOG\" %s \"$EXITF\" %s &\n"+
+			"  capture() {\n"+
+			"    LOG=$1; HEADF=$2; DROPF=$3; CAP=$4\n"+
+			"    CHUNK=$LOG.cap\n"+
+			"    HEADLEN=0; DROPPED=0\n"+
+			"    while dd bs=%d count=1 of=\"$CHUNK\" 2>/dev/null; do\n"+
+			"      N=$(wc -c < \"$CHUNK\")\n"+
+			"      [ \"$N\" -gt 0 ] || break\n"+
+			"      if [ \"$HEADLEN\" -lt %d ]; then\n"+
+			"        TAKE=$((%d - HEADLEN)); [ \"$N\" -lt \"$TAKE\" ] && TAKE=$N\n"+
+			"        head -c \"$TAKE\" \"$CHUNK\" >> \"$HEADF\"\n"+
+			"        HEADLEN=$((HEADLEN + TAKE))\n"+
+			"      fi\n"+
+			"      cat \"$CHUNK\" >> \"$LOG\"\n"+
+			"      if [ \"$CAP\" -gt 0 ]; then\n"+
+			"        SIZE=$(wc -c < \"$LOG\")\n"+
+			"        if [ \"$SIZE\" -gt \"$CAP\" ]; then\n"+
+			"          DROPPED=$((DROPPED + SIZE - CAP))\n"+
+			"          tail -c \"$CAP\" \"$LOG\" > \"$CHUNK.tail\" && cat \"$CHUNK.tail\" > \"$LOG\"\n"+
+			"          rm -f \"$CHUNK.tail\"\n"+
+			// echo, not printf: the inner script is itself single-quoted in
+			// the outer one, so a quote here would end that string early.
+			"          echo \"$DROPPED\" > \"$DROPF\"\n"+
+			"        fi\n"+
+			"      fi\n"+
+			"    done\n"+
+			"    rm -f \"$CHUNK\"\n"+
+			"  }\n"+
+			"  ( if [ \"$USE_PTY\" = \"1\" ] && command -v script >/dev/null 2>&1; then\n"+
+			"      script -qefc \"$BODY\" /dev/null\n"+
+			"    else\n"+
+			"      eval \"$BODY\"\n"+
+			"    fi\n"+
+			"    echo $? > \"$EXITF\"\n"+
+			"  ) 2>&1 | capture \"$LOG\" \"$HEADF\" \"$DROPF\" \"$CAP\"\n"+
+			"' _ %s %s %s %s %s %d %s &\n"+
 			"echo $! > \"$PIDF\"\n"+
 			"sleep 1\n"+
 			"PID=$(cat \"$PIDF\" 2>/dev/null)\n"+
+			// A job that already finished is a started job, not a failed one:
+			// the exit file is written by the job itself and was removed
+			// before the start, so its presence means this job ran.
+			"if [ -f \"$EXITF\" ]; then\n"+
+			"  printf '__MCP_BG_STARTED__ pid=%%s\\n' \"$PID\"\n"+
+			"  exit 0\n"+
+			"fi\n"+
 			"if [ -n \"$PID\" ] && kill -0 \"$PID\" 2>/dev/null; then\n"+
 			"  printf '__MCP_BG_STARTED__ pid=%%s\\n' \"$PID\"\n"+
 			"  exit 0\n"+
 			"fi\n"+
 			"printf '__MCP_BG_FAILED__\\n'\n"+
 			"exit 1\n",
-		shellQuote(logPath), shellQuote(pidPath), shellQuote(exitPath), shellQuote(body), flag,
+		shellQuote(spec.logPath), shellQuote(spec.pidPath), shellQuote(spec.exitPath),
+		shellQuote(spec.headPath), shellQuote(spec.dropPath),
+		bgLogChunkBytes, headKeep, headKeep,
+		shellQuote(spec.logPath), shellQuote(spec.body), shellQuote(spec.exitPath),
+		shellQuote(spec.headPath), shellQuote(spec.dropPath), spec.logMaxBytes, flag,
 	)
 }
 
@@ -323,166 +421,6 @@ func parseBGStartedPID(output string) int {
 	return pid
 }
 
-// ReadSessionOutput returns bytes from a background session log. It runs on
-// a fresh no-PTY exec channel so it works even when the named shell is gone
-// (e.g. after a connection drop). A negative offset continues from the last
-// read position; offset>=0 reads from that byte (0 re-reads from the start).
-// waitMs blocks for up to that many milliseconds when there is nothing new
-// and the job is still running (0 returns immediately; capped at 30s), so
-// callers do not have to spin-poll.
-func (m *Manager) ReadSessionOutput(ctx context.Context, sessionName string, maxBytes, offset, waitMs int64) (*SessionOutput, error) {
-	if waitMs < 0 {
-		waitMs = 0
-	}
-	if waitMs > maxBGWaitMs {
-		waitMs = maxBGWaitMs
-	}
-	deadline := time.Now().Add(time.Duration(waitMs) * time.Millisecond)
-
-	out, err := m.readSessionOutputOnce(ctx, sessionName, maxBytes, offset)
-	if err != nil || waitMs == 0 || !out.Running || out.Output != "" {
-		return out, err
-	}
-	// Nothing new yet and the job is still running: poll until new bytes
-	// arrive, the job exits, or the wait budget runs out.
-	for {
-		time.Sleep(bgWaitPollInterval)
-		prev := out.Offset
-		out, err = m.readSessionOutputOnce(ctx, sessionName, maxBytes, -1)
-		if err != nil || out.Output != "" || !out.Running || out.Offset != prev {
-			return out, err
-		}
-		if !time.Now().Before(deadline) {
-			return out, err
-		}
-	}
-}
-
-// readSessionOutputOnce performs a single background log read.
-func (m *Manager) readSessionOutputOnce(ctx context.Context, sessionName string, maxBytes, offset int64) (*SessionOutput, error) {
-	m.mu.Lock()
-	ns, ok := m.sessions[sessionName]
-	if !ok {
-		m.mu.Unlock()
-		return nil, newToolError(CodeCommandValidationFailed,
-			fmt.Sprintf("session %q not found", sessionName), false)
-	}
-	background := ns.background
-	connKey := ns.connectionKey
-	bgLogPath := ns.bgLogPath
-	bgPIDPath := ns.bgPIDPath
-	bgExitPath := ns.bgExitPath
-	if offset < 0 {
-		offset = ns.bgOffset
-	}
-	m.mu.Unlock()
-	if !background {
-		return nil, newToolError(CodeCommandValidationFailed,
-			fmt.Sprintf("session %q is not a background session; open with background=true first", sessionName), false)
-	}
-	m.beginOp(connKey)
-	defer m.endOp(connKey)
-
-	if maxBytes <= 0 {
-		maxBytes = defaultBGReadBytes
-	}
-
-	client, err := m.EnsureConnected(ctx, connKey)
-	if err != nil {
-		return nil, err
-	}
-
-	readScript := buildBGReadScript(bgLogPath, bgPIDPath, bgExitPath, offset, maxBytes)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	output, err := m.runDetachedExec(ctx, client, readScript, 30*time.Second)
-	if err != nil {
-		return nil, err
-	}
-
-	running, total, chunk, exitCode := parseBGReadOutput(output)
-	newOffset := offset + int64(len(chunk))
-	m.mu.Lock()
-	ns.bgOffset = newOffset
-	ns.bgRunning = running
-	ns.bgExitCode = exitCode
-	m.mu.Unlock()
-	ns.resetIdleTimer(m)
-
-	cfg := m.configs[connKey]
-	if cfg == nil || cfg.GetStripAnsi() {
-		chunk = stripANSI(chunk)
-	}
-	chunk = normalizeCR(chunk)
-	// Redaction is opt-in (redactSecrets), matching the command result path.
-	if cfg != nil && cfg.GetRedactSecrets() {
-		chunk = redactCombinedOutput(chunk)
-	}
-
-	return &SessionOutput{
-		SessionName: sessionName,
-		Output:      chunk, // read path: chunk already partial; skip line compression
-		Offset:      newOffset,
-		TotalBytes:  total,
-		Running:     running,
-		LogPath:     bgLogPath,
-		ExitCode:    exitCode,
-	}, nil
-}
-
-// buildBGReadScript builds a script that reports whether the job is running,
-// the log size, the job exit code (empty while running or unknown), and the
-// requested byte range of the log.
-func buildBGReadScript(logPath, pidPath, exitPath string, offset, maxBytes int64) string {
-	return fmt.Sprintf(
-		"LOG=%s\nPIDF=%s\nEXITF=%s\n"+
-			"RUN=0\n"+
-			"if [ -f \"$PIDF\" ]; then PID=$(cat \"$PIDF\" 2>/dev/null); "+
-			"if [ -n \"$PID\" ] && kill -0 \"$PID\" 2>/dev/null; then RUN=1; fi; fi\n"+
-			"SIZE=0\n"+
-			"if [ -f \"$LOG\" ]; then SIZE=$(wc -c < \"$LOG\" | tr -d ' '); fi\n"+
-			"EXIT=\n"+
-			"if [ -f \"$EXITF\" ]; then EXIT=$(cat \"$EXITF\" 2>/dev/null | tr -d ' \\n'); fi\n"+
-			"printf '__MCP_BG_HDR__running=%%s size=%%s exit=%%s\\n' \"$RUN\" \"$SIZE\" \"$EXIT\"\n"+
-			"if [ -f \"$LOG\" ] && [ \"$SIZE\" -gt %d ]; then tail -c +%d \"$LOG\" | head -c %d; fi\n",
-		shellQuote(logPath), shellQuote(pidPath), shellQuote(exitPath),
-		offset, offset+1, maxBytes,
-	)
-}
-
-func parseBGReadOutput(output string) (running bool, totalBytes int64, chunk string, exitCode *int) {
-	lines := strings.SplitN(output, "\n", 2)
-	if len(lines) == 0 {
-		return false, 0, "", nil
-	}
-	header := lines[0]
-	if idx := strings.Index(header, "__MCP_BG_HDR__"); idx >= 0 {
-		header = header[idx+len("__MCP_BG_HDR__"):]
-	}
-	for _, part := range strings.Fields(header) {
-		kv := strings.SplitN(part, "=", 2)
-		if len(kv) != 2 {
-			continue
-		}
-		switch kv[0] {
-		case "running":
-			running = kv[1] == "1"
-		case "size":
-			totalBytes, _ = strconv.ParseInt(kv[1], 10, 64)
-		case "exit":
-			if kv[1] != "" {
-				if n, err := strconv.Atoi(kv[1]); err == nil {
-					exitCode = &n
-				}
-			}
-		}
-	}
-	if len(lines) > 1 {
-		chunk = lines[1]
-	}
-	return running, totalBytes, chunk, exitCode
-}
-
 // stopBackgroundProcess terminates a background job (TERM, then KILL after a
 // grace period) and removes its pid/log files. It runs on a fresh no-PTY exec
 // channel and is only called on explicit session close. It returns true when
@@ -494,6 +432,8 @@ func (m *Manager) stopBackgroundProcess(ctx context.Context, ns *namedSession) b
 	connKey := ns.connectionKey
 	pidPath := ns.bgPIDPath
 	logPath := ns.bgLogPath
+	headPath := ns.bgHeadPath
+	dropPath := ns.bgDropPath
 	m.mu.Unlock()
 	if !background {
 		return true
@@ -508,7 +448,7 @@ func (m *Manager) stopBackgroundProcess(ctx context.Context, ns *namedSession) b
 		m.mu.Unlock()
 		return false
 	}
-	script := buildBGStopScript(pidPath, logPath)
+	script := buildBGStopScript(pidPath, logPath, headPath, dropPath)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	output, err := m.runDetachedExec(ctx, client, script, 15*time.Second)
@@ -531,10 +471,11 @@ const bgStopFailedMarker = "__MCP_BG_STOP_FAILED__"
 
 // buildBGStopScript builds a script that TERMs the job's process group, waits
 // 2s, then KILLs it if still alive, verifies it is gone, and removes the
-// pid/log files. It exits non-zero and prints a marker when the job survived.
-func buildBGStopScript(pidPath, logPath string) string {
+// session's remote files (pid, log, kept head, drop counter, capture chunk).
+// It exits non-zero and prints a marker when the job survived.
+func buildBGStopScript(pidPath, logPath, headPath, dropPath string) string {
 	return fmt.Sprintf(
-		"PIDF=%s\nLOG=%s\n"+
+		"PIDF=%s\nLOG=%s\nHEADF=%s\nDROPF=%s\n"+
 			"if [ -f \"$PIDF\" ]; then PID=$(cat \"$PIDF\" 2>/dev/null); "+
 			"if [ -n \"$PID\" ] && kill -0 \"$PID\" 2>/dev/null; then "+
 			"kill -TERM -\"$PID\" 2>/dev/null || kill -TERM \"$PID\" 2>/dev/null; fi; fi\n"+
@@ -546,8 +487,8 @@ func buildBGStopScript(pidPath, logPath string) string {
 			"if [ -f \"$PIDF\" ]; then PID=$(cat \"$PIDF\" 2>/dev/null); "+
 			"if [ -n \"$PID\" ] && kill -0 \"$PID\" 2>/dev/null; then "+
 			"printf '%s\\n'; exit 1; fi; fi\n"+
-			"rm -f \"$PIDF\" \"$LOG\"\n",
-		shellQuote(pidPath), shellQuote(logPath), bgStopFailedMarker,
+			"rm -f \"$PIDF\" \"$LOG\" \"$LOG.cap\" \"$LOG.cap.tail\" \"$HEADF\" \"$DROPF\"\n",
+		shellQuote(pidPath), shellQuote(logPath), shellQuote(headPath), shellQuote(dropPath), bgStopFailedMarker,
 	)
 }
 

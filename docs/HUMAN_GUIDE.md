@@ -161,7 +161,7 @@ Admin API（`/__admin/*`）不用这个 token，仍只限本机访问（loopback
 | `allowInsecureConfigPerms` | false | 跳过本配置文件的权限检查（等价于命令行 `--allow-insecure-config-perms`，但声明在文件内部；不推荐，仅开发用） |
 | `httpToken` | 空 | `/mcp` 的 Bearer token（优先级低于 `--http-token` 和 `SSH_MCP_HTTP_TOKEN`；支持 `${VAR}` 引用） |
 | `httpAddr` | 空 | HTTP daemon 的监听地址（优先级低于 `--http-addr`；不写则用 `127.0.0.1:8338`）。daemon 端口写在配置文件里，`install` 生成的 `autostart.vbs` 就不必再手工加端口 |
-| `scriptCleanup` / `scriptInterpreter` / `lintMode` / `keepAliveMs` / `autoProbe` | 同上表 | 这五个按连接配置项的全局默认值；连接级设置优先 |
+| `scriptCleanup` / `scriptInterpreter` / `lintMode` / `keepAliveMs` / `autoProbe` / `backgroundLogMaxBytes` / `resultFormat` / `sftpFileConcurrency` / `sftpVerifyChecksum` | 同上表 | 这些按连接配置项的全局默认值；连接级设置优先 |
 
 ## 连接本地 WSL
 
@@ -258,6 +258,7 @@ Admin API（`/__admin/*`）不用这个 token，仍只限本机访问（loopback
 - 连接中断报 `SSH_CONNECTION_LOST`（`retriable=false`），远端进程可能还在跑，**不要盲目重放**；错误 JSON 里带部分 `stdout`/`stderr` 和 `replaySafe: false`
 - 前台命令的 `timeout` 必须大于真实耗时（连接的 `commandTimeoutMs` 默认 120000 仍然生效）；超时后会按远端 PID 杀掉整个进程组（channel Signal 仅作补充），不会留下远端泄漏进程
 - 输出 ≥8KB（`outputSpillThreshold`，`-1` 关闭）会把完整输出落到本地 `.ssh-mcp-out/`（`outputSpillDir` 可改，保留最近 32 个，Unix 0600），结果只带通知+短预览；Agent 应该 Grep/Read 本地文件，不要远程重跑同一命令
+- **截断会显式标注**：命中 `maxOutputBytes` 时错误 JSON 标 `truncated: true` 与 `clippedBytes`，消息写明返回内容不完整；轻压缩的正文写明省略行数；`session action=read` 被 `maxBytes` 截断时返回 `truncated` / `remainingBytes` 并在头尾提示用返回的 `offset` 继续读——不要把这些结果当成完整输出
 - exec 默认**不分配 PTY**（避免 docker/npm 等误以为有交互终端）；交互命令用连接配置 `"pty": true` 开启（后台任务同样按此配置决定是否包 `script`）
 
 **Agent 安装 Skill**：仓库内 [`skills/2native-ssh-mcp-helper/SKILL.md`](../skills/2native-ssh-mcp-helper/SKILL.md) 可复制到 `.cursor/skills/` 后说「帮我配置 2native-ssh-mcp」。
@@ -320,7 +321,9 @@ Server options:
 | `commandLogDir` | `.ssh-mcp-logs` | 审计日志目录（`<dir>/<连接名>.jsonl`） |
 | `commandLogOnlySuccess` | false | 展示窗口只显示成功命令（磁盘始终记录失败） |
 | `commandLogFlushMs` | 5000 | 审计落盘策略：缓冲最长等待毫秒数；0 = 每条写穿 |
-| `sftpConcurrency` / `sftpChunkSize` | 16 / 32768 | SFTP 并发数与分块大小 |
+| `sftpConcurrency` / `sftpChunkSize` | 16 / 32768 | 单个文件的 SFTP 在途请求数与分块大小 |
+| `sftpFileConcurrency` | 4 | 目录传输同时移动的文件数（1 = 严格串行）；大量小文件在高延迟链路上收益明显，`$global` 可设全局默认 |
+| `sftpVerifyChecksum` | true | 单文件传输后双端 sha256 校验；关掉可省一次远端整文件读取，代价是没有内容校验（目录传输本来就不做单文件校验） |
 | `sftpDedicatedConn` | false | SFTP 走独立 SSH 连接（懒创建、空闲 5 分钟回收、复用前探活）；sshd 前有影子容器/会话级 overlay 导致文件丢失时开启，`$global` 可设全局默认 |
 | `historyFromLog` | false | 远程 `history` 输出过少（<10 条）时自动从 MCP 命令日志补充（尾部去重），机制见 [FEATURES](FEATURES.md#机制详解) |
 | `utf8Sanitize` | true | 输出不假设 UTF-8：无效序列转为 `\xNN` 字节转义并标记 `nonUtf8`；设 false 保留原始字节 |
@@ -329,8 +332,8 @@ Server options:
 | `knownHostsFile` | `~/.ssh/known_hosts` | 主机密钥校验用的 known_hosts 文件 |
 | `keepaliveIntervalMs` / `keepaliveCountMax` | 10000 / 3 | SSH 心跳 |
 | `commandTimeoutMs` / `connectionTimeoutMs` / `sftpTimeoutMs` | 120000 / 30000 / 300000 | 各类超时（`commandTimeoutMs` 是前台命令超时；`sftpTimeoutMs` 为无进展超时，进度每刷新一次就重新计时） |
-| `maxOutputBytes` | 10485760 | 单命令 stdout+stderr 合计输出上限，0 为不限 |
-| `outputCompressLight` / `outputCompressThreshold` | true / 4096 | 大输出头尾压缩与阈值 |
+| `maxOutputBytes` | 10485760 | 单命令 stdout+stderr 合计输出上限，0 为不限；命中时结果标 `truncated`/`clippedBytes`，并明确告知输出不完整 |
+| `outputCompressLight` / `outputCompressThreshold` | true / 4096 | 大输出头尾压缩与阈值；压缩后的正文会标注省略行数、说明内容不完整 |
 | `outputSpillThreshold` / `outputSpillDir` | 8192 / `.ssh-mcp-out` | 输出达到阈值落盘到本地目录（`-1` 关闭） |
 | `stripAnsi` | true | 输出剥离 ANSI 转义序列（false 保留颜色/进度条） |
 | `scriptCleanup` | true | `execute-command` 的 `scriptFile` 暂存脚本跑完后删除远端 `/tmp` 文件（被超时/输出上限打断时可能残留） |
@@ -338,6 +341,8 @@ Server options:
 | `lintMode` | `warn` | 命令下发前的结构检查：`off` 不跑 / `warn` 报告并照常执行 / `strict` 拒绝 error 级问题（`COMMAND_LINT_FAILED`）；只作用于 `cmdString`（argv/scriptFile 形态不适用），只有配置文件能改 |
 | `keepAliveMs` | 600000 | 执行完保活连接多久（毫秒）；`-1` 表示执行完立即断开。named session 始终占住连接，不受此项影响 |
 | `autoProbe` | true | 连接建立后探一次远端 `base64`/`jq` 能力，结果在 `list-servers` 的 `capabilities=` 段展示；探测命令是明文单行命令，远端会记录每条命令（堡垒机/会话录制）时建议关掉 |
+| `backgroundLogMaxBytes` | 8388608 | 后台会话远端日志的字节上限；超出后从最早处裁剪并计数（`session action=read` 的 `droppedBytes`），输出开头 64 KiB 另行保留，`-1` 表示不裁剪 |
+| `resultFormat` | `text` | 结果形态：`text`（默认，分节文本）或 `json`（结构化 JSON）。同时作用于 execute-command 成功结果、`session action=read`/`list` 与 `list-servers` |
 | `commandTemplate` | 空 | 命令包装模板（`<command>` / `<quotedCommand>`） |
 | `pty` | false | exec 模式分配伪终端（默认关闭，交互命令按需开启） |
 | `redactSecrets` | false | 输出脱敏（password/token/Bearer/PEM），开启有扫描开销 |

@@ -161,7 +161,7 @@ Admin API (`/__admin/*`) does not use this token and still restricts access to l
 | `allowInsecureConfigPerms` | false | Skip permission checks for this configuration file (equivalent to `--allow-insecure-config-perms` on the command line, but declared inside the file; not recommended, for development only) |
 | `httpToken` | empty | Bearer token for `/mcp` (lower priority than `--http-token` and `SSH_MCP_HTTP_TOKEN`; supports `${VAR}` references) |
 | `httpAddr` | empty | Listen address of the HTTP daemon (lower priority than `--http-addr`; `127.0.0.1:8338` when unset). Keeping the port in the config file means the `autostart.vbs` written by `install` needs no hand-added port |
-| `scriptCleanup` / `scriptInterpreter` / `lintMode` / `keepAliveMs` / `autoProbe` | as above | Global defaults for the five per-connection settings above; a connection-level value wins |
+| `scriptCleanup` / `scriptInterpreter` / `lintMode` / `keepAliveMs` / `autoProbe` / `backgroundLogMaxBytes` / `resultFormat` / `sftpFileConcurrency` / `sftpVerifyChecksum` | as above | Global defaults for the per-connection settings above; a connection-level value wins |
 
 ## Connecting to local WSL
 
@@ -258,6 +258,7 @@ Adds an optional `sessionName` parameter: executes in an already opened named se
 - Connection interruptions report `SSH_CONNECTION_LOST` (`retriable=false`), the remote process may still be running, **do not blindly retry**; the error JSON includes partial `stdout`/`stderr` and `replaySafe: false`
 - The `timeout` for foreground commands must be greater than the actual execution time (the connection's `commandTimeoutMs`, default 120000, applies otherwise); on timeout the remote process group is killed by PID (channel Signal is only a fallback), so timed-out commands do not leak remote processes
 - Output ≥8KB (`outputSpillThreshold`, `-1` to disable) spills the full output to local `.ssh-mcp-out/` (`outputSpillDir` configurable, keeps the newest 32, Unix 0600); the result carries only a notice + short preview; Agent should Grep/Read that local file, not re-run the command remotely
+- **Truncation is labelled**: hitting `maxOutputBytes` sets `truncated: true` and `clippedBytes` in the error JSON and says the returned output is incomplete; light compression names the omitted line count; a `session action=read` cut by `maxBytes` returns `truncated` / `remainingBytes` and tells the caller to continue from the returned `offset` — never treat these as the complete output
 - exec **does not allocate a PTY by default** (avoids docker/npm treating the session as interactive); enable it with the connection's `"pty": true` (background jobs follow the same setting when deciding whether to wrap the job in `script`)
 
 **Agent Skill Installation**: You can copy [`skills/2native-ssh-mcp-helper/SKILL.md`](../skills/2native-ssh-mcp-helper/SKILL.md) from this repository to `.cursor/skills/` and then ask "help me configure 2native-ssh-mcp".
@@ -319,7 +320,9 @@ Server options:
 | `commandLogDir` | `.ssh-mcp-logs` | Audit log directory (`<dir>/<connection-name>.jsonl`) |
 | `commandLogOnlySuccess` | false | Show only successful commands in the window (disk always records failures) |
 | `commandLogFlushMs` | 5000 | Audit flush policy: max ms a record waits in the buffer; 0 = write-through |
-| `sftpConcurrency` / `sftpChunkSize` | 16 / 32768 | SFTP concurrency and chunk size |
+| `sftpConcurrency` / `sftpChunkSize` | 16 / 32768 | In-flight requests per file and chunk size |
+| `sftpFileConcurrency` | 4 | Files moved at once by a directory transfer (1 = strictly sequential); pays off for many small files on a high-latency link; `$global` sets the default |
+| `sftpVerifyChecksum` | true | sha256 comparison on both sides after a single-file transfer; disabling it saves one full remote read of the file, at the cost of the content check (directory transfers already skip the single-file checksum) |
 | `sftpDedicatedConn` | false | Run SFTP over a dedicated SSH connection (lazy, 5 min idle recycle, liveness-probed before reuse); enable when a shadow container / session-scoped overlay in front of sshd loses transferred files; `$global` sets the default |
 | `historyFromLog` | false | Supplements sparse remote `history` output (<10 entries) from the MCP command log (tail-deduped); mechanism in [FEATURES](FEATURES.en.md#mechanism-notes) |
 | `utf8Sanitize` | true | Output encoding is never assumed UTF-8: invalid sequences become `\xNN` byte escapes flagged `nonUtf8`; set false to keep raw bytes |
@@ -328,8 +331,8 @@ Server options:
 | `knownHostsFile` | `~/.ssh/known_hosts` | known_hosts file for host key verification |
 | `keepaliveIntervalMs` / `keepaliveCountMax` | 10000 / 3 | SSH keepalive |
 | `commandTimeoutMs` / `connectionTimeoutMs` / `sftpTimeoutMs` | 120000 / 30000 / 300000 | Various timeouts (`commandTimeoutMs` is the foreground command timeout; `sftpTimeoutMs` is a no-progress timeout, each progress refresh restarts the timer) |
-| `maxOutputBytes` | 10485760 | Maximum combined stdout+stderr output per single command, 0 means unlimited |
-| `outputCompressLight` / `outputCompressThreshold` | true / 4096 | Compress large output at head/tail and threshold |
+| `maxOutputBytes` | 10485760 | Maximum combined stdout+stderr output per single command, 0 means unlimited; hitting it sets `truncated`/`clippedBytes` and states that the output is incomplete |
+| `outputCompressLight` / `outputCompressThreshold` | true / 4096 | Head/tail compression for large output and its threshold; compressed output names the omitted line count and says the content is incomplete |
 | `outputSpillThreshold` / `outputSpillDir` | 8192 / `.ssh-mcp-out` | Spill output to a local directory at this threshold (`-1` disables) |
 | `stripAnsi` | true | Strip ANSI escape sequences from output (false preserves colors/progress bars) |
 | `scriptCleanup` | true | Remove the remote `/tmp` file that an `execute-command` `scriptFile` was staged to, once it finishes (a run interrupted by timeout or the output limit may leave it behind) |
@@ -337,6 +340,8 @@ Server options:
 | `lintMode` | `warn` | Structural check before a command is sent: `off` skips it / `warn` reports and still runs / `strict` refuses error-class findings (`COMMAND_LINT_FAILED`); applies to `cmdString` only (argv/scriptFile are exempt), config file only |
 | `keepAliveMs` | 600000 | How long the connection is kept after a command, in milliseconds; `-1` closes it right after each command. Named sessions hold their connection regardless |
 | `autoProbe` | true | Probe the remote `base64`/`jq` once after connecting; the result shows as the `capabilities=` segment in `list-servers`. The probe is a plain one-line command, so turn it off on connections whose remote side records every command (bastion, session recording) |
+| `backgroundLogMaxBytes` | 8388608 | Byte cap on a background session's remote log; past it the oldest bytes are trimmed and counted (`droppedBytes` in `session action=read`), while the first 64 KiB of the output are kept aside. `-1` keeps every byte |
+| `resultFormat` | `text` | Result shape: `text` (default, sectioned plain text) or `json` (structured JSON). Applies to successful execute-command results, `session action=read`/`list` and `list-servers` |
 | `commandTemplate` | empty | Command wrapper template (`<command>` / `<quotedCommand>`) |
 | `pty` | false | Allocate a pseudo-terminal in exec mode (off by default; enable for interactive commands) |
 | `redactSecrets` | false | Output redaction (password/token/Bearer/PEM); enabling has scan cost |

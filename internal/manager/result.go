@@ -18,6 +18,19 @@ const (
 	StatusOutputLimit    = "output_limit"
 )
 
+// Execution states tell the caller what the remote side can be assumed to
+// have done when a command did not come back cleanly. They exist because
+// "the call failed" and "the command did not run" are different facts, and an
+// agent that conflates them re-runs work that already happened.
+const (
+	// ExecutionStarted: the command definitely started; its outcome is
+	// unknown (timeout, output limit, cancellation).
+	ExecutionStarted = "started"
+	// ExecutionUnknown: the transport died around the command, so it may
+	// never have started, may still be running, or may have finished.
+	ExecutionUnknown = "unknown"
+)
+
 // CommandResult is the structured outcome of a command execution. Stdout and
 // Stderr are already redacted and light-compressed — or, when the output was
 // spilled to a file, Stdout only carries a short preview and OutputFile
@@ -31,6 +44,12 @@ type CommandResult struct {
 	// Partial is true when the command was interrupted (timeout, output
 	// limit, connection loss) and Stdout/Stderr may be incomplete.
 	Partial bool `json:"partial,omitempty"`
+	// ExecutionState is set on interrupted commands only (ExecutionStarted
+	// or ExecutionUnknown); absent means the command ran to completion.
+	ExecutionState string `json:"executionState,omitempty"`
+	// Guidance is the actionable next step for an interrupted command:
+	// check the remote state before retrying instead of replaying blindly.
+	Guidance string `json:"guidance,omitempty"`
 	// ReplaySafe is false when the command may have partially executed and
 	// must not be blindly replayed.
 	ReplaySafe bool `json:"replaySafe"`
@@ -104,7 +123,35 @@ func (r CommandResult) Text() string {
 	if r.ScriptFile != nil {
 		sections = append(sections, r.ScriptFile.Summary())
 	}
+	if r.Truncated {
+		note := "[output truncated] the output above is incomplete: it was cut off because it exceeded the output size limit and the remote command was aborted"
+		if r.ClippedBytes > 0 {
+			note += fmt.Sprintf(" (%d bytes were discarded)", r.ClippedBytes)
+		}
+		sections = append(sections, note)
+	}
+	if r.Guidance != "" {
+		sections = append(sections, "[recovery] "+r.Guidance)
+	}
 	return strings.Join(sections, "\n")
+}
+
+// interruptGuidance returns the execution state and the recovery advice for a
+// status that did not come back cleanly, so a caller never has to read the
+// difference between "the call failed" and "the command did not run" out of
+// the status code. Normal results yield empty strings.
+func interruptGuidance(status string) (state, guidance string) {
+	switch status {
+	case StatusTimeout:
+		return ExecutionStarted, "the command was still running when the call timed out and may still be running on the remote host; check the remote state (process, service, or an idempotent query) before running it again"
+	case StatusOutputLimit:
+		return ExecutionStarted, "output collection stopped at maxOutputBytes and the remote command was aborted; check the remote state before re-running it, and prefer redirecting the output to a file on the remote host or filtering it with grep, head or tail"
+	case StatusCancelled:
+		return ExecutionStarted, "the call was cancelled and the remote command may still be running; check the remote state before running it again"
+	case StatusConnectionLost:
+		return ExecutionUnknown, "the connection dropped while the command was in flight, so it may never have started, may still be running, or may have finished; verify on the remote host before retrying, and never replay a command that is not safe to run twice"
+	}
+	return "", ""
 }
 
 // buildCommandResult strips ANSI escapes (unless disabled), redacts
@@ -135,12 +182,15 @@ func buildCommandResult(stdout, stderr string, exitCode int, status string, cfg 
 		stdout, stderr = redactCommandOutput(stdout, stderr)
 	}
 	replaySafe := status == StatusOK || status == StatusExited
+	state, guidance := interruptGuidance(status)
 	if info, spilled := spillCommandOutput(stdout, stderr, cfg); spilled {
 		return CommandResult{
 			Stdout:          spillPreview(stdout, stderr),
 			ExitCode:        exitCode,
 			Status:          status,
 			Partial:         !replaySafe,
+			ExecutionState:  state,
+			Guidance:        guidance,
 			ReplaySafe:      replaySafe,
 			NonUTF8:         nonUtf8,
 			OutputFile:      info.path,
@@ -149,12 +199,14 @@ func buildCommandResult(stdout, stderr string, exitCode int, status string, cfg 
 		}
 	}
 	return CommandResult{
-		Stdout:     FinalizeCommandOutput(stdout, compressOpts(cfg)),
-		Stderr:     FinalizeCommandOutput(stderr, compressOpts(cfg)),
-		ExitCode:   exitCode,
-		Status:     status,
-		Partial:    !replaySafe,
-		ReplaySafe: replaySafe,
-		NonUTF8:    nonUtf8,
+		Stdout:         FinalizeCommandOutput(stdout, compressOpts(cfg)),
+		Stderr:         FinalizeCommandOutput(stderr, compressOpts(cfg)),
+		ExitCode:       exitCode,
+		Status:         status,
+		Partial:        !replaySafe,
+		ExecutionState: state,
+		Guidance:       guidance,
+		ReplaySafe:     replaySafe,
+		NonUTF8:        nonUtf8,
 	}
 }

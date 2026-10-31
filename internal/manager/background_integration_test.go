@@ -237,6 +237,148 @@ func TestBackgroundJobIntegration(t *testing.T) {
 	}
 }
 
+// TestBackgroundReadTruncationIntegration verifies that a maxBytes-limited
+// read tells the caller the chunk is a prefix: truncated=true carries how
+// many bytes remain, and continuing from the returned offset yields the rest.
+func TestBackgroundReadTruncationIntegration(t *testing.T) {
+	m := loadTestManager(t)
+	defer m.DisconnectAll()
+
+	name := "bgtrunc"
+	_ = m.CloseSession(context.Background(), name)
+
+	job := "for i in $(seq 1 200); do echo TRUNC_LINE_$i; done"
+	if _, err := m.OpenSessionWithOptions(context.Background(), name, "ubuntu", SessionOpenOptions{
+		Background: true,
+		CmdString:  job,
+	}); err != nil {
+		t.Fatalf("open background session: %v", err)
+	}
+	defer m.CloseSession(context.Background(), name)
+
+	// Wait for the job to finish so all bytes are already on disk.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		out, err := m.ReadSessionOutput(context.Background(), name, 0, -1, 1000)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if !out.Running || time.Now().After(deadline) {
+			break
+		}
+	}
+
+	const capBytes = 256
+	first, err := m.ReadSessionOutput(context.Background(), name, capBytes, 0, 0)
+	if err != nil {
+		t.Fatalf("capped read: %v", err)
+	}
+	if !first.Truncated || first.RemainingBytes <= 0 {
+		t.Fatalf("a maxBytes-capped read must report truncation and the remainder, got %+v", first)
+	}
+	if len(first.Output) > capBytes {
+		t.Fatalf("read returned %d bytes, cap is %d", len(first.Output), capBytes)
+	}
+	if first.Truncated != (first.RemainingBytes > 0) {
+		t.Fatalf("truncated and remainingBytes disagree: %+v", first)
+	}
+
+	next, err := m.ReadSessionOutput(context.Background(), name, 0, first.Offset, 0)
+	if err != nil {
+		t.Fatalf("continue read: %v", err)
+	}
+	if next.Offset <= first.Offset {
+		t.Fatalf("continuing from %d did not advance (next %d)", first.Offset, next.Offset)
+	}
+	if next.Truncated {
+		t.Fatalf("the remaining output fits in one read, got %+v", next)
+	}
+	if next.RemainingBytes != 0 {
+		t.Fatalf("a complete read must report no remainder, got %+v", next)
+	}
+}
+
+// TestBackgroundLogCapIntegration verifies the bounded capture on a real
+// host: a chatty job cannot grow its remote log past backgroundLogMaxBytes,
+// the read reports how much was trimmed, and one answer carries the kept
+// beginning, an omission marker and the newest bytes.
+func TestBackgroundLogCapIntegration(t *testing.T) {
+	m := loadTestManager(t)
+	defer m.DisconnectAll()
+
+	// Shrink the cap for this connection so the test stays quick.
+	const capBytes = 64 * 1024
+	m.mu.Lock()
+	m.configs["ubuntu"].BackgroundLogMaxBytes = capBytes
+	m.mu.Unlock()
+
+	const name = "bgcap"
+	_ = m.CloseSession(context.Background(), name)
+	job := "echo HEAD_MARK; sleep 2; i=0; while [ $i -lt 4000 ]; do " +
+		"echo \"line $i padding-padding-padding-padding\"; i=$((i+1)); done; sleep 2; echo TAIL_MARK"
+	if _, err := m.OpenSessionWithOptions(context.Background(), name, "ubuntu", SessionOpenOptions{
+		Background: true,
+		CmdString:  job,
+	}); err != nil {
+		t.Fatalf("open background session: %v", err)
+	}
+	defer m.CloseSession(context.Background(), name)
+
+	// Poll until the job finishes (or the budget runs out).
+	deadline := time.Now().Add(60 * time.Second)
+	var out *SessionOutput
+	for {
+		var err error
+		out, err = m.ReadSessionOutput(context.Background(), name, 0, -1, 5000)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if !out.Running || time.Now().After(deadline) {
+			break
+		}
+	}
+	if out.Running {
+		t.Fatalf("job did not finish within the budget: %+v", out)
+	}
+	if out.DroppedBytes == 0 {
+		t.Fatalf("a job this size must have been trimmed at a %d-byte cap: %+v", capBytes, out)
+	}
+	if out.LogMaxBytes != capBytes {
+		t.Fatalf("read must report the cap in force, got %d", out.LogMaxBytes)
+	}
+
+	// Re-reading from the start answers with head, marker and tail in one go.
+	fromStart, err := m.ReadSessionOutput(context.Background(), name, 0, 0, 0)
+	if err != nil {
+		t.Fatalf("read from offset 0: %v", err)
+	}
+	for _, want := range []string{"HEAD_MARK", "bytes of earlier output were dropped", "TAIL_MARK"} {
+		if !strings.Contains(fromStart.Output, want) {
+			t.Fatalf("a trimmed read must contain %q, got %d bytes: %q",
+				want, len(fromStart.Output), fromStart.Output[:min(len(fromStart.Output), 200)])
+		}
+	}
+	if fromStart.TotalBytes <= fromStart.DroppedBytes {
+		t.Fatalf("totalBytes must cover the dropped bytes plus the retained log: %+v", fromStart)
+	}
+	if fromStart.TotalBytes <= capBytes {
+		t.Fatalf("the job wrote more than the cap, totalBytes must say so: %+v", fromStart)
+	}
+
+	// The absolute offset never rewinds: continuing from the last position
+	// yields nothing new and does not move backwards.
+	after, err := m.ReadSessionOutput(context.Background(), name, 0, -1, 0)
+	if err != nil {
+		t.Fatalf("continue read: %v", err)
+	}
+	if after.Output != "" {
+		t.Fatalf("a finished job must have nothing new to report, got %q", after.Output)
+	}
+	if after.Offset < fromStart.Offset {
+		t.Fatalf("offset went backwards: %d -> %d", fromStart.Offset, after.Offset)
+	}
+}
+
 // TestSessionReadWaitMs verifies action=read blocks for new output instead
 // of returning empty (issue #3 Slice B: no idle spin-polling).
 func TestSessionReadWaitMs(t *testing.T) {

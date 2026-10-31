@@ -246,7 +246,8 @@ func (m *Manager) runExecCommand(ctx context.Context, client *ssh.Client, cfg *c
 			res.Truncated = true
 			res.ClippedBytes = stdout.dropped + stderr.dropped
 			return res, newToolError(CodeOutputLimitExceeded,
-				fmt.Sprintf("[truncated] Output exceeded maxOutputBytes=%d; the command was aborted.", maxOutput), false)
+				fmt.Sprintf("[output truncated] Output exceeded maxOutputBytes=%d and was cut off; the returned output is incomplete (%d bytes discarded) and the command was aborted.",
+					maxOutput, res.ClippedBytes), false)
 		}
 		if waitErr != nil {
 			var exitErr *ssh.ExitError
@@ -273,7 +274,8 @@ func (m *Manager) runExecCommand(ctx context.Context, client *ssh.Client, cfg *c
 		res.Truncated = true
 		res.ClippedBytes = stdout.dropped + stderr.dropped
 		return res, newToolError(CodeOutputLimitExceeded,
-			fmt.Sprintf("[truncated] Output exceeded maxOutputBytes=%d; the command was aborted.", maxOutput), false)
+			fmt.Sprintf("[output truncated] Output exceeded maxOutputBytes=%d and was cut off; the returned output is incomplete (%d bytes discarded) and the command was aborted.",
+				maxOutput, res.ClippedBytes), false)
 	case <-ctx.Done():
 		(&remoteCommandContext{client: client, session: session, pidFile: pidFile, done: done}).kill()
 		session.Close()

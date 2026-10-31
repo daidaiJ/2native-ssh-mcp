@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -185,7 +186,7 @@ func (m *Manager) TransferFile(ctx context.Context, action, localPath, remotePat
 	// rather than failing it; a mismatch is a hard error. The exec runs over
 	// the connection that wrote the file (dedicated when enabled), so the
 	// written bytes are what gets verified.
-	if result.Files == 0 && !result.Skipped {
+	if result.Files == 0 && !result.Skipped && cfg.GetSftpVerifyChecksum() {
 		sum, status, cerr := m.verifyTransferChecksum(tctx, backing, action, validatedLocal, validatedRemote)
 		if cerr != nil {
 			return nil, cerr
@@ -250,6 +251,150 @@ type transferTask struct {
 	size   int64
 }
 
+// directoryTransferOutcome is one file's contribution to a directory
+// transfer. A skipped file moves no bytes but still counts as complete.
+type directoryTransferOutcome struct {
+	bytes   int64
+	skipped bool
+	resumed bool
+}
+
+// directoryTransferSummary aggregates a directory transfer. done is the
+// progress denominator: bytes of completed files, including skipped ones.
+type directoryTransferSummary struct {
+	transferred int64
+	done        int64
+	files       int
+	skipped     int
+	resumed     int
+	failed      []string
+}
+
+// directoryTransferState is the shared accumulator for concurrent files.
+// progressMu orders "add bytes + report" so concurrent files cannot deliver a
+// smaller progress value after a larger one; mu guards the result counters.
+type directoryTransferState struct {
+	mu          sync.Mutex
+	progressMu  sync.Mutex
+	done        atomic.Int64
+	transferred int64
+	files       int
+	skipped     int
+	resumed     int
+	failed      []string
+}
+
+func (s *directoryTransferState) reportProgress(delta, total int64, progress ProgressFunc) {
+	if delta == 0 {
+		return
+	}
+	s.progressMu.Lock()
+	completed := s.done.Add(delta)
+	if progress != nil {
+		progress(completed, total)
+	}
+	s.progressMu.Unlock()
+}
+
+// record folds one file's outcome into the summary and reports whether the
+// file was skipped (which needs a separate progress tick).
+func (s *directoryTransferState) record(t transferTask, out directoryTransferOutcome, err error) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err != nil {
+		s.failed = append(s.failed, fmt.Sprintf("%s: %v", t.rel, err))
+		return false
+	}
+	s.files++
+	s.transferred += out.bytes
+	if out.resumed {
+		s.resumed++
+	}
+	if out.skipped {
+		s.skipped++
+		return true
+	}
+	return false
+}
+
+func (s *directoryTransferState) runTask(ctx context.Context, t transferTask, total int64, progress ProgressFunc,
+	task func(context.Context, transferTask, ProgressFunc) (directoryTransferOutcome, error)) {
+
+	var last int64
+	tracked := func(n, _ int64) {
+		delta := n - last
+		if delta == 0 {
+			return
+		}
+		last = n
+		s.reportProgress(delta, total, progress)
+	}
+	out, err := task(ctx, t, tracked)
+	if s.record(t, out, err) {
+		// A skipped file emits no per-file progress ticks.
+		s.reportProgress(t.size, total, progress)
+	}
+}
+
+func (s *directoryTransferState) summary() directoryTransferSummary {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	failed := append([]string(nil), s.failed...)
+	// Worker completion order is not deterministic; a stable failure list
+	// keeps the result readable across runs.
+	sort.Strings(failed)
+	return directoryTransferSummary{
+		transferred: s.transferred,
+		done:        s.done.Load(),
+		files:       s.files,
+		skipped:     s.skipped,
+		resumed:     s.resumed,
+		failed:      failed,
+	}
+}
+
+// runDirectoryTransfer moves tasks with at most workers files in flight.
+// Per-file failures are recorded against the relative path and never abort
+// the remaining files. Directory transfers are latency-bound when a tree has
+// many small files (each file costs several SFTP round trips), so moving a
+// few at once is the difference between minutes and seconds on a slow link.
+func runDirectoryTransfer(ctx context.Context, tasks []transferTask, workers int, total int64, progress ProgressFunc,
+	task func(context.Context, transferTask, ProgressFunc) (directoryTransferOutcome, error)) directoryTransferSummary {
+
+	if len(tasks) == 0 {
+		return directoryTransferSummary{}
+	}
+	workers = max(1, min(workers, len(tasks)))
+
+	state := &directoryTransferState{}
+	jobs := make(chan transferTask)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for t := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				state.runTask(ctx, t, total, progress, task)
+			}
+		}()
+	}
+
+feed:
+	for _, t := range tasks {
+		select {
+		case jobs <- t:
+		case <-ctx.Done():
+			break feed
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	return state.summary()
+}
+
 // uploadDirectory transfers a local directory tree to remoteRoot, reusing the
 // single-file upload path per entry (atomic .part + rename, dedup, resume).
 // It returns an aggregate result; per-file failures are collected in Failed
@@ -294,44 +439,33 @@ func (m *Manager) uploadDirectory(ctx context.Context, sftpClient *sftp.Client, 
 		return nil, classifySftpError("upload", localRoot, remoteRoot, err)
 	}
 
-	var done, transferred int64
-	var failed []string
-	var skippedFiles, resumedFiles int
-	for _, t := range tasks {
-		if err := sftpClient.MkdirAll(posixDir(t.remote)); err != nil {
-			failed = append(failed, fmt.Sprintf("%s: create remote directory: %v", t.rel, err))
-			continue
-		}
-		up, err := m.upload(ctx, sftpClient, client, key, t.local, t.remote, cfg, force, offsetProgress(progress, done, total))
-		if err != nil {
-			failed = append(failed, fmt.Sprintf("%s: %v", t.rel, err))
-			continue
-		}
-		transferred += up.Bytes
-		if up.Skipped {
-			skippedFiles++
-		}
-		if up.Resumed {
-			resumedFiles++
-		}
-		done += t.size
-	}
+	agg := runDirectoryTransfer(ctx, tasks, cfg.GetSftpFileConcurrency(), total, progress,
+		func(ctx context.Context, t transferTask, prog ProgressFunc) (directoryTransferOutcome, error) {
+			if err := sftpClient.MkdirAll(posixDir(t.remote)); err != nil {
+				return directoryTransferOutcome{}, fmt.Errorf("create remote directory: %w", err)
+			}
+			up, err := m.upload(ctx, sftpClient, client, key, t.local, t.remote, cfg, force, prog)
+			if err != nil {
+				return directoryTransferOutcome{}, err
+			}
+			return directoryTransferOutcome{bytes: up.Bytes, skipped: up.Skipped, resumed: up.Resumed}, nil
+		})
 
 	elapsed := time.Since(start)
 	res := &TransferResult{
 		Action:       "upload",
 		LocalPath:    localRoot,
 		RemotePath:   remoteRoot,
-		Bytes:        transferred,
+		Bytes:        agg.transferred,
 		Elapsed:      elapsed,
-		SpeedBps:     speed(transferred, elapsed),
-		Percent:      percent(done, total),
-		Files:        len(tasks) - len(failed),
-		SkippedFiles: skippedFiles,
-		ResumedFiles: resumedFiles,
+		SpeedBps:     speed(agg.transferred, elapsed),
+		Percent:      percent(agg.done, total),
+		Files:        agg.files,
+		SkippedFiles: agg.skipped,
+		ResumedFiles: agg.resumed,
 	}
-	if len(failed) > 0 {
-		res.Failed = failed
+	if len(agg.failed) > 0 {
+		res.Failed = agg.failed
 	}
 	return res, nil
 }
@@ -379,44 +513,33 @@ func (m *Manager) downloadDirectory(ctx context.Context, sftpClient *sftp.Client
 			fmt.Sprintf("Failed to create local directory %s: %v", localRoot, err), false)
 	}
 
-	var done, transferred int64
-	var failed []string
-	var skippedFiles, resumedFiles int
-	for _, t := range tasks {
-		if err := os.MkdirAll(filepath.Dir(t.local), 0o755); err != nil {
-			failed = append(failed, fmt.Sprintf("%s: create local directory: %v", t.rel, err))
-			continue
-		}
-		down, err := m.download(ctx, sftpClient, t.remote, t.local, cfg, force, offsetProgress(progress, done, total))
-		if err != nil {
-			failed = append(failed, fmt.Sprintf("%s: %v", t.rel, err))
-			continue
-		}
-		transferred += down.Bytes
-		if down.Skipped {
-			skippedFiles++
-		}
-		if down.Resumed {
-			resumedFiles++
-		}
-		done += t.size
-	}
+	agg := runDirectoryTransfer(ctx, tasks, cfg.GetSftpFileConcurrency(), total, progress,
+		func(ctx context.Context, t transferTask, prog ProgressFunc) (directoryTransferOutcome, error) {
+			if err := os.MkdirAll(filepath.Dir(t.local), 0o755); err != nil {
+				return directoryTransferOutcome{}, fmt.Errorf("create local directory: %w", err)
+			}
+			down, err := m.download(ctx, sftpClient, t.remote, t.local, cfg, force, prog)
+			if err != nil {
+				return directoryTransferOutcome{}, err
+			}
+			return directoryTransferOutcome{bytes: down.Bytes, skipped: down.Skipped, resumed: down.Resumed}, nil
+		})
 
 	elapsed := time.Since(start)
 	res := &TransferResult{
 		Action:       "download",
 		LocalPath:    localRoot,
 		RemotePath:   remoteRoot,
-		Bytes:        transferred,
+		Bytes:        agg.transferred,
 		Elapsed:      elapsed,
-		SpeedBps:     speed(transferred, elapsed),
-		Percent:      percent(done, total),
-		Files:        len(tasks) - len(failed),
-		SkippedFiles: skippedFiles,
-		ResumedFiles: resumedFiles,
+		SpeedBps:     speed(agg.transferred, elapsed),
+		Percent:      percent(agg.done, total),
+		Files:        agg.files,
+		SkippedFiles: agg.skipped,
+		ResumedFiles: agg.resumed,
 	}
-	if len(failed) > 0 {
-		res.Failed = failed
+	if len(agg.failed) > 0 {
+		res.Failed = agg.failed
 	}
 	return res, nil
 }
@@ -597,12 +720,20 @@ func (m *Manager) openSftp(ctx context.Context, client *ssh.Client, cfg *config.
 		if cw {
 			opts = append(opts, sftp.UseConcurrentWrites(true))
 		}
-		if cfg != nil && cfg.SftpChunkSize >= 1024 {
-			maxPacket := cfg.SftpChunkSize
-			if maxPacket > maxSftpPacket {
-				maxPacket = maxSftpPacket
+		if cfg != nil {
+			// Bound the client's own read/write pipelining by the same
+			// concurrency setting that sizes our copy workers, so a large
+			// file has one in-flight budget instead of two.
+			if cfg.SftpConcurrency > 0 {
+				opts = append(opts, sftp.MaxConcurrentRequestsPerFile(cfg.SftpConcurrency))
 			}
-			opts = append(opts, sftp.MaxPacket(maxPacket))
+			if cfg.SftpChunkSize >= 1024 {
+				maxPacket := cfg.SftpChunkSize
+				if maxPacket > maxSftpPacket {
+					maxPacket = maxSftpPacket
+				}
+				opts = append(opts, sftp.MaxPacket(maxPacket))
+			}
 		}
 		c, err := sftp.NewClient(client, opts...)
 		ch <- result{c, err}
@@ -952,7 +1083,7 @@ func (m *Manager) download(ctx context.Context, sftpClient *sftp.Client, remoteP
 	}
 	defer remoteFile.Close()
 
-	done, err := copyFile(ctx, remoteFile, tempFile, 0, total, cfg.SftpConcurrency, cfg.SftpChunkSize, progress)
+	done, err := copyRemoteToLocal(ctx, remoteFile, tempFile, total, cfg.SftpChunkSize, progress)
 	if err != nil {
 		cleanup()
 		return nil, newToolError(CodeSFTPError,
@@ -1011,13 +1142,62 @@ func offsetProgress(progress ProgressFunc, offset, total int64) ProgressFunc {
 	}
 }
 
+// copyRemoteToLocal downloads a file from its start. For files larger than
+// one chunk it delegates to sftp.File.WriteTo, which keeps several reads in
+// flight and writes the payload in order; the generic copy loop leaves just
+// one request outstanding when a file is smaller than workers×chunk, which
+// is the common size for config files and small artifacts on a high-latency
+// link. Small files keep the plain loop: WriteTo stats the file first, and
+// that round trip would be pure overhead for a single-packet read.
+func copyRemoteToLocal(ctx context.Context, src *sftp.File, dst *os.File, total int64, chunkSize int, progress ProgressFunc) (int64, error) {
+	if chunkSize <= 0 {
+		chunkSize = 64 * 1024
+	}
+	if total <= int64(chunkSize) {
+		return copySequential(ctx, src, dst, 0, total, chunkSize, progress)
+	}
+	pw := &progressWriter{ctx: ctx, w: dst, total: total, progress: progress}
+	n, err := src.WriteTo(pw)
+	if err == nil && total > 0 && n != total {
+		return n, io.ErrUnexpectedEOF
+	}
+	return n, err
+}
+
+// progressWriter reports bytes as WriteTo drains the remote file. WriteTo
+// feeds it from one goroutine, in order, so no lock is needed.
+type progressWriter struct {
+	ctx      context.Context
+	w        io.Writer
+	total    int64
+	written  int64
+	progress ProgressFunc
+}
+
+func (p *progressWriter) Write(b []byte) (int, error) {
+	if err := p.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := p.w.Write(b)
+	p.written += int64(n)
+	if p.progress != nil {
+		p.progress(p.written, p.total)
+	}
+	return n, err
+}
+
 func copyFile(ctx context.Context, src io.ReaderAt, dst io.WriterAt, start, total int64, workers, chunkSize int, progress ProgressFunc) (int64, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// Sequential when there is nothing to parallelize: fewer chunks than
-	// workers means the fan-out costs more than it saves.
-	if total <= 0 || workers <= 1 || total < int64(workers)*int64(chunkSize) {
+	if chunkSize <= 0 {
+		chunkSize = 64 * 1024
+	}
+	// Sequential only when there is a single chunk to move. A file with two
+	// or more chunks benefits from overlapping round trips even when there
+	// are fewer chunks than workers: the idle workers cost nothing, while
+	// one round trip per chunk is the whole transfer time on a slow link.
+	if total <= 0 || workers <= 1 || chunkSize <= 0 || total <= int64(chunkSize) {
 		return copySequential(ctx, src, dst, start, total, chunkSize, progress)
 	}
 	return copyConcurrent(ctx, src, dst, start, total, workers, chunkSize, progress)
