@@ -30,23 +30,28 @@ const ExampleConfig = `{
 }
 `
 
-// vbsContent starts the daemon through WMI: the process is created by the WMI
-// provider host, so it gets no console window at all. `WshShell.Run` with a
-// hidden window still allocates a console window, which a launch context that
-// owns a console (cscript, `start`, Explorer) can surface as a black window.
-// The hidden Run stays as a fallback for machines where the WMI call fails.
-// The second %s is the config path, the third is the working directory — WMI
-// created processes default to the provider host's directory, which would drop
-// relative log/output paths into system32.
+// vbsContent starts the daemon through WMI with a Win32_ProcessStartup that
+// carries DETACHED_PROCESS, so the daemon ends up with no console at all.
+// Creating the process through WMI without startup information is not enough:
+// the console window is created shown and Windows hands it to the default
+// terminal (Windows Terminal), which pops a black window. ShowWindow 0 covers
+// hosts that ignore CreateFlags. The hidden Run stays as a fallback for
+// machines where the WMI call fails; the console window it allocates is
+// created hidden. The second %s is the config path, the third is the working
+// directory — WMI created processes default to the provider host's directory,
+// which would drop relative log/output paths into system32.
 const vbsContent = `Option Explicit
-Dim cmd, workDir, rc, svc, cls
+Dim cmd, workDir, rc, svc, cls, startup
 cmd = """%s"" start --config-file ""%s"""
 workDir = "%s"
 rc = -1
 On Error Resume Next
 Set svc = GetObject("winmgmts:{impersonationLevel=impersonate}!\\.\root\cimv2")
+Set startup = svc.Get("Win32_ProcessStartup")
+startup.CreateFlags = &H00000008
+startup.ShowWindow = 0
 Set cls = svc.Get("Win32_Process")
-rc = cls.Create(cmd, workDir, Nothing)
+rc = cls.Create(cmd, workDir, startup)
 On Error GoTo 0
 If rc <> 0 Then
   CreateObject("WScript.Shell").Run cmd, 0, False
