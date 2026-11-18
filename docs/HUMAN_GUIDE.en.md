@@ -261,7 +261,7 @@ Adds an optional `sessionName` parameter: executes in an already opened named se
 - **Truncation is labelled**: hitting `maxOutputBytes` sets `truncated: true` and `clippedBytes` in the error JSON and says the returned output is incomplete; light compression names the omitted line count; a `session action=read` cut by `maxBytes` returns `truncated` / `remainingBytes` and tells the caller to continue from the returned `offset` — never treat these as the complete output
 - exec **does not allocate a PTY by default** (avoids docker/npm treating the session as interactive); enable it with the connection's `"pty": true` (background jobs follow the same setting when deciding whether to wrap the job in `script`)
 
-**Agent Skill Installation**: You can copy [`skills/2native-ssh-mcp-helper/SKILL.md`](../skills/2native-ssh-mcp-helper/SKILL.md) from this repository to `.cursor/skills/` and then ask "help me configure 2native-ssh-mcp".
+**Agent Skill Installation**: The release's `2native-ssh-mcp-<os>-<arch>-with-skills.tar.gz` (`.zip` on Windows) ships `skills/` together with the binary, ready to use after extraction; alternatively copy [`skills/2native-ssh-mcp-helper/SKILL.md`](../skills/2native-ssh-mcp-helper/SKILL.md) from this repository to `.cursor/skills/` and then ask "help me configure 2native-ssh-mcp".
 
 ## Command-Line Arguments
 

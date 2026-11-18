@@ -8,10 +8,17 @@
 #   - one CycloneDX SBOM (2native-ssh-mcp.cdx.json); SLSA provenance + SBOM
 #     attestations go to the repo Attestations tab (not extra release files)
 #   - packages each binary as an .mcpb bundle (MCP Bundle, zip + manifest.json)
+#   - packages each binary with both Agent Skills as *-with-skills.tar.gz
+#     (zip on Windows), with its own .sha256 like every other asset
 #   - a tag with the "-registry" suffix (e.g. v1.0.0-registry) additionally
 #     publishes the matching stable release (v1.0.0) to the official MCP
 #     Registry (registry.modelcontextprotocol.io) via OIDC. Publishing to the
 #     registry is explicit: plain tags (v1.0.0) only build the release.
+#
+# Rebuild an existing release (new asset layout, lost assets) without moving
+# its tag:
+#   gh workflow run release.yml --ref main -f tag=v1.0.0
+# The run builds from that tag, then deletes and recreates the same release.
 #
 # To reuse in another project: replace "2native-ssh-mcp" with your binary
 # name, make sure main.go declares `var version = "..."` (not const), and
@@ -23,6 +30,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to rebuild (e.g. v1.9.3)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -30,8 +43,10 @@ permissions:
 jobs:
   build:
     name: Build ${{ matrix.goos }}-${{ matrix.arch }}
-    if: ${{ !endsWith(github.ref_name, '-registry') }}
+    if: ${{ !endsWith(inputs.tag || github.ref_name, '-registry') }}
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
     strategy:
       fail-fast: false
       matrix:
@@ -40,29 +55,46 @@ jobs:
             arch: amd64
             ext: .exe
             mcpbPlatform: win32
+            archiveExt: zip
           - goos: windows
             arch: arm64
             ext: .exe
             mcpbPlatform: win32
+            archiveExt: zip
           - goos: linux
             arch: amd64
             ext: ''
             mcpbPlatform: linux
+            archiveExt: tar.gz
           - goos: linux
             arch: arm64
             ext: ''
             mcpbPlatform: linux
+            archiveExt: tar.gz
           - goos: darwin
             arch: amd64
             ext: ''
             mcpbPlatform: darwin
+            archiveExt: tar.gz
           - goos: darwin
             arch: arm64
             ext: ''
             mcpbPlatform: darwin
+            archiveExt: tar.gz
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      # On a manual rebuild the tag predates this workflow, so its tree has no
+      # packaging script; take the script from the ref that triggered the run.
+      - name: Checkout release tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.ref }}
+          sparse-checkout: scripts
+          path: .release-tooling
 
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
@@ -79,7 +111,7 @@ jobs:
           GOARCH: ${{ matrix.arch }}
         run: |
           mkdir -p dist
-          go build -trimpath -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
+          go build -trimpath -ldflags "-s -w -X main.version=$TAG" \
             -o dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}${{ matrix.ext }} .
 
       - name: Package MCPB bundle
@@ -92,7 +124,7 @@ jobs:
             "manifest_version": "0.3",
             "name": "2native-ssh-mcp",
             "display_name": "2native SSH MCP Server",
-            "version": "${{ github.ref_name }}",
+            "version": "${{ inputs.tag || github.ref_name }}",
             "description": "SSH-based MCP server for remote command execution and file transfer. Credentials stay local.",
             "author": {
               "name": "daidaiJ"
@@ -115,6 +147,11 @@ jobs:
           sha256sum dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}.mcpb \
             > dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}.mcpb.sha256
 
+      - name: Package binary with skills
+        run: |
+          bash .release-tooling/scripts/package-release.sh "${{ matrix.goos }}" "${{ matrix.arch }}" \
+            "dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}${{ matrix.ext }}" dist .
+
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -123,20 +160,25 @@ jobs:
             dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}${{ matrix.ext }}
             dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}.mcpb
             dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}.mcpb.sha256
+            dist/2native-ssh-mcp-${{ matrix.goos }}-${{ matrix.arch }}-with-skills.${{ matrix.archiveExt }}
           if-no-files-found: error
 
   release:
     name: Create release
     needs: build
-    if: ${{ !endsWith(github.ref_name, '-registry') }}
+    if: ${{ !endsWith(inputs.tag || github.ref_name, '-registry') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
       attestations: write
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       # Release notes come from the annotated tag message, read via the
       # GitHub API. The local checkout may only hold a lightweight tag ref,
@@ -147,13 +189,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          REF="$(gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/${{ github.ref_name }}")"
+          REF="$(gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG")"
           TYPE="$(echo "$REF" | jq -r '.object.type')"
           if [ "$TYPE" = "tag" ]; then
             SHA="$(echo "$REF" | jq -r '.object.sha')"
             gh api "repos/$GITHUB_REPOSITORY/git/tags/$SHA" --jq '.message' > notes.md
           else
-            echo "${{ github.ref_name }}" > notes.md
+            echo "$TAG" > notes.md
           fi
 
       - name: Download binaries
@@ -196,6 +238,12 @@ jobs:
             dist/2native-ssh-mcp-linux-arm64.mcpb
             dist/2native-ssh-mcp-darwin-amd64.mcpb
             dist/2native-ssh-mcp-darwin-arm64.mcpb
+            dist/2native-ssh-mcp-windows-amd64-with-skills.zip
+            dist/2native-ssh-mcp-windows-arm64-with-skills.zip
+            dist/2native-ssh-mcp-linux-amd64-with-skills.tar.gz
+            dist/2native-ssh-mcp-linux-arm64-with-skills.tar.gz
+            dist/2native-ssh-mcp-darwin-amd64-with-skills.tar.gz
+            dist/2native-ssh-mcp-darwin-arm64-with-skills.tar.gz
 
       - name: Attest SBOM
         uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
@@ -213,36 +261,45 @@ jobs:
             dist/2native-ssh-mcp-linux-arm64.mcpb
             dist/2native-ssh-mcp-darwin-amd64.mcpb
             dist/2native-ssh-mcp-darwin-arm64.mcpb
+            dist/2native-ssh-mcp-windows-amd64-with-skills.zip
+            dist/2native-ssh-mcp-windows-arm64-with-skills.zip
+            dist/2native-ssh-mcp-linux-amd64-with-skills.tar.gz
+            dist/2native-ssh-mcp-linux-arm64-with-skills.tar.gz
+            dist/2native-ssh-mcp-darwin-amd64-with-skills.tar.gz
+            dist/2native-ssh-mcp-darwin-arm64-with-skills.tar.gz
           sbom-path: dist/2native-ssh-mcp.cdx.json
 
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete "${{ github.ref_name }}" --yes || true
-          gh release create "${{ github.ref_name }}" \
+          gh release delete "$TAG" --yes || true
+          gh release create "$TAG" \
             dist/2native-ssh-mcp-* \
-            --title "${{ github.ref_name }}" \
+            --title "$TAG" \
             --notes-file notes.md
 
   publish-registry:
     name: Publish to MCP Registry
     # Triggered only by a "-registry" suffix tag (e.g. v1.0.0-registry).
     # Publishes the matching stable release (v1.0.0) to the official registry.
-    if: ${{ endsWith(github.ref_name, '-registry') }}
+    if: ${{ endsWith(inputs.tag || github.ref_name, '-registry') }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Download MCPB bundles
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"          # v1.0.0-registry
           BASE_TAG="${TAG%-registry}"             # v1.0.0
           echo "Publishing $BASE_TAG to MCP Registry"
           mkdir -p mcpb-assets
@@ -259,7 +316,6 @@ jobs:
 
       - name: Generate server.json
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"          # v1.0.0-registry
           BASE_TAG="${TAG%-registry}"             # v1.0.0
           VERSION="${BASE_TAG#v}"                 # 1.0.0
           PACKAGES='[]'

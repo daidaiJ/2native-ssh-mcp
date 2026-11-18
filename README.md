@@ -58,6 +58,8 @@ AI 助手只看到四个 MCP 工具；本机进程负责 SSH，凭据不会进�
 
 ## 🚀 快速上手
 
+从 [Releases](https://github.com/daidaiJ/2native-ssh-mcp/releases/latest) 下载 `2native-ssh-mcp-<os>-<arch>-with-skills.tar.gz`（Windows 为 `.zip`），解压即得二进制与两个 Agent Skill。也可以自行构建：
+
 ```bash
 # 构建
 go build -o 2native-ssh-mcp.exe .

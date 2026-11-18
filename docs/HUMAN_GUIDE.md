@@ -261,7 +261,7 @@ Admin API（`/__admin/*`）不用这个 token，仍只限本机访问（loopback
 - **截断会显式标注**：命中 `maxOutputBytes` 时错误 JSON 标 `truncated: true` 与 `clippedBytes`，消息写明返回内容不完整；轻压缩的正文写明省略行数；`session action=read` 被 `maxBytes` 截断时返回 `truncated` / `remainingBytes` 并在头尾提示用返回的 `offset` 继续读——不要把这些结果当成完整输出
 - exec 默认**不分配 PTY**（避免 docker/npm 等误以为有交互终端）；交互命令用连接配置 `"pty": true` 开启（后台任务同样按此配置决定是否包 `script`）
 
-**Agent 安装 Skill**：仓库内 [`skills/2native-ssh-mcp-helper/SKILL.md`](../skills/2native-ssh-mcp-helper/SKILL.md) 可复制到 `.cursor/skills/` 后说「帮我配置 2native-ssh-mcp」。
+**Agent 安装 Skill**：Release 的 `2native-ssh-mcp-<os>-<arch>-with-skills.tar.gz`（Windows 为 `.zip`）把 `skills/` 与二进制放在同一个归档里，解压后直接可用；也可以从仓库复制 [`skills/2native-ssh-mcp-helper/SKILL.md`](../skills/2native-ssh-mcp-helper/SKILL.md) 到 `.cursor/skills/` 后说「帮我配置 2native-ssh-mcp」。
 
 ## 命令行参数
 

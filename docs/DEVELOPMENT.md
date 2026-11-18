@@ -135,6 +135,7 @@ git push origin v1.0.1
 - 构建 **6 个平台**的二进制：Windows / Linux / macOS × amd64 / arm64（`CGO_ENABLED=0`，版本号注入为 tag 名），产物命名 `2native-ssh-mcp-<os>-<arch>[.exe]`
 - 每个二进制附带独立的 `.sha256` 校验和文件
 - 每个二进制同时打包为 **`.mcpb` bundle**（MCP Bundle：zip + `manifest.json`，`server.type: "binary"`），附带独立 `.sha256`
+- 每个平台另附 **`2native-ssh-mcp-<os>-<arch>-with-skills.tar.gz`**（Windows 为 `.zip`）：内含该平台二进制、`skills/` 下的两个 Agent Skill，以及 README 与 LICENSE，并带独立 `.sha256`
 - 另附一份 CycloneDX SBOM（`2native-ssh-mcp.cdx.json`）；SLSA provenance 与 SBOM 证明发布在仓库 [Attestations](https://github.com/daidaiJ/2native-ssh-mcp/attestations) 页（不往 Release 里塞 `.intoto` 文件）。校验下载的二进制：`gh attestation verify --repo daidaiJ/2native-ssh-mcp <file>`
 - 用 `git tag -a -m` 打**带消息的 tag**；轻量 tag（`git tag v1.0.1`）没有消息，日志会退化为 tag 名
 
@@ -152,6 +153,16 @@ git push origin v1.0.1-registry
 ```bash
 curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=2native-ssh-mcp"
 ```
+
+### 重跑已有 Release
+
+需要给已发布的 tag 补资产或重建 Release（tag 本身不动）时，在任意包含当前工作流的分支上手动触发：
+
+```bash
+gh workflow run release.yml --ref main -f tag=v1.9.3
+```
+
+工作流按该 tag 的源码构建（打包脚本取自触发分支），随后删除并重建同名 Release；Release 日志仍来自该 annotated tag 的 message。**该操作会替换现有资产的哈希**；已经发布到 MCP Registry 的版本不要重跑——Registry 条目固定了每个 `.mcpb` 的 `fileSha256`。
 
 ## 设计决策：命令结果默认 text 渲染（2026-09-07）
 

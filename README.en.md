@@ -58,6 +58,8 @@ Full feature list: [docs/FEATURES.en.md](docs/FEATURES.en.md).
 
 ## 🚀 Quick Start
 
+Download `2native-ssh-mcp-<os>-<arch>-with-skills.tar.gz` (`.zip` on Windows) from [Releases](https://github.com/daidaiJ/2native-ssh-mcp/releases/latest) to get the binary and both Agent Skills in one archive. Or build from source:
+
 ```bash
 # Build
 go build -o 2native-ssh-mcp.exe .

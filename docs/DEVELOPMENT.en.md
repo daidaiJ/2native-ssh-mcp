@@ -111,6 +111,7 @@ git push origin v1.0.1
 - Builds **6 platforms**: Windows / Linux / macOS × amd64 / arm64 (`CGO_ENABLED=0`, version injected as tag name), outputs named `2native-ssh-mcp-<os>-<arch>[.exe]`
 - Each binary includes an independent `.sha256` checksum file
 - Each binary is also packaged as an **`.mcpb` bundle** (MCP Bundle: zip + `manifest.json`, `server.type: "binary"`) with its own `.sha256`
+- Each platform additionally gets **`2native-ssh-mcp-<os>-<arch>-with-skills.tar.gz`** (`.zip` on Windows): the binary, both Agent Skills under `skills/`, plus README and LICENSE, with its own `.sha256`
 - One CycloneDX SBOM (`2native-ssh-mcp.cdx.json`) is attached; SLSA provenance and SBOM attestations are published to the repo [Attestations](https://github.com/daidaiJ/2native-ssh-mcp/attestations) tab (not extra `.intoto` files on the release). Verify a downloaded binary with `gh attestation verify --repo daidaiJ/2native-ssh-mcp <file>`
 - Use `git tag -a -m` to create an **annotated tag with a message**; lightweight tags (`git tag v1.0.1`) have no message, so release notes will fall back to the tag name
 
@@ -128,6 +129,16 @@ The `v1.0.1-registry` tag triggers the `publish-registry` job, which downloads t
 ```bash
 curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=2native-ssh-mcp"
 ```
+
+### Rebuilding an Existing Release
+
+To add assets to or rebuild an already published tag without moving it, dispatch the workflow from any branch that carries it:
+
+```bash
+gh workflow run release.yml --ref main -f tag=v1.9.3
+```
+
+The run builds from that tag (the packaging script comes from the triggering branch), then deletes and recreates the release under the same name; release notes still come from the annotated tag message. **This replaces the hashes of existing assets**; do not rebuild a version already published to the MCP Registry, whose entry pins each `.mcpb` `fileSha256`.
 
 ## Design decision: command results render as text by default (2026-09-07)
 
